@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V1.6 (SCRAP FARM FIX)
+    PREHISTORIC TEAM V1.7 (SCRAP COMBAT + DEATH + PORTAL DELAY FIX)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -53,22 +53,22 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V1.6\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V1.7\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
 if not remotes then
-    BOOT_LABEL.Text = "PREHISTORIC V1.6 ERROR\nReplicatedStorage.Remotes not found"
+    BOOT_LABEL.Text = "PREHISTORIC V1.7 ERROR\nReplicatedStorage.Remotes not found"
     return
 end
 
 local CommF = remotes:WaitForChild("CommF_", 20)
 if not CommF then
-    BOOT_LABEL.Text = "PREHISTORIC V1.6 ERROR\nCommF_ not found"
+    BOOT_LABEL.Text = "PREHISTORIC V1.7 ERROR\nCommF_ not found"
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V1.6\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V1.7\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -97,6 +97,10 @@ local CONFIG = {
     PRESSURE_TWEEN_SPEED = 300,
     BOAT_TWEEN_SPEED = 475,
     SAFE_ALTITUDE = 70,
+    FOREST_FARM_HEIGHT = 30,
+    FOREST_HITBOX_SIZE = 70,
+    PORTAL_CHAIN_DELAY = 2.5,
+    RESPAWN_SETTLE_DELAY = 1.5,
     RESET_TO_TIKI_AFTER_EVENT = true,
 
     -- Public scripts use this offshore point as a Third Sea / high-danger travel target.
@@ -157,6 +161,9 @@ local RUN_TOKEN = 0
 local STATUS_LABEL
 local lastIslandWebhookKey = nil
 local lavaConnection = nil
+local CHARACTER_EPOCH = 0
+local lastPortalSuccessAt = -math.huge
+local boundHumanoids = {}
 
 local function setStatus(s)
     if STATUS_LABEL then
@@ -203,13 +210,50 @@ local function root()
     return c and c:FindFirstChild("HumanoidRootPart")
 end
 
-local function waitCharacter()
-    if not LP.Character or not LP.Character:FindFirstChild("HumanoidRootPart") then
-        LP.CharacterAdded:Wait()
+local function bindCharacter(c)
+    if not c then return end
+    local h = c:FindFirstChildOfClass("Humanoid") or c:WaitForChild("Humanoid", 10)
+    if not h or boundHumanoids[h] then return end
+    boundHumanoids[h] = true
+    CHARACTER_EPOCH = CHARACTER_EPOCH + 1
+
+    h.Died:Connect(function()
+        CHARACTER_EPOCH = CHARACTER_EPOCH + 1
+        setStatus("DIED -> automation paused until respawn")
+    end)
+end
+
+LP.CharacterAdded:Connect(function(c)
+    task.spawn(function()
+        bindCharacter(c)
+        c:WaitForChild("HumanoidRootPart", 10)
+        task.wait(CONFIG.RESPAWN_SETTLE_DELAY)
+        if _G.TeamConfig.IsRunning then
+            setStatus("RESPAWNED -> resuming current route")
+        end
+    end)
+end)
+
+if LP.Character then
+    task.spawn(function() bindCharacter(LP.Character) end)
+end
+
+local function waitAlive(token)
+    while true do
+        if token and not isRunning(token) then return nil end
+        local c = LP.Character
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        local r = c and c:FindFirstChild("HumanoidRootPart")
+        if c and h and r and h.Health > 0 then
+            bindCharacter(c)
+            return c, h, r, CHARACTER_EPOCH
+        end
+        task.wait(.15)
     end
-    local c = LP.Character
-    c:WaitForChild("HumanoidRootPart")
-    c:WaitForChild("Humanoid")
+end
+
+local function waitCharacter()
+    local c = waitAlive(nil)
     return c
 end
 
@@ -222,9 +266,8 @@ local function stopSit()
 end
 
 local function safeTween(targetCFrame, speed, token)
-    local c = waitCharacter()
-    local r = c:FindFirstChild("HumanoidRootPart")
-    if not r then return false end
+    local c, h, r, epoch = waitAlive(token)
+    if not c or not h or not r then return false end
 
     local d = (r.Position - targetCFrame.Position).Magnitude
     if d < 4 then
@@ -239,22 +282,42 @@ local function safeTween(targetCFrame, speed, token)
     bv.Parent = r
 
     local conn
+    local died = false
+    local tw
+    local deathConn = h.Died:Connect(function()
+        died = true
+        if tw then pcall(function() tw:Cancel() end) end
+    end)
+
     conn = RunService.Stepped:Connect(function()
-        if token and not isRunning(token) then return end
+        if token and not isRunning(token) then
+            if tw then pcall(function() tw:Cancel() end) end
+            return
+        end
+        if h.Health <= 0 or CHARACTER_EPOCH ~= epoch then
+            died = true
+            if tw then pcall(function() tw:Cancel() end) end
+            return
+        end
         for _,p in ipairs(c:GetDescendants()) do
-            if p:IsA("BasePart") then
-                p.CanCollide = false
-            end
+            if p:IsA("BasePart") then p.CanCollide = false end
         end
     end)
 
     local t = math.max(d / (speed or CONFIG.PLAYER_TWEEN_SPEED), 0.05)
-    local tw = TweenService:Create(r, TweenInfo.new(t, Enum.EasingStyle.Linear), {CFrame = targetCFrame})
+    tw = TweenService:Create(r, TweenInfo.new(t, Enum.EasingStyle.Linear), {CFrame = targetCFrame})
     tw:Play()
     tw.Completed:Wait()
 
     if conn then conn:Disconnect() end
-    if bv.Parent then bv:Destroy() end
+    if deathConn then deathConn:Disconnect() end
+    if bv and bv.Parent then bv:Destroy() end
+
+    if died or CHARACTER_EPOCH ~= epoch or not r.Parent then
+        setStatus("Movement interrupted by death -> waiting respawn")
+        waitAlive(token)
+        return false
+    end
     return true
 end
 
@@ -456,7 +519,10 @@ end
 local function meleeM1(targetModel, token)
     local h = targetModel and targetModel:FindFirstChildOfClass("Humanoid")
     local rr = targetModel and targetModel:FindFirstChild("HumanoidRootPart")
-    if not h or not rr then return end
+    if not h or not rr then return false end
+
+    local _,_,_,epoch = waitAlive(token)
+    if not epoch then return false end
 
     pcall(function()
         rr.CanCollide = false
@@ -465,16 +531,20 @@ local function meleeM1(targetModel, token)
 
     local tool = equipTooltip("Melee")
     while h.Parent and h.Health > 0 and (not token or isRunning(token)) do
+        if CHARACTER_EPOCH ~= epoch or not hum() or hum().Health <= 0 then
+            setStatus("Died during mob farm -> pause and resume after respawn")
+            waitAlive(token)
+            return false
+        end
         rr = targetModel:FindFirstChild("HumanoidRootPart")
         if not rr then break end
-        safeTween(rr.CFrame * CFrame.new(0, 16, 0), 330, token)
+        if not safeTween(rr.CFrame * CFrame.new(0, 16, 0), 330, token) then return false end
         aimAt(rr.Position)
         tool = equipTooltip("Melee") or tool
-        if tool and tool.Parent == char() then
-            pcall(function() tool:Activate() end)
-        end
+        if tool and tool.Parent == char() then pcall(function() tool:Activate() end) end
         task.wait(.11)
     end
+    return h.Health <= 0
 end
 
 local function farmNamedMob(name, fallbackCFrame, token)
@@ -580,9 +650,28 @@ end
 
 -- Portal travel is NEVER allowed to fall through into long-distance island tweening.
 -- We cross the portal plane several times and verify the destination region.
+local function waitPortalChainDelay(token)
+    local remain = CONFIG.PORTAL_CHAIN_DELAY - (os.clock() - lastPortalSuccessAt)
+    if remain <= 0 then return true end
+    setStatus(string.format("Portal cooldown %.1fs before next gate", remain))
+    local untilAt = os.clock() + remain
+    while os.clock() < untilAt do
+        if token and not isRunning(token) then return false end
+        if not waitAlive(token) then return false end
+        task.wait(.10)
+    end
+    return true
+end
+
+local function markPortalSuccess()
+    lastPortalSuccessAt = os.clock()
+end
+
 local function usePortal(cf, expectedRegion, token)
     for attempt=1,5 do
         if token and not isRunning(token) then return false end
+        if not waitPortalChainDelay(token) then return false end
+        if not waitAlive(token) then return false end
 
         setStatus("PORTAL -> "..tostring(expectedRegion).." ["..attempt.."/5]")
 
@@ -608,7 +697,8 @@ local function usePortal(cf, expectedRegion, token)
                 r.CFrame = cf * off
                 task.wait(.16)
                 if getRegion() == expectedRegion then
-                    task.wait(.45)
+                    markPortalSuccess()
+                    task.wait(.65)
                     return true
                 end
             end
@@ -618,7 +708,8 @@ local function usePortal(cf, expectedRegion, token)
         for _=1,8 do
             task.wait(.15)
             if getRegion() == expectedRegion then
-                task.wait(.45)
+                markPortalSuccess()
+                task.wait(.65)
                 return true
             end
         end
@@ -663,7 +754,7 @@ local function goTurtle(token)
     if region == "TURTLE" then return true end
     if region ~= "CASTLE" then
         if not goCastle(token) then return false end
-        task.wait(.5)
+        if not waitPortalChainDelay(token) then return false end
     end
     if getRegion() ~= "CASTLE" then return false end
     return usePortal(CONFIG.PORTALS.Castle_To_Turtle, "TURTLE", token)
@@ -674,7 +765,7 @@ local function goHydra(token)
     if region == "HYDRA" then return true end
     if region ~= "CASTLE" then
         if not goCastle(token) then return false end
-        task.wait(.5)
+        if not waitPortalChainDelay(token) then return false end
     end
     if getRegion() ~= "CASTLE" then return false end
     return usePortal(CONFIG.PORTALS.Castle_To_Hydra, "HYDRA", token)
@@ -1480,7 +1571,7 @@ local function magnetForestPirates(anchorCF, radius)
                 count = count + 1
                 pcall(function()
                     rr.CFrame = anchorCF
-                    rr.Size = Vector3.new(55,55,55)
+                    rr.Size = Vector3.new(CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE)
                     rr.CanCollide = false
                     h.WalkSpeed = 0
                     h.JumpPower = 0
@@ -1509,6 +1600,7 @@ local function farmScrap(token)
     local patrolIndex = 1
 
     while isRunning(token) and inventoryCount("Scrap Metal") < 10 do
+        if not waitAlive(token) then break end
         local scrap = inventoryCount("Scrap Metal")
         setStatus("Scrap Metal "..scrap.."/10 | route -> Floating Turtle")
 
@@ -1554,24 +1646,48 @@ local function farmScrap(token)
             else
                 noMobPasses = 0
 
-                -- Pull the current local wave to one point and use Melee M1 only.
+                -- Pull the local wave into one point, enlarge hitboxes, fly above it,
+                -- force-equip Melee, then spam Tool:Activate() M1.
                 local anchor = CFrame.new(camp.Position + Vector3.new(0,2,0))
-                safeTween(anchor * CFrame.new(0,16,0), 300, token)
+                local farmCF = anchor * CFrame.new(0, CONFIG.FOREST_FARM_HEIGHT, 0)
+                local _,_,_,waveEpoch = waitAlive(token)
+                if not waveEpoch then break end
 
-                local waveDeadline = os.clock() + 18
+                if not safeTween(farmCF, 300, token) then
+                    -- Death/respawn or movement interruption: exit local loop so outer
+                    -- route logic can re-confirm Turtle before farming again.
+                    break
+                end
+
+                local tool = equipTooltip("Melee")
+                local waveDeadline = os.clock() + 22
                 while isRunning(token)
                     and getRegion() == "TURTLE"
                     and inventoryCount("Scrap Metal") < 10
                     and os.clock() < waveDeadline do
 
+                    if CHARACTER_EPOCH ~= waveEpoch or not hum() or hum().Health <= 0 then
+                        setStatus("Died during Scrap farm -> waiting respawn, then rerouting")
+                        waitAlive(token)
+                        break
+                    end
+
                     local alive = magnetForestPirates(anchor, magnetRadius)
                     if alive <= 0 then break end
 
-                    local tool = equipTooltip("Melee")
+                    -- Hold the player above the magnet point so Forest Pirates cannot
+                    -- body-block the character while the enlarged hitboxes catch M1.
+                    local rr = root()
+                    if rr then
+                        rr.CFrame = farmCF
+                        rr.AssemblyLinearVelocity = Vector3.zero
+                    end
+
+                    tool = equipTooltip("Melee") or tool
                     if tool and tool.Parent == char() then
                         pcall(function() tool:Activate() end)
                     end
-                    task.wait(.10)
+                    task.wait(.085)
                 end
 
                 task.wait(.35)
@@ -1914,7 +2030,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V1.6 | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V1.7 | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
