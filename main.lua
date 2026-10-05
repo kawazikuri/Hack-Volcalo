@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V1.4 (PORTAL/RESET FIX)
+    PREHISTORIC TEAM V1.6 (SCRAP FARM FIX)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -53,22 +53,22 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V1.3\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V1.6\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
 if not remotes then
-    BOOT_LABEL.Text = "PREHISTORIC V1.3 ERROR\nReplicatedStorage.Remotes not found"
+    BOOT_LABEL.Text = "PREHISTORIC V1.6 ERROR\nReplicatedStorage.Remotes not found"
     return
 end
 
 local CommF = remotes:WaitForChild("CommF_", 20)
 if not CommF then
-    BOOT_LABEL.Text = "PREHISTORIC V1.3 ERROR\nCommF_ not found"
+    BOOT_LABEL.Text = "PREHISTORIC V1.6 ERROR\nCommF_ not found"
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V1.3\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V1.6\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -126,7 +126,13 @@ local CONFIG = {
     MOB_CAMPS = {
         HydraEnforcer = CFrame.new(4481.20752, 1004.28436, 538.046082),
         VenomousAssailant = CFrame.new(4622.26514, 1078.49329, 894.30603),
-        ForestPirate = CFrame.new(-11975.78515625, 331.7734069824219, -10620.0302734375),
+        -- User-captured safe point beside the Forest Pirate farming area on Floating Turtle.
+        ForestPirate = CFrame.new(
+            -13384.9883, 332.408264, -7814.93359,
+            -0.840017498, 4.56535894e-08, 0.542559266,
+            1.13496391e-07, 0.99999994, 5.30326076e-08,
+            -0.542559206, 7.65943753e-08, -0.840017498
+        ),
     },
 
     TREES = {
@@ -546,14 +552,6 @@ end
 -- PORTALS
 --==============================================================
 
-local function usePortal(cf, token)
-    local before = root() and root().Position
-    safeTween(cf, 300, token)
-    task.wait(1.2)
-    if not before or not root() then return true end
-    return (root().Position - before).Magnitude > 300
-end
-
 local function nearestDistance(pos)
     local r = root()
     if not r then return math.huge end
@@ -580,12 +578,62 @@ local function getRegion()
     return best, bestD
 end
 
+-- Portal travel is NEVER allowed to fall through into long-distance island tweening.
+-- We cross the portal plane several times and verify the destination region.
+local function usePortal(cf, expectedRegion, token)
+    for attempt=1,5 do
+        if token and not isRunning(token) then return false end
+
+        setStatus("PORTAL -> "..tostring(expectedRegion).." ["..attempt.."/5]")
+
+        -- Approach from one side, then physically cross through the portal plane.
+        safeTween(cf * CFrame.new(0,0,-12), 260, token)
+        if token and not isRunning(token) then return false end
+
+        safeTween(cf * CFrame.new(0,0,3), 110, token)
+        task.wait(.20)
+
+        local r = root()
+        if r then
+            -- Small local-space passes help portals whose trigger volume is thin.
+            local passes = {
+                CFrame.new(0,0,8),
+                CFrame.new(0,0,-4),
+                CFrame.new(4,0,2),
+                CFrame.new(-4,0,2),
+                CFrame.new(0,2,0),
+            }
+            for _,off in ipairs(passes) do
+                if token and not isRunning(token) then return false end
+                r.CFrame = cf * off
+                task.wait(.16)
+                if getRegion() == expectedRegion then
+                    task.wait(.45)
+                    return true
+                end
+            end
+        end
+
+        -- Give replication/teleport a moment before retrying.
+        for _=1,8 do
+            task.wait(.15)
+            if getRegion() == expectedRegion then
+                task.wait(.45)
+                return true
+            end
+        end
+    end
+
+    setStatus("PORTAL FAILED -> "..tostring(expectedRegion).." | STOP ROUTE")
+    return false
+end
+
 local function goCastle(token)
     local region = getRegion()
     if region == "CASTLE" then return true end
-    if region == "TIKI" then return usePortal(CONFIG.PORTALS.Tiki_To_Castle, token) end
-    if region == "TURTLE" then return usePortal(CONFIG.PORTALS.Turtle_To_Castle, token) end
-    if region == "HYDRA" then return usePortal(CONFIG.PORTALS.Hydra_To_Castle, token) end
+    if region == "TIKI" then return usePortal(CONFIG.PORTALS.Tiki_To_Castle, "CASTLE", token) end
+    if region == "TURTLE" then return usePortal(CONFIG.PORTALS.Turtle_To_Castle, "CASTLE", token) end
+    if region == "HYDRA" then return usePortal(CONFIG.PORTALS.Hydra_To_Castle, "CASTLE", token) end
     return false
 end
 
@@ -602,7 +650,7 @@ local function goTiki(token)
     end
 
     if getRegion() == "TIKI" then return true end
-    local ok = usePortal(CONFIG.PORTALS.Castle_To_Tiki, token)
+    local ok = usePortal(CONFIG.PORTALS.Castle_To_Tiki, "TIKI", token)
     task.wait(1.0)
     if getRegion() == "TIKI" then return true end
 
@@ -613,15 +661,23 @@ end
 local function goTurtle(token)
     local region = getRegion()
     if region == "TURTLE" then return true end
-    if region ~= "CASTLE" then goCastle(token) end
-    return usePortal(CONFIG.PORTALS.Castle_To_Turtle, token)
+    if region ~= "CASTLE" then
+        if not goCastle(token) then return false end
+        task.wait(.5)
+    end
+    if getRegion() ~= "CASTLE" then return false end
+    return usePortal(CONFIG.PORTALS.Castle_To_Turtle, "TURTLE", token)
 end
 
 local function goHydra(token)
     local region = getRegion()
     if region == "HYDRA" then return true end
-    if region ~= "CASTLE" then goCastle(token) end
-    return usePortal(CONFIG.PORTALS.Castle_To_Hydra, token)
+    if region ~= "CASTLE" then
+        if not goCastle(token) then return false end
+        task.wait(.5)
+    end
+    if getRegion() ~= "CASTLE" then return false end
+    return usePortal(CONFIG.PORTALS.Castle_To_Hydra, "HYDRA", token)
 end
 
 resetBackToTiki = function(token)
@@ -1369,7 +1425,11 @@ end
 local function farmBlazeEmbers(token)
     while isRunning(token) and inventoryCount("Blaze Ember") < 15 do
         setStatus("Blaze Ember "..inventoryCount("Blaze Ember").."/15")
-        goHydra(token)
+        if not goHydra(token) then
+            setStatus("Hydra portal failed - NOT flying across sea")
+            task.wait(1)
+            continue
+        end
         if questKind() == "NONE" then
             receiveDragonHunterQuest(token)
         end
@@ -1378,13 +1438,153 @@ local function farmBlazeEmbers(token)
     end
 end
 
-local function farmScrap(token)
-    while isRunning(token) and inventoryCount("Scrap Metal") < 10 do
-        setStatus("Scrap Metal "..inventoryCount("Scrap Metal").."/10")
-        goTurtle(token)
-        farmNamedMob("Forest Pirate", CONFIG.MOB_CAMPS.ForestPirate, token)
-        task.wait(.25)
+-- Forest Pirate/Scrap Metal farming is intentionally island-local.
+-- Once Turtle is confirmed, this routine never long-distance tweens to another island.
+local function isForestPirate(m)
+    if not m or not m:IsA("Model") then return false end
+    return string.find(string.lower(m.Name), "forest pirate", 1, true) ~= nil
+end
+
+local function aliveForestPirates(centerPos, radius)
+    local result = {}
+    local enemies = workspace:FindFirstChild("Enemies")
+    if not enemies then return result end
+
+    for _,m in ipairs(enemies:GetChildren()) do
+        if isForestPirate(m) then
+            local h = m:FindFirstChildOfClass("Humanoid")
+            local rr = m:FindFirstChild("HumanoidRootPart")
+            if h and rr and h.Health > 0 then
+                local d = (rr.Position - centerPos).Magnitude
+                if d <= radius then
+                    result[#result+1] = {model=m, distance=d}
+                end
+            end
+        end
     end
+
+    table.sort(result, function(a,b) return a.distance < b.distance end)
+    return result
+end
+
+local function magnetForestPirates(anchorCF, radius)
+    local enemies = workspace:FindFirstChild("Enemies")
+    if not enemies then return 0 end
+
+    local count = 0
+    for _,m in ipairs(enemies:GetChildren()) do
+        if isForestPirate(m) then
+            local h = m:FindFirstChildOfClass("Humanoid")
+            local rr = m:FindFirstChild("HumanoidRootPart")
+            if h and rr and h.Health > 0 and (rr.Position - anchorCF.Position).Magnitude <= radius then
+                count = count + 1
+                pcall(function()
+                    rr.CFrame = anchorCF
+                    rr.Size = Vector3.new(55,55,55)
+                    rr.CanCollide = false
+                    h.WalkSpeed = 0
+                    h.JumpPower = 0
+                end)
+            end
+        end
+    end
+    return count
+end
+
+local function farmScrap(token)
+    local camp = CONFIG.MOB_CAMPS.ForestPirate
+    local scanRadius = 850
+    local magnetRadius = 650
+    local patrol = {
+        CFrame.new(0,0,0),
+        CFrame.new(170,0,0),
+        CFrame.new(-170,0,0),
+        CFrame.new(0,0,170),
+        CFrame.new(0,0,-170),
+        CFrame.new(240,0,180),
+        CFrame.new(-240,0,180),
+        CFrame.new(240,0,-180),
+        CFrame.new(-240,0,-180),
+    }
+    local patrolIndex = 1
+
+    while isRunning(token) and inventoryCount("Scrap Metal") < 10 do
+        local scrap = inventoryCount("Scrap Metal")
+        setStatus("Scrap Metal "..scrap.."/10 | route -> Floating Turtle")
+
+        if not goTurtle(token) then
+            setStatus("Turtle portal failed - retrying portal only")
+            task.wait(1)
+            continue
+        end
+
+        -- Hard guard: never start Forest Pirate farming unless the portal destination
+        -- was actually confirmed as Floating Turtle.
+        if getRegion() ~= "TURTLE" then
+            setStatus("Not on Floating Turtle -> abort Scrap farm cycle")
+            task.wait(.8)
+            continue
+        end
+
+        -- Move only to the user-captured safe point beside the Forest Pirate area.
+        highTween(camp * CFrame.new(0,18,0), CONFIG.PLAYER_TWEEN_SPEED, token)
+        if not isRunning(token) then break end
+        if getRegion() ~= "TURTLE" then
+            setStatus("Left Turtle unexpectedly -> stop local farm")
+            task.wait(.8)
+            continue
+        end
+
+        local noMobPasses = 0
+        while isRunning(token)
+            and getRegion() == "TURTLE"
+            and inventoryCount("Scrap Metal") < 10 do
+
+            local mobs = aliveForestPirates(camp.Position, scanRadius)
+
+            if #mobs == 0 then
+                noMobPasses = noMobPasses + 1
+                local off = patrol[patrolIndex]
+                patrolIndex = patrolIndex + 1
+                if patrolIndex > #patrol then patrolIndex = 1 end
+
+                setStatus("Scrap Metal "..inventoryCount("Scrap Metal").."/10 | scanning Forest Pirates")
+                highTween(camp * off * CFrame.new(0,18,0), 260, token)
+                task.wait(noMobPasses >= #patrol and 1.2 or .45)
+            else
+                noMobPasses = 0
+
+                -- Pull the current local wave to one point and use Melee M1 only.
+                local anchor = CFrame.new(camp.Position + Vector3.new(0,2,0))
+                safeTween(anchor * CFrame.new(0,16,0), 300, token)
+
+                local waveDeadline = os.clock() + 18
+                while isRunning(token)
+                    and getRegion() == "TURTLE"
+                    and inventoryCount("Scrap Metal") < 10
+                    and os.clock() < waveDeadline do
+
+                    local alive = magnetForestPirates(anchor, magnetRadius)
+                    if alive <= 0 then break end
+
+                    local tool = equipTooltip("Melee")
+                    if tool and tool.Parent == char() then
+                        pcall(function() tool:Activate() end)
+                    end
+                    task.wait(.10)
+                end
+
+                task.wait(.35)
+                setStatus("Scrap Metal "..inventoryCount("Scrap Metal").."/10 | Forest Pirate wave cleared")
+            end
+        end
+    end
+
+    if inventoryCount("Scrap Metal") >= 10 then
+        setStatus("Scrap Metal ready: "..inventoryCount("Scrap Metal").."/10")
+        return true
+    end
+    return false
 end
 
 local function findTextObject(textNeedle)
@@ -1430,7 +1630,10 @@ local function openCraftMenu(token)
 end
 
 local function craftVolcanicMagnet(token)
-    goHydra(token)
+    if not goHydra(token) then
+        setStatus("Hydra portal failed - craft cancelled")
+        return false
+    end
     if not openCraftMenu(token) then
         setStatus("Craft menu failed to open")
         return false
@@ -1711,7 +1914,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V1.3 | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V1.6 | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
