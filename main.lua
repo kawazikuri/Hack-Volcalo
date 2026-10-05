@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V1.7 (SCRAP COMBAT + DEATH + PORTAL DELAY FIX)
+    PREHISTORIC TEAM V1.8 (BIGGER HITBOX + VIRTUAL TOOL CLICK)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -53,22 +53,22 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V1.7\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V1.8\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
 if not remotes then
-    BOOT_LABEL.Text = "PREHISTORIC V1.7 ERROR\nReplicatedStorage.Remotes not found"
+    BOOT_LABEL.Text = "PREHISTORIC V1.8 ERROR\nReplicatedStorage.Remotes not found"
     return
 end
 
 local CommF = remotes:WaitForChild("CommF_", 20)
 if not CommF then
-    BOOT_LABEL.Text = "PREHISTORIC V1.7 ERROR\nCommF_ not found"
+    BOOT_LABEL.Text = "PREHISTORIC V1.8 ERROR\nCommF_ not found"
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V1.7\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V1.8\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -98,7 +98,7 @@ local CONFIG = {
     BOAT_TWEEN_SPEED = 475,
     SAFE_ALTITUDE = 70,
     FOREST_FARM_HEIGHT = 30,
-    FOREST_HITBOX_SIZE = 70,
+    FOREST_HITBOX_SIZE = 120,
     PORTAL_CHAIN_DELAY = 2.5,
     RESPAWN_SETTLE_DELAY = 1.5,
     RESET_TO_TIKI_AFTER_EVENT = true,
@@ -516,6 +516,28 @@ local function useXCVF(targetPos)
     end
 end
 
+local function virtualToolClick(tool)
+    if not tool or not char() or tool.Parent ~= char() then return false end
+
+    local activated = false
+    local ok = pcall(function()
+        -- Executor-safe M1 equivalent. This does NOT send a real screen/mouse click,
+        -- so it cannot accidentally press UI buttons.
+        tool:Activate()
+    end)
+    if ok then activated = true end
+
+    -- Extra virtual click path requested by the user. Some Blox Fruits tool scripts
+    -- listen on Tool.Activated; firesignal triggers that signal without touching the UI.
+    if firesignal then
+        pcall(function()
+            firesignal(tool.Activated)
+        end)
+    end
+
+    return activated
+end
+
 local function meleeM1(targetModel, token)
     local h = targetModel and targetModel:FindFirstChildOfClass("Humanoid")
     local rr = targetModel and targetModel:FindFirstChild("HumanoidRootPart")
@@ -526,7 +548,7 @@ local function meleeM1(targetModel, token)
 
     pcall(function()
         rr.CanCollide = false
-        rr.Size = Vector3.new(45,45,45)
+        rr.Size = Vector3.new(80,80,80)
     end)
 
     local tool = equipTooltip("Melee")
@@ -541,8 +563,8 @@ local function meleeM1(targetModel, token)
         if not safeTween(rr.CFrame * CFrame.new(0, 16, 0), 330, token) then return false end
         aimAt(rr.Position)
         tool = equipTooltip("Melee") or tool
-        if tool and tool.Parent == char() then pcall(function() tool:Activate() end) end
-        task.wait(.11)
+        if tool and tool.Parent == char() then virtualToolClick(tool) end
+        task.wait(.07)
     end
     return h.Health <= 0
 end
@@ -1685,9 +1707,9 @@ local function farmScrap(token)
 
                     tool = equipTooltip("Melee") or tool
                     if tool and tool.Parent == char() then
-                        pcall(function() tool:Activate() end)
+                        virtualToolClick(tool)
                     end
-                    task.wait(.085)
+                    task.wait(.055)
                 end
 
                 task.wait(.35)
@@ -2030,7 +2052,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V1.7 | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V1.8 | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
