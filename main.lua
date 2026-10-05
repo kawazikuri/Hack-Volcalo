@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V1.3 (DELTA COMPAT)
+    PREHISTORIC TEAM V1.4 (PORTAL/RESET FIX)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -592,8 +592,22 @@ end
 local function goTiki(token)
     local region = getRegion()
     if region == "TIKI" then return true end
-    if region ~= "CASTLE" then goCastle(token) end
-    return usePortal(CONFIG.PORTALS.Castle_To_Tiki, token)
+
+    if region ~= "CASTLE" then
+        if not goCastle(token) then
+            setStatus("PORTAL: failed to reach Castle")
+            return false
+        end
+        task.wait(1.0)
+    end
+
+    if getRegion() == "TIKI" then return true end
+    local ok = usePortal(CONFIG.PORTALS.Castle_To_Tiki, token)
+    task.wait(1.0)
+    if getRegion() == "TIKI" then return true end
+
+    setStatus("PORTAL: Castle -> Tiki not confirmed")
+    return ok and true or false
 end
 
 local function goTurtle(token)
@@ -1441,13 +1455,14 @@ local function recoverMagnet(token)
 
     setStatus("RECOVERY: Volcanic Magnet missing")
 
-    -- Event flow already resets everyone back to Tiki after rewards.
-    -- For recovery entered from another state, normalize the account back to Tiki once.
+    -- IMPORTANT: never reset again during portal recovery.
+    -- The only reset in the whole post-event flow happens in resetBackToTiki().
+    -- A second reset here could kill the character right after Hydra/Turtle -> Castle.
     if getRegion() ~= "TIKI" then
-        resetCharacter()
-        if not isRunning(token) then return false end
-        if getRegion() ~= "TIKI" then
-            goTiki(token)
+        setStatus("RECOVERY: returning to Tiki without reset")
+        if not goTiki(token) then
+            setStatus("RECOVERY: failed to return to Tiki")
+            return false
         end
     end
     if not isRunning(token) then return false end
