@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V1.8 (BIGGER HITBOX + VIRTUAL TOOL CLICK)
+    PREHISTORIC TEAM V1.9 (REAL MELEE HITBOX + VIRTUAL ATTACK)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -53,22 +53,22 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V1.8\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V1.9\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
 if not remotes then
-    BOOT_LABEL.Text = "PREHISTORIC V1.8 ERROR\nReplicatedStorage.Remotes not found"
+    BOOT_LABEL.Text = "PREHISTORIC V1.9 ERROR\nReplicatedStorage.Remotes not found"
     return
 end
 
 local CommF = remotes:WaitForChild("CommF_", 20)
 if not CommF then
-    BOOT_LABEL.Text = "PREHISTORIC V1.8 ERROR\nCommF_ not found"
+    BOOT_LABEL.Text = "PREHISTORIC V1.9 ERROR\nCommF_ not found"
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V1.8\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V1.9\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -98,7 +98,8 @@ local CONFIG = {
     BOAT_TWEEN_SPEED = 475,
     SAFE_ALTITUDE = 70,
     FOREST_FARM_HEIGHT = 30,
-    FOREST_HITBOX_SIZE = 120,
+    FOREST_HITBOX_SIZE = 140,
+    MELEE_HITBOX_MAGNITUDE = 120,
     PORTAL_CHAIN_DELAY = 2.5,
     RESPAWN_SETTLE_DELAY = 1.5,
     RESET_TO_TIKI_AFTER_EVENT = true,
@@ -516,27 +517,102 @@ local function useXCVF(targetPos)
     end
 end
 
-local function virtualToolClick(tool)
+-- Actual melee range in Blox Fruits is controlled by CombatFramework's active controller,
+-- not by changing an enemy HumanoidRootPart.Size alone.  Keep a cached reference but
+-- rediscover it when the character/controller is rebuilt after respawn.
+local CombatState = nil
+
+local function resolveCombatState()
+    if type(CombatState) == "table" and CombatState.activeController then
+        return CombatState
+    end
+
+    local ps = player:FindFirstChild("PlayerScripts")
+    local module = ps and ps:FindFirstChild("CombatFramework")
+    if not module then return nil end
+
+    local ok, framework = pcall(require, module)
+    if not ok then return nil end
+
+    if type(framework) == "table" and framework.activeController then
+        CombatState = framework
+        return CombatState
+    end
+
+    local candidates = {}
+    if type(getupvalues) == "function" then candidates[#candidates+1] = getupvalues end
+    if debug and type(debug.getupvalues) == "function" then candidates[#candidates+1] = debug.getupvalues end
+
+    for _,getter in ipairs(candidates) do
+        local ok2, ups = pcall(getter, framework)
+        if ok2 and type(ups) == "table" then
+            for _,v in pairs(ups) do
+                if type(v) == "table" and v.activeController then
+                    CombatState = v
+                    return CombatState
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function buffMeleeHitbox()
+    local state = resolveCombatState()
+    local ac = state and state.activeController
+    if not ac then return nil end
+
+    pcall(function()
+        ac.hitboxMagnitude = CONFIG.MELEE_HITBOX_MAGNITUDE
+    end)
+
+    return ac
+end
+
+local function virtualMeleeAttack(tool)
     if not tool or not char() or tool.Parent ~= char() then return false end
 
-    local activated = false
+    -- Refresh the REAL melee hitbox every attack because CombatFramework can overwrite it.
+    local ac = buffMeleeHitbox()
+    local fired = false
+
+    -- Direct controller attack: no physical/screen click involved.
+    if ac and type(ac.attack) == "function" then
+        local ok = pcall(function()
+            ac:attack()
+        end)
+        if ok then fired = true end
+    end
+
+    -- Normal Tool activation fallback, still not a screen click.
     local ok = pcall(function()
-        -- Executor-safe M1 equivalent. This does NOT send a real screen/mouse click,
-        -- so it cannot accidentally press UI buttons.
         tool:Activate()
     end)
-    if ok then activated = true end
+    if ok then fired = true end
 
-    -- Extra virtual click path requested by the user. Some Blox Fruits tool scripts
-    -- listen on Tool.Activated; firesignal triggers that signal without touching the UI.
     if firesignal then
         pcall(function()
             firesignal(tool.Activated)
         end)
     end
 
-    return activated
+    return fired
 end
+
+local function virtualToolClick(tool)
+    return virtualMeleeAttack(tool)
+end
+
+-- Pin the internal melee hitbox while automation is active.
+-- CombatFramework may recreate/reset activeController after equips and respawns.
+task.spawn(function()
+    while task.wait(0.05) do
+        if _G.TeamConfig and _G.TeamConfig.IsRunning then
+            pcall(buffMeleeHitbox)
+        end
+    end
+end)
 
 local function meleeM1(targetModel, token)
     local h = targetModel and targetModel:FindFirstChildOfClass("Humanoid")
@@ -548,7 +624,7 @@ local function meleeM1(targetModel, token)
 
     pcall(function()
         rr.CanCollide = false
-        rr.Size = Vector3.new(80,80,80)
+        rr.Size = Vector3.new(110,110,110)
     end)
 
     local tool = equipTooltip("Melee")
@@ -563,6 +639,7 @@ local function meleeM1(targetModel, token)
         if not safeTween(rr.CFrame * CFrame.new(0, 16, 0), 330, token) then return false end
         aimAt(rr.Position)
         tool = equipTooltip("Melee") or tool
+        buffMeleeHitbox()
         if tool and tool.Parent == char() then virtualToolClick(tool) end
         task.wait(.07)
     end
@@ -1706,6 +1783,7 @@ local function farmScrap(token)
                     end
 
                     tool = equipTooltip("Melee") or tool
+                    buffMeleeHitbox()
                     if tool and tool.Parent == char() then
                         virtualToolClick(tool)
                     end
@@ -2052,7 +2130,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V1.8 | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V1.9 | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
