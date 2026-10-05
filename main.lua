@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V1.9 (REAL MELEE HITBOX + VIRTUAL ATTACK)
+    PREHISTORIC TEAM V2 NIGHT DEBUG (WATCHDOG + FILE LOGGER)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -53,22 +53,22 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V1.9\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2 NIGHT DEBUG\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
 if not remotes then
-    BOOT_LABEL.Text = "PREHISTORIC V1.9 ERROR\nReplicatedStorage.Remotes not found"
+    BOOT_LABEL.Text = "PREHISTORIC V2 ERROR\nReplicatedStorage.Remotes not found"
     return
 end
 
 local CommF = remotes:WaitForChild("CommF_", 20)
 if not CommF then
-    BOOT_LABEL.Text = "PREHISTORIC V1.9 ERROR\nCommF_ not found"
+    BOOT_LABEL.Text = "PREHISTORIC V2 ERROR\nCommF_ not found"
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V1.9\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2 NIGHT DEBUG\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -103,6 +103,16 @@ local CONFIG = {
     PORTAL_CHAIN_DELAY = 2.5,
     RESPAWN_SETTLE_DELAY = 1.5,
     RESET_TO_TIKI_AFTER_EVENT = true,
+
+    DEBUG = {
+        ENABLED = true,
+        LOG_TO_FILE = true,
+        SNAPSHOT_INTERVAL = 15,
+        WATCHDOG_SECONDS = 120,
+        WATCHDOG_RESTART = true,
+        WEBHOOK_ERRORS = true,
+        MAX_MEMORY_LOG_LINES = 6000,
+    },
 
     -- Public scripts use this offshore point as a Third Sea / high-danger travel target.
     SEA6_CENTER = Vector3.new(-37813.6953, 65, 6105.16895),
@@ -166,11 +176,105 @@ local CHARACTER_EPOCH = 0
 local lastPortalSuccessAt = -math.huge
 local boundHumanoids = {}
 
-local function setStatus(s)
-    if STATUS_LABEL then
-        STATUS_LABEL.Text = tostring(s)
+--==============================================================
+-- NIGHT DEBUG LOGGER / WATCHDOG STATE
+-- No manual log file is required. If the executor supports writefile/appendfile,
+-- the script creates one automatically in the executor workspace.
+--==============================================================
+
+local _nightStampOK, _nightStamp = pcall(function() return os.date("%Y%m%d_%H%M%S") end)
+if not _nightStampOK then _nightStamp = tostring(math.floor(os.clock())) end
+
+local NIGHT = {
+    LogPath = "PH_Night_" .. tostring(LP.Name):gsub("[^%w_%-]", "_") .. "_" .. tostring(_nightStamp) .. ".txt",
+    StartedAt = os.clock(),
+    LastProgressAt = os.clock(),
+    LastProgressSignature = "BOOT",
+    LastStatus = nil,
+    LastStatusLogAt = 0,
+    RuntimeSignature = nil,
+    RecoveryCount = 0,
+    MemoryLines = {},
+    FileReady = false,
+}
+
+local function nightTime()
+    local ok, t = pcall(function() return os.date("%Y-%m-%d %H:%M:%S") end)
+    return ok and t or tostring(math.floor(os.clock()))
+end
+
+local function initNightLog()
+    if not CONFIG.DEBUG.ENABLED or not CONFIG.DEBUG.LOG_TO_FILE then return end
+    local header = table.concat({
+        "===== PREHISTORIC V2 NIGHT DEBUG =====",
+        "ACCOUNT="..LP.Name,
+        "MASTER="..tostring(CONFIG.MASTER_NAME),
+        "JOB="..tostring(game.JobId),
+        "START="..nightTime(),
+        "LOG="..NIGHT.LogPath,
+        "======================================",
+        ""
+    }, "\n")
+    NIGHT.MemoryLines = {header}
+    if type(writefile) == "function" then
+        NIGHT.FileReady = pcall(writefile, NIGHT.LogPath, header)
     end
-    print("[PH-V1] " .. tostring(s))
+end
+
+local function flushNightLog()
+    if not CONFIG.DEBUG.ENABLED or not CONFIG.DEBUG.LOG_TO_FILE then return end
+    -- When appendfile exists, every line is already persisted; rewriting from the
+    -- memory fallback here would erase the appended overnight history.
+    if type(appendfile) == "function" and NIGHT.FileReady then return end
+    if type(writefile) ~= "function" then return end
+    local maxLines = CONFIG.DEBUG.MAX_MEMORY_LOG_LINES or 6000
+    while #NIGHT.MemoryLines > maxLines do
+        table.remove(NIGHT.MemoryLines, 1)
+    end
+    pcall(writefile, NIGHT.LogPath, table.concat(NIGHT.MemoryLines, "\n"))
+end
+
+local function logLine(tag, message)
+    if not CONFIG.DEBUG.ENABLED then return end
+    local line = string.format("[%s] [%s] %s", nightTime(), tostring(tag), tostring(message))
+    print("[PH-NIGHT] "..line)
+
+    if CONFIG.DEBUG.LOG_TO_FILE then
+        if type(appendfile) == "function" and NIGHT.FileReady then
+            pcall(appendfile, NIGHT.LogPath, line.."\n")
+        else
+            NIGHT.MemoryLines[#NIGHT.MemoryLines+1] = line
+            if (#NIGHT.MemoryLines % 10) == 0 then
+                flushNightLog()
+            end
+        end
+    end
+end
+
+local function noteProgress(signature)
+    signature = tostring(signature or "progress")
+    if signature ~= NIGHT.LastProgressSignature then
+        NIGHT.LastProgressSignature = signature
+        NIGHT.LastProgressAt = os.clock()
+    end
+end
+
+initNightLog()
+logLine("BOOT", "Script started | file="..NIGHT.LogPath.." | fileAPI="..tostring(NIGHT.FileReady or type(appendfile)=="function"))
+
+local function setStatus(s)
+    s = tostring(s)
+    if STATUS_LABEL then
+        STATUS_LABEL.Text = s
+    end
+    print("[PH-V2] " .. s)
+
+    if NIGHT.LastStatus ~= s or (os.clock() - NIGHT.LastStatusLogAt) > 20 then
+        NIGHT.LastStatus = s
+        NIGHT.LastStatusLogAt = os.clock()
+        logLine("STATUS", s)
+        noteProgress("STATUS:"..s)
+    end
 end
 
 local function isRunning(token)
@@ -220,6 +324,8 @@ local function bindCharacter(c)
 
     h.Died:Connect(function()
         CHARACTER_EPOCH = CHARACTER_EPOCH + 1
+        local r = c:FindFirstChild("HumanoidRootPart")
+        logLine("DEATH", "pos="..tostring(r and r.Position or "nil").." status="..tostring(NIGHT.LastStatus))
         setStatus("DIED -> automation paused until respawn")
     end)
 end
@@ -229,6 +335,8 @@ LP.CharacterAdded:Connect(function(c)
         bindCharacter(c)
         c:WaitForChild("HumanoidRootPart", 10)
         task.wait(CONFIG.RESPAWN_SETTLE_DELAY)
+        local rr = c:FindFirstChild("HumanoidRootPart")
+        logLine("RESPAWN", "pos="..tostring(rr and rr.Position or "nil"))
         if _G.TeamConfig.IsRunning then
             setStatus("RESPAWNED -> resuming current route")
         end
@@ -527,7 +635,7 @@ local function resolveCombatState()
         return CombatState
     end
 
-    local ps = player:FindFirstChild("PlayerScripts")
+    local ps = LP:FindFirstChild("PlayerScripts")
     local module = ps and ps:FindFirstChild("CombatFramework")
     if not module then return nil end
 
@@ -772,6 +880,9 @@ local function usePortal(cf, expectedRegion, token)
         if not waitPortalChainDelay(token) then return false end
         if not waitAlive(token) then return false end
 
+        local beforeRegion = getRegion()
+        local beforeRoot = root()
+        logLine("PORTAL", "attempt="..attempt.." from="..tostring(beforeRegion).." to="..tostring(expectedRegion).." pos="..tostring(beforeRoot and beforeRoot.Position or "nil"))
         setStatus("PORTAL -> "..tostring(expectedRegion).." ["..attempt.."/5]")
 
         -- Approach from one side, then physically cross through the portal plane.
@@ -797,6 +908,9 @@ local function usePortal(cf, expectedRegion, token)
                 task.wait(.16)
                 if getRegion() == expectedRegion then
                     markPortalSuccess()
+                    local afterRoot = root()
+                    logLine("PORTAL_OK", "to="..tostring(expectedRegion).." pos="..tostring(afterRoot and afterRoot.Position or "nil"))
+                    noteProgress("PORTAL:"..tostring(expectedRegion))
                     task.wait(.65)
                     return true
                 end
@@ -808,12 +922,16 @@ local function usePortal(cf, expectedRegion, token)
             task.wait(.15)
             if getRegion() == expectedRegion then
                 markPortalSuccess()
+                local afterRoot = root()
+                logLine("PORTAL_OK", "to="..tostring(expectedRegion).." pos="..tostring(afterRoot and afterRoot.Position or "nil"))
+                noteProgress("PORTAL:"..tostring(expectedRegion))
                 task.wait(.65)
                 return true
             end
         end
     end
 
+    logLine("PORTAL_FAIL", "expected="..tostring(expectedRegion).." current="..tostring(getRegion()))
     setStatus("PORTAL FAILED -> "..tostring(expectedRegion).." | STOP ROUTE")
     return false
 end
@@ -1759,6 +1877,8 @@ local function farmScrap(token)
                 end
 
                 local tool = equipTooltip("Melee")
+                local ac = buffMeleeHitbox()
+                logLine("FOREST_WAVE", "mobs="..#mobs.." tool="..tostring(tool and tool.Name or "nil").." controller="..tostring(ac ~= nil).." hitbox="..tostring(ac and ac.hitboxMagnitude or "nil").." bodyHitbox="..tostring(CONFIG.FOREST_HITBOX_SIZE))
                 local waveDeadline = os.clock() + 22
                 while isRunning(token)
                     and getRegion() == "TURTLE"
@@ -2078,6 +2198,168 @@ local function mainLoop(token)
     end
 end
 
+
+--==============================================================
+-- NIGHT SNAPSHOT + WATCHDOG
+--==============================================================
+
+local function debugInventoryOnce()
+    local counts = {Scrap=0, Ember=0, Magnet=0}
+    local inv = getInventory()
+    for _,v in pairs(inv) do
+        if type(v) == "table" then
+            local name = string.lower(tostring(v.Name or ""))
+            local n = tonumber(v.Count or v.Amount or v.count or v.Quantity or 1) or 1
+            if name == "scrap metal" then counts.Scrap = counts.Scrap + n end
+            if name == "blaze ember" then counts.Ember = counts.Ember + n end
+            if name == "volcanic magnet" then counts.Magnet = counts.Magnet + n end
+        end
+    end
+    return counts
+end
+
+local function equippedToolName()
+    local c = char()
+    if not c then return "nil" end
+    local t = c:FindFirstChildOfClass("Tool")
+    return t and t.Name or "nil"
+end
+
+local function eventUiText(name)
+    local main = PG:FindFirstChild("Main")
+    local list = main and main:FindFirstChild("TopHUDList")
+    local o = list and list:FindFirstChild(name)
+    if o and pcall(function() return o.Text end) then
+        return tostring(o.Text)
+    end
+    return ""
+end
+
+local function debugRuntimeSnapshot()
+    local r = root()
+    local h = hum()
+    local region,regionD = getRegion()
+    local inv = debugInventoryOnce()
+    local island = findPrehistoric()
+    local active = island and island:GetAttribute("IsMinigameActive") == true or false
+    local relicHp,relicMax = -1,-1
+    if island then
+        local relic = getRelic(island)
+        local hv = relic and relic:FindFirstChild("Health")
+        local mv = relic and relic:FindFirstChild("MaxHealth")
+        relicHp = hv and hv.Value or -1
+        relicMax = mv and mv.Value or -1
+    end
+
+    local enemies = workspace:FindFirstChild("Enemies")
+    local forestCount,forestHp = 0,0
+    local golemHp = -1
+    if enemies then
+        for _,m in ipairs(enemies:GetChildren()) do
+            local mh = m:FindFirstChildOfClass("Humanoid")
+            if mh and mh.Health > 0 then
+                if string.find(string.lower(m.Name), "forest pirate", 1, true) then
+                    forestCount = forestCount + 1
+                    forestHp = forestHp + math.floor(mh.Health)
+                elseif string.find(string.lower(m.Name), "lava golem", 1, true) then
+                    golemHp = math.floor(mh.Health)
+                end
+            end
+        end
+    end
+
+    local state = resolveCombatState()
+    local ac = state and state.activeController
+    local hb = ac and ac.hitboxMagnitude or "nil"
+    local boat = getMasterBoat()
+    local aboard = boat and countTeamAboard(boat) or 0
+
+    local line = table.concat({
+        "status="..tostring(NIGHT.LastStatus),
+        "region="..tostring(region).."("..string.format("%.0f", tonumber(regionD) or -1)..")",
+        "pos="..tostring(r and r.Position or "nil"),
+        "hp="..tostring(h and math.floor(h.Health) or -1),
+        "tool="..equippedToolName(),
+        "hitbox="..tostring(hb),
+        "scrap="..inv.Scrap,
+        "ember="..inv.Ember,
+        "magnet="..inv.Magnet,
+        "island="..tostring(island ~= nil),
+        "event="..tostring(active),
+        "relic="..tostring(relicHp).."/"..tostring(relicMax),
+        "pressure="..eventUiText("PrehistoricRaidTimer"),
+        "forest="..forestCount..":"..forestHp,
+        "golemHp="..golemHp,
+        "boat="..tostring(boat ~= nil)..":"..aboard,
+    }, " | ")
+
+    -- Signature deliberately excludes exact player position so tiny movement cannot hide a stall.
+    local sig = table.concat({
+        tostring(NIGHT.LastStatus), tostring(region), tostring(inv.Scrap), tostring(inv.Ember), tostring(inv.Magnet),
+        tostring(active), tostring(relicHp), eventUiText("PrehistoricRaidTimer"), tostring(forestCount),
+        tostring(math.floor(forestHp/100)), tostring(math.floor(math.max(golemHp,0)/100)), tostring(aboard), tostring(hb)
+    }, ":")
+    return sig,line,active
+end
+
+local function restartNightStateMachine(reason)
+    if not _G.TeamConfig.IsRunning then return end
+    RUN_TOKEN = RUN_TOKEN + 1
+    local token = RUN_TOKEN
+    NIGHT.RecoveryCount = NIGHT.RecoveryCount + 1
+    NIGHT.LastProgressAt = os.clock()
+    NIGHT.LastProgressSignature = "WATCHDOG_RESTART:"..NIGHT.RecoveryCount
+    logLine("WATCHDOG_RECOVER", "count="..NIGHT.RecoveryCount.." reason="..tostring(reason).." | re-entering mainLoop without killing character")
+    task.spawn(function()
+        mainLoop(token)
+    end)
+end
+
+task.spawn(function()
+    local nextSnapshot = 0
+    while true do
+        task.wait(5)
+        if CONFIG.DEBUG.ENABLED and _G.TeamConfig.IsRunning then
+            local sig,line,eventActive = debugRuntimeSnapshot()
+            if sig ~= NIGHT.RuntimeSignature then
+                NIGHT.RuntimeSignature = sig
+                noteProgress("RUNTIME:"..sig)
+            end
+
+            if os.clock() >= nextSnapshot then
+                nextSnapshot = os.clock() + (CONFIG.DEBUG.SNAPSHOT_INTERVAL or 15)
+                logLine("SNAP", line)
+                flushNightLog()
+            end
+
+            local stalled = os.clock() - NIGHT.LastProgressAt
+            if stalled >= (CONFIG.DEBUG.WATCHDOG_SECONDS or 120) then
+                logLine("WATCHDOG", string.format("STALL %.0fs | %s", stalled, line))
+                if CONFIG.DEBUG.WEBHOOK_ERRORS then
+                    sendWebhook("⚠️ PREHISTORIC WATCHDOG", "Automation appears stalled on "..LP.Name, {
+                        {name="State", value=tostring(NIGHT.LastStatus), inline=false},
+                        {name="Stalled", value=string.format("%.0fs", stalled), inline=true},
+                        {name="Region", value=tostring(getRegion()), inline=true},
+                    })
+                end
+
+                -- During an active Volcano event, do not reset/restart state automatically;
+                -- preserving relic/event participation is safer. Log it for morning analysis.
+                if eventActive then
+                    NIGHT.LastProgressAt = os.clock()
+                    logLine("WATCHDOG", "Active Volcano event -> logging only, no forced restart")
+                elseif CONFIG.DEBUG.WATCHDOG_RESTART then
+                    restartNightStateMachine("no meaningful progress for "..math.floor(stalled).."s")
+                else
+                    NIGHT.LastProgressAt = os.clock()
+                end
+            end
+        else
+            nextSnapshot = 0
+        end
+    end
+end)
+
 --==============================================================
 -- UI: MASTER SELECTION + START / STOP
 --==============================================================
@@ -2130,7 +2412,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V1.9 | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2 NIGHT DEBUG | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -2187,7 +2469,7 @@ NOTE.Position = UDim2.fromOffset(10,284)
 NOTE.BackgroundTransparency = 1
 NOTE.TextColor3 = Color3.fromRGB(180,180,190)
 NOTE.TextSize = 12
-NOTE.Text = "All 5 clients must use the same MASTER username."
+NOTE.Text = "Night log: "..NIGHT.LogPath.." | file="..tostring(NIGHT.FileReady or type(appendfile)=="function")
 
 local function refreshRole()
     _G.TeamConfig.IsMaster = LP.Name == _G.TeamConfig.MasterName
@@ -2211,6 +2493,8 @@ START.MouseButton1Click:Connect(function()
         START.Text = "▶ START FULL AUTO"
         START.BackgroundColor3 = Color3.fromRGB(45,150,70)
         disableLavaProtection()
+        logLine("RUN", "STOP pressed")
+        flushNightLog()
         setStatus("STOPPED")
         return
     end
@@ -2227,6 +2511,7 @@ START.MouseButton1Click:Connect(function()
     _G.TeamConfig.IsRunning = true
     START.Text = "⏹ STOP FULL AUTO"
     START.BackgroundColor3 = Color3.fromRGB(160,55,55)
+    logLine("RUN", "START | role="..roleText().." master="..tostring(_G.TeamConfig.MasterName))
     setStatus("STARTED | "..roleText())
 
     task.spawn(function()
@@ -2246,6 +2531,8 @@ if BOOT_GUI and BOOT_GUI.Parent then
     BOOT_GUI:Destroy()
 end
 setStatus("UI READY | "..roleText().." | press START FULL AUTO")
+logLine("UI", "READY | log="..NIGHT.LogPath)
+flushNightLog()
 
 -- Keep Marine team alive without spamming the server.
 task.spawn(function()
