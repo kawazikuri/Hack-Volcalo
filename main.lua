@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.2 NIGHT DEBUG (ATTACK MODEL FIX)
+    PREHISTORIC TEAM V2.3 NIGHT DEBUG (STABLE MAGNET + SMART PREFLIGHT)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -53,7 +53,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.2 ATTACK MODEL FIX\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.3 STABLE MAGNET\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -68,7 +68,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.2 ATTACK MODEL FIX\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.3 STABLE MAGNET\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -97,8 +97,13 @@ local CONFIG = {
     PRESSURE_TWEEN_SPEED = 300,
     BOAT_TWEEN_SPEED = 475,
     SAFE_ALTITUDE = 70,
-    FOREST_FARM_HEIGHT = 30,
+    FOREST_FARM_HEIGHT = 32,
     FOREST_HITBOX_SIZE = 140,
+    FOREST_MAGNET_RADIUS = 650,
+    FOREST_SCAN_RADIUS = 850,
+    FOREST_GHOST_TIMEOUT = 4.5,
+    FOREST_GHOST_MIN_ATTACKS = 35,
+    HOVER_SNAP_DISTANCE = 7,
     MELEE_HITBOX_MAGNITUDE = 120,
     MELEE_NET_DISTANCE = 120,
     MELEE_ATTACK_INTERVAL = 0.06,
@@ -173,6 +178,12 @@ _G.TeamConfig.IsRunning = false
 
 local RUN_TOKEN = 0
 local STATUS_LABEL
+
+-- Forest Pirate runtime state. Weak-key tables automatically forget despawned models.
+local FOREST_GHOST_BLACKLIST = setmetatable({}, {__mode = "k"})
+local FOREST_DAMAGE_TRACK = setmetatable({}, {__mode = "k"})
+local ACTIVE_FOREST_MAGNET = {Enabled=false, Anchor=nil, Radius=0, Locked=setmetatable({}, {__mode="k"})}
+local ACTIVE_HOVER = {Root=nil, Humanoid=nil, Position=nil, Gyro=nil, Target=nil}
 local lastIslandWebhookKey = nil
 local lavaConnection = nil
 local CHARACTER_EPOCH = 0
@@ -547,6 +558,19 @@ local function ensureMarines()
     until os.clock() > deadline
     return false
 end
+
+-- Join Marines as soon as the script core is ready, before the user even presses START
+-- or changes the local MASTER selection. This also handles the initial Blox Fruits team picker.
+task.spawn(function()
+    for attempt=1,4 do
+        if ensureMarines() then
+            logLine("TEAM", "Auto-joined Marines before role/master selection")
+            return
+        end
+        task.wait(1)
+    end
+    logLine("TEAM", "Marine auto-join not confirmed after startup retries")
+end)
 
 --==============================================================
 -- TOOLS / COMBAT
@@ -1870,25 +1894,85 @@ local function farmBlazeEmbers(token)
 end
 
 -- Forest Pirate/Scrap Metal farming is intentionally island-local.
--- Once Turtle is confirmed, this routine never long-distance tweens to another island.
+-- V2.3 keeps the player hovering smoothly and hard-locks the mob cluster every Heartbeat.
 local function isForestPirate(m)
     if not m or not m:IsA("Model") then return false end
     return string.find(string.lower(m.Name), "forest pirate", 1, true) ~= nil
 end
 
+local function isForestGhost(m)
+    return FOREST_GHOST_BLACKLIST[m] == true
+end
+
+local function boostSimulationRadius()
+    pcall(function()
+        if setsimulationradius then setsimulationradius(math.huge, math.huge) end
+    end)
+    pcall(function()
+        if sethiddenproperty then sethiddenproperty(LP, "SimulationRadius", math.huge) end
+    end)
+end
+
+local function forestHumRoot(m)
+    if not m or not m.Parent or not m:IsA("Model") then return nil, nil end
+    local h = m:FindFirstChildOfClass("Humanoid")
+    local rr = m:FindFirstChild("HumanoidRootPart")
+    if not h or not rr or h.Health <= 0 or (h.MaxHealth and h.MaxHealth <= 0) then return nil, nil end
+    return h, rr
+end
+
+local function updateForestDamageTrack(m, countedAttack)
+    local h = m and m:FindFirstChildOfClass("Humanoid")
+    if not h or h.Health <= 0 then return false end
+    local now = os.clock()
+    local t = FOREST_DAMAGE_TRACK[m]
+    if not t then
+        t = {lastHealth=h.Health, lastDamageAt=now, attacks=0}
+        FOREST_DAMAGE_TRACK[m] = t
+        return false
+    end
+
+    if h.Health < (t.lastHealth - 0.05) then
+        t.lastHealth = h.Health
+        t.lastDamageAt = now
+        t.attacks = 0
+        return false
+    end
+
+    if countedAttack then t.attacks = t.attacks + 1 end
+    t.lastHealth = h.Health
+
+    if t.attacks >= CONFIG.FOREST_GHOST_MIN_ATTACKS
+        and (now - t.lastDamageAt) >= CONFIG.FOREST_GHOST_TIMEOUT then
+        FOREST_GHOST_BLACKLIST[m] = true
+        ACTIVE_FOREST_MAGNET.Locked[m] = nil
+        -- Hide stale/immortal duplicate models locally so they do not stay mixed into the real stack.
+        pcall(function()
+            for _,bp in ipairs(m:GetDescendants()) do
+                if bp:IsA("BasePart") then
+                    bp.CanCollide = false
+                    bp.LocalTransparencyModifier = 1
+                    bp.AssemblyLinearVelocity = Vector3.zero
+                    bp.AssemblyAngularVelocity = Vector3.zero
+                end
+            end
+        end)
+        logLine("FOREST_GHOST", "blacklisted+hidden immortal/stale model="..m:GetFullName().." hp="..tostring(h.Health).." attempts="..tostring(t.attacks))
+        return true
+    end
+    return false
+end
+
 local function aliveForestPirates(centerPos, radius)
-    -- IMPORTANT: return actual enemy Model instances, not wrapper tables.
-    -- V2.1 returned {model=..., distance=...}; the attack backend then received
-    -- tables instead of Models, so collectNetHits() silently produced NO_HITS.
     local decorated = {}
     local enemies = workspace:FindFirstChild("Enemies")
     if not enemies then return {} end
 
     for _,m in ipairs(enemies:GetChildren()) do
-        if isForestPirate(m) then
-            local h = m:FindFirstChildOfClass("Humanoid")
-            local rr = m:FindFirstChild("HumanoidRootPart")
-            if h and rr and h.Health > 0 then
+        if isForestPirate(m) and not isForestGhost(m) then
+            local h, rr = forestHumRoot(m)
+            if h and rr then
+                updateForestDamageTrack(m, false)
                 local d = (rr.Position - centerPos).Magnitude
                 if d <= radius then
                     decorated[#decorated+1] = {model=m, distance=d}
@@ -1898,33 +1982,173 @@ local function aliveForestPirates(centerPos, radius)
     end
 
     table.sort(decorated, function(a,b) return a.distance < b.distance end)
-
     local result = {}
-    for _,entry in ipairs(decorated) do
-        result[#result+1] = entry.model
-    end
+    for _,entry in ipairs(decorated) do result[#result+1] = entry.model end
     return result
 end
 
+local function hardLockForestMob(m, anchorCF)
+    if isForestGhost(m) then return false end
+    local h, rr = forestHumRoot(m)
+    if not h or not rr then return false end
+
+    pcall(function()
+        rr.CFrame = anchorCF
+        rr.Size = Vector3.new(CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE)
+        rr.CanCollide = false
+        rr.AssemblyLinearVelocity = Vector3.zero
+        rr.AssemblyAngularVelocity = Vector3.zero
+        h.WalkSpeed = 0
+        h.JumpPower = 0
+        h.JumpHeight = 0
+        h.AutoRotate = false
+        for _,bp in ipairs(m:GetDescendants()) do
+            if bp:IsA("BasePart") then
+                bp.CanCollide = false
+                bp.AssemblyLinearVelocity = Vector3.zero
+                bp.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+    end)
+    return true
+end
+
+local function setForestMagnet(enabled, anchorCF, radius)
+    enabled = enabled and true or false
+    if not enabled then
+        ACTIVE_FOREST_MAGNET.Enabled = false
+        ACTIVE_FOREST_MAGNET.Anchor = nil
+        ACTIVE_FOREST_MAGNET.Locked = setmetatable({}, {__mode="k"})
+        return
+    end
+
+    local resetLocked = not ACTIVE_FOREST_MAGNET.Enabled
+    if ACTIVE_FOREST_MAGNET.Anchor and anchorCF then
+        resetLocked = resetLocked or ((ACTIVE_FOREST_MAGNET.Anchor.Position - anchorCF.Position).Magnitude > 4)
+    end
+    if resetLocked then
+        ACTIVE_FOREST_MAGNET.Locked = setmetatable({}, {__mode="k"})
+    end
+    ACTIVE_FOREST_MAGNET.Enabled = true
+    ACTIVE_FOREST_MAGNET.Anchor = anchorCF
+    ACTIVE_FOREST_MAGNET.Radius = radius or CONFIG.FOREST_MAGNET_RADIUS
+end
+
+-- Once a Forest Pirate enters the stack it is CLAIMED. Even if physics tries to fling it
+-- outside the original scan radius, Heartbeat keeps snapping that exact model back to anchor.
+RunService.Heartbeat:Connect(function()
+    if not ACTIVE_FOREST_MAGNET.Enabled or not ACTIVE_FOREST_MAGNET.Anchor then return end
+    boostSimulationRadius()
+    local enemies = workspace:FindFirstChild("Enemies")
+    if not enemies then return end
+    local anchorCF = ACTIVE_FOREST_MAGNET.Anchor
+    local radius = ACTIVE_FOREST_MAGNET.Radius
+
+    for m in pairs(ACTIVE_FOREST_MAGNET.Locked) do
+        if not m.Parent or isForestGhost(m) then
+            ACTIVE_FOREST_MAGNET.Locked[m] = nil
+        else
+            hardLockForestMob(m, anchorCF)
+        end
+    end
+
+    for _,m in ipairs(enemies:GetChildren()) do
+        if isForestPirate(m) and not isForestGhost(m) and not ACTIVE_FOREST_MAGNET.Locked[m] then
+            local h, rr = forestHumRoot(m)
+            if h and rr and (rr.Position - anchorCF.Position).Magnitude <= radius then
+                ACTIVE_FOREST_MAGNET.Locked[m] = true
+                hardLockForestMob(m, anchorCF)
+            end
+        end
+    end
+end)
+
+local function stopStableHover()
+    local h = ACTIVE_HOVER.Humanoid
+    if h and h.Parent then pcall(function() h.AutoRotate = true end) end
+    for _,obj in ipairs({ACTIVE_HOVER.Position, ACTIVE_HOVER.Gyro}) do
+        if obj and obj.Parent then pcall(function() obj:Destroy() end) end
+    end
+    ACTIVE_HOVER.Root = nil
+    ACTIVE_HOVER.Humanoid = nil
+    ACTIVE_HOVER.Position = nil
+    ACTIVE_HOVER.Gyro = nil
+    ACTIVE_HOVER.Target = nil
+end
+
+local function startStableHover(targetCF)
+    stopStableHover()
+    local rr, h = root(), hum()
+    if not rr or not h or h.Health <= 0 then return false end
+    rr.CFrame = targetCF
+    rr.AssemblyLinearVelocity = Vector3.zero
+    rr.AssemblyAngularVelocity = Vector3.zero
+    h.AutoRotate = false
+
+    local bp = Instance.new("BodyPosition")
+    bp.Name = "PH_StableHoverPosition"
+    bp.MaxForce = Vector3.new(1e9,1e9,1e9)
+    bp.P = 50000
+    bp.D = 2200
+    bp.Position = targetCF.Position
+    bp.Parent = rr
+
+    local bg = Instance.new("BodyGyro")
+    bg.Name = "PH_StableHoverGyro"
+    bg.MaxTorque = Vector3.new(1e9,1e9,1e9)
+    bg.P = 35000
+    bg.D = 1200
+    bg.CFrame = targetCF
+    bg.Parent = rr
+
+    ACTIVE_HOVER.Root = rr
+    ACTIVE_HOVER.Humanoid = h
+    ACTIVE_HOVER.Position = bp
+    ACTIVE_HOVER.Gyro = bg
+    ACTIVE_HOVER.Target = targetCF
+    return true
+end
+
+local function maintainStableHover(targetCF)
+    local rr = root()
+    if not rr or ACTIVE_HOVER.Root ~= rr or not ACTIVE_HOVER.Position or not ACTIVE_HOVER.Position.Parent then
+        return startStableHover(targetCF)
+    end
+    ACTIVE_HOVER.Target = targetCF
+    ACTIVE_HOVER.Position.Position = targetCF.Position
+    ACTIVE_HOVER.Gyro.CFrame = targetCF
+    rr.AssemblyLinearVelocity = Vector3.zero
+    rr.AssemblyAngularVelocity = Vector3.zero
+    if (rr.Position - targetCF.Position).Magnitude > CONFIG.HOVER_SNAP_DISTANCE then
+        rr.CFrame = targetCF
+    end
+    return true
+end
+
 local function magnetForestPirates(anchorCF, radius)
+    setForestMagnet(true, anchorCF, radius)
+    boostSimulationRadius()
     local enemies = workspace:FindFirstChild("Enemies")
     if not enemies then return 0 end
 
-    local count = 0
     for _,m in ipairs(enemies:GetChildren()) do
-        if isForestPirate(m) then
-            local h = m:FindFirstChildOfClass("Humanoid")
-            local rr = m:FindFirstChild("HumanoidRootPart")
-            if h and rr and h.Health > 0 and (rr.Position - anchorCF.Position).Magnitude <= radius then
-                count = count + 1
-                pcall(function()
-                    rr.CFrame = anchorCF
-                    rr.Size = Vector3.new(CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE)
-                    rr.CanCollide = false
-                    h.WalkSpeed = 0
-                    h.JumpPower = 0
-                end)
+        if isForestPirate(m) and not isForestGhost(m) then
+            local h, rr = forestHumRoot(m)
+            if h and rr and (rr.Position - anchorCF.Position).Magnitude <= radius then
+                ACTIVE_FOREST_MAGNET.Locked[m] = true
+                hardLockForestMob(m, anchorCF)
             end
+        end
+    end
+
+    local count = 0
+    for m in pairs(ACTIVE_FOREST_MAGNET.Locked) do
+        local h, rr = forestHumRoot(m)
+        if h and rr and not isForestGhost(m) then
+            count = count + 1
+            hardLockForestMob(m, anchorCF)
+        else
+            ACTIVE_FOREST_MAGNET.Locked[m] = nil
         end
     end
     return count
@@ -1932,8 +2156,8 @@ end
 
 local function farmScrap(token)
     local camp = CONFIG.MOB_CAMPS.ForestPirate
-    local scanRadius = 850
-    local magnetRadius = 650
+    local scanRadius = CONFIG.FOREST_SCAN_RADIUS
+    local magnetRadius = CONFIG.FOREST_MAGNET_RADIUS
     local patrol = {
         CFrame.new(0,0,0),
         CFrame.new(170,0,0),
@@ -2025,21 +2249,18 @@ local function farmScrap(token)
                     local alive = magnetForestPirates(anchor, magnetRadius)
                     if alive <= 0 then break end
 
-                    -- Hold the player above the magnet point so Forest Pirates cannot
-                    -- body-block the character while the enlarged hitboxes catch M1.
-                    local rr = root()
-                    if rr then
-                        rr.CFrame = farmCF
-                        rr.AssemblyLinearVelocity = Vector3.zero
-                    end
+                    -- BodyPosition/BodyGyro hold the local character at one exact hover point.
+                    -- We no longer rewrite HRP.CFrame every attack tick, which caused the visible jitter.
+                    maintainStableHover(farmCF)
 
                     tool = equipTooltip("Melee") or tool
                     buffMeleeHitbox()
                     if tool and tool.Parent == char() then
-                        -- Refresh the live model list every attack tick. This avoids stale/dead
-                        -- references and guarantees the Net backend receives real Model instances.
                         local attackModels = aliveForestPirates(anchor.Position, magnetRadius)
                         local okAttack, backend, hitCount = virtualToolClick(tool, attackModels)
+                        for _,m in ipairs(attackModels) do
+                            updateForestDamageTrack(m, okAttack)
+                        end
                         if not okAttack then
                             logLine("ATTACK_FAIL", "backend="..tostring(backend).." hits="..tostring(hitCount).." models="..tostring(#attackModels))
                         elseif hitCount and hitCount > 0 and not AttackSuccessLogged then
@@ -2050,6 +2271,8 @@ local function farmScrap(token)
                     task.wait(CONFIG.MELEE_ATTACK_INTERVAL)
                 end
 
+                setForestMagnet(false)
+                stopStableHover()
                 task.wait(.35)
                 local remaining = #aliveForestPirates(anchor.Position, magnetRadius)
                 if remaining > 0 then
@@ -2062,6 +2285,8 @@ local function farmScrap(token)
         end
     end
 
+    setForestMagnet(false)
+    stopStableHover()
     if inventoryCount("Scrap Metal") >= 10 then
         setStatus("Scrap Metal ready: "..inventoryCount("Scrap Metal").."/10")
         return true
@@ -2138,33 +2363,30 @@ end
 local function recoverMagnet(token)
     if hasVolcanicMagnet() then return true end
 
-    setStatus("RECOVERY: Volcanic Magnet missing")
+    local masterOnline = Players:FindFirstChild(_G.TeamConfig.MasterName) ~= nil
+    local scrap = inventoryCount("Scrap Metal")
+    local ember = inventoryCount("Blaze Ember")
+    setStatus("RECOVERY scan | MASTER="..(masterOnline and "ONLINE" or "OFFLINE").." | Magnet=NO | Scrap="..scrap.."/10 | Ember="..ember.."/15")
+    logLine("PREFLIGHT", "recover magnet | masterOnline="..tostring(masterOnline).." region="..tostring(getRegion()).." scrap="..scrap.." ember="..ember)
 
-    -- IMPORTANT: never reset again during portal recovery.
-    -- The only reset in the whole post-event flow happens in resetBackToTiki().
-    -- A second reset here could kill the character right after Hydra/Turtle -> Castle.
-    if getRegion() ~= "TIKI" then
-        setStatus("RECOVERY: returning to Tiki without reset")
-        if not goTiki(token) then
-            setStatus("RECOVERY: failed to return to Tiki")
-            return false
-        end
-    end
-    if not isRunning(token) then return false end
-
-    if inventoryCount("Scrap Metal") < 10 then
-        farmScrap(token)
+    -- Do not bounce to Tiki first. Route directly to whichever material is missing.
+    -- This avoids Tiki -> Castle -> Turtle/Hydra chains when the account is already useful elsewhere.
+    if scrap < 10 then
+        if not farmScrap(token) then return false end
     end
     if not isRunning(token) then return false end
 
     if inventoryCount("Blaze Ember") < 15 then
-        farmBlazeEmbers(token)
+        if not farmBlazeEmbers(token) then return false end
     end
     if not isRunning(token) then return false end
 
+    -- Crafting is at Dragon Hunter on Hydra, so go directly there. Tiki is only needed later
+    -- if this client is the MASTER and actually needs to buy a new boat.
     for attempt=1,4 do
         if craftVolcanicMagnet(token) then
             setStatus("Volcanic Magnet crafted")
+            logLine("MAGNET", "crafted successfully without forced Tiki pre-route")
             return true
         end
         setStatus("Craft retry "..attempt.."/4")
@@ -2243,16 +2465,63 @@ local function runPrehistoricEvent(island, token)
 end
 
 --==============================================================
+-- SMART PREFLIGHT
+--==============================================================
+
+local function scanTeamPreflight(token)
+    pcall(ensureMarines)
+    local masterPlayer = Players:FindFirstChild(_G.TeamConfig.MasterName)
+    local boat = getMasterBoat()
+    local island = findPrehistoric()
+    local magnet = hasVolcanicMagnet()
+    local state = {
+        MasterPlayer = masterPlayer,
+        MasterOnline = masterPlayer ~= nil,
+        Boat = boat,
+        Island = island,
+        Magnet = magnet,
+        Region = getRegion(),
+    }
+    logLine("PREFLIGHT", "master="..tostring(_G.TeamConfig.MasterName).." online="..tostring(state.MasterOnline).." magnet="..tostring(magnet).." boat="..tostring(boat ~= nil).." island="..tostring(island ~= nil).." region="..tostring(state.Region))
+    return state
+end
+
+local function waitForMasterOnline(token)
+    while isRunning(token) do
+        local p = Players:FindFirstChild(_G.TeamConfig.MasterName)
+        if p then return p end
+        setStatus("MASTER "..tostring(_G.TeamConfig.MasterName).." offline -> waiting, no teleport")
+        task.wait(1)
+    end
+end
+
+--==============================================================
 -- MASTER / SLAVE CYCLES
 --==============================================================
 
 local function masterCycle(token)
-    if not hasVolcanicMagnet() then
-        if not recoverMagnet(token) then return end
+    local pre = scanTeamPreflight(token)
+    if pre.Island then
+        runPrehistoricEvent(pre.Island, token)
+        return
     end
 
-    goTiki(token)
-    local boat = buyGrandBrigade(token)
+    -- Check the actual Magnet state before any Tiki teleport.
+    if not pre.Magnet then
+        if not recoverMagnet(token) then return end
+        pre = scanTeamPreflight(token)
+    end
+
+    -- Re-use an existing owned boat. Only go to Tiki when MASTER really needs to buy one.
+    local boat = pre.Boat or getMasterBoat()
+    if not boat then
+        setStatus("MASTER preflight OK | Magnet=YES | no boat -> Tiki")
+        if not goTiki(token) then return end
+        boat = buyGrandBrigade(token)
+    else
+        setStatus("MASTER preflight | existing boat found -> skip Tiki purchase route")
+    end
+
     if not boat then
         setStatus("MASTER: boat spawn failed")
         task.wait(2)
@@ -2271,32 +2540,49 @@ local function masterCycle(token)
 
     if not isRunning(token) then return end
     local island = findPrehistoric()
-    if not island and boat.Parent then
-        island = searchSeaUntilIsland(boat, token)
-    end
+    if not island and boat.Parent then island = searchSeaUntilIsland(boat, token) end
     if island then runPrehistoricEvent(island, token) end
 end
 
 local function slaveCycle(token)
-    if not hasVolcanicMagnet() then
-        if not recoverMagnet(token) then return end
+    local pre = scanTeamPreflight(token)
+    if pre.Island then
+        runPrehistoricEvent(pre.Island, token)
+        return
     end
 
-    setStatus("SLAVE: waiting MASTER boat")
-    local boat
-    while isRunning(token) do
-        local island = findPrehistoric()
-        if island then
-            runPrehistoricEvent(island, token)
-            return
+    -- Do not teleport anywhere while the configured MASTER is offline.
+    if not pre.MasterOnline then
+        if not waitForMasterOnline(token) then return end
+        pre = scanTeamPreflight(token)
+    end
+
+    -- Each slave verifies its own Magnet before deciding on travel.
+    if not pre.Magnet then
+        if not recoverMagnet(token) then return end
+        pre = scanTeamPreflight(token)
+    end
+
+    -- If MASTER already owns a live boat, board it immediately from the current state.
+    local boat = pre.Boat or getMasterBoat()
+    if not boat then
+        setStatus("SLAVE preflight OK | Magnet=YES | waiting MASTER boat, no Tiki teleport")
+        while isRunning(token) do
+            local island = findPrehistoric()
+            if island then
+                runPrehistoricEvent(island, token)
+                return
+            end
+            if not Players:FindFirstChild(_G.TeamConfig.MasterName) then
+                waitForMasterOnline(token)
+            end
+            boat = getMasterBoat()
+            if boat then break end
+            task.wait(.5)
         end
-        boat = getMasterBoat()
-        if boat then break end
-        task.wait(.5)
     end
 
     if not isRunning(token) or not boat then return end
-
     if not boardBoat(boat, token) then
         setStatus("SLAVE: seat failed, retry")
         task.wait(.5)
@@ -2558,7 +2844,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.2 ATTACK MODEL FIX | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.3 STABLE MAGNET | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -2623,6 +2909,7 @@ local function refreshRole()
 end
 
 APPLY.MouseButton1Click:Connect(function()
+    pcall(ensureMarines)
     local n = MASTER_BOX.Text:gsub("%s+","")
     if n ~= "" then
         _G.TeamConfig.MasterName = n
@@ -2639,12 +2926,16 @@ START.MouseButton1Click:Connect(function()
         START.Text = "▶ START FULL AUTO"
         START.BackgroundColor3 = Color3.fromRGB(45,150,70)
         disableLavaProtection()
+        setForestMagnet(false)
+        stopStableHover()
         logLine("RUN", "STOP pressed")
         flushNightLog()
         setStatus("STOPPED")
         return
     end
 
+    -- Marine team is established before role/master selection is committed.
+    ensureMarines()
     local n = MASTER_BOX.Text:gsub("%s+","")
     if n ~= "" then
         _G.TeamConfig.MasterName = n
@@ -2680,12 +2971,11 @@ setStatus("UI READY | "..roleText().." | press START FULL AUTO")
 logLine("UI", "READY | log="..NIGHT.LogPath)
 flushNightLog()
 
--- Keep Marine team alive without spamming the server.
+-- Keep Marine team alive even before START so the initial team picker cannot leave
+-- one of the five clients on Pirates while the user is configuring MASTER.
 task.spawn(function()
     while SG.Parent do
+        pcall(ensureMarines)
         task.wait(10)
-        if _G.TeamConfig.IsRunning then
-            pcall(ensureMarines)
-        end
     end
 end)
