@@ -2848,13 +2848,26 @@ local function openDragonHunter(token)
     return #dialogueOptions() >= 3
 end
 
+function PHX.closeDragonHunterDialogue()
+    local opts = dialogueOptions()
+    -- Only close the four-option root menu. Never fire the second option in
+    -- the two-option confirmation stage because that could reject a Hunt.
+    if #opts >= 4 then
+        pcall(function() fireButton(opts[#opts]) end) -- Nevermind / close
+        task.wait(.05)
+    end
+end
+
 local function receiveDragonHunterQuest(token)
     if questKind() ~= "NONE" then
-        setStatus(PHX.questStatusText())
+        local qt = PHX.questStatusText()
+        setStatus(qt)
+        PHX.closeDragonHunterDialogue()
+        logLine("DRAGON_HUNTER_RF", "quest already active | "..qt)
         return true
     end
 
-    -- V2.9: Dragon Hunter Hunt does NOT need a physical NPC click.
+    -- V2.9.1: Dragon Hunter Hunt does NOT need a physical NPC click.
     -- Ask RF/DragonHunter directly first and verify with Context="Check".
     -- This mirrors the remote path used by working Blaze-Ember hubs and avoids
     -- pointless tweening back to the Dojo between every repeatable Hunt.
@@ -2876,7 +2889,8 @@ local function receiveDragonHunterQuest(token)
                 local kind = questKind()
                 if kind ~= "NONE" then
                     local qt = PHX.questStatusText()
-                    setStatus(qt)
+                    setStatus("REMOTE QUEST ACCEPTED | "..qt)
+                    PHX.closeDragonHunterDialogue()
                     logLine("DRAGON_HUNTER_RF", "accepted | "..qt)
                     noteProgress("QUEST_ACCEPTED_REMOTE:"..kind)
                     return true
@@ -2904,7 +2918,8 @@ local function receiveDragonHunterQuest(token)
                     local kind = questKind()
                     if kind ~= "NONE" then
                         local qt = PHX.questStatusText()
-                        setStatus(qt)
+                        setStatus("GUI QUEST ACCEPTED | "..qt)
+                        PHX.closeDragonHunterDialogue()
                         logLine("DRAGON_HUNTER_GUI_FALLBACK", "accepted without confirm | "..qt)
                         return true
                     end
@@ -2920,7 +2935,8 @@ local function receiveDragonHunterQuest(token)
                 while os.clock() < deadline and isRunning(token) do
                     if questKind() ~= "NONE" then
                         local qt = PHX.questStatusText()
-                        setStatus(qt)
+                        setStatus("GUI QUEST ACCEPTED | "..qt)
+                        PHX.closeDragonHunterDialogue()
                         logLine("DRAGON_HUNTER_GUI_FALLBACK", "accepted | "..qt)
                         return true
                     end
@@ -2947,10 +2963,30 @@ PHX._HydraTreeLastHit = PHX._HydraTreeLastHit or setmetatable({}, {__mode="k"})
 function PHX.hydraTreePart(obj)
     if not obj or not obj.Parent then return nil end
     if obj:IsA("BasePart") then return obj end
-    if obj:IsA("Model") then
-        return obj.PrimaryPart or obj:FindFirstChild("Trunk", true) or obj:FindFirstChildWhichIsA("BasePart", true)
+    if not obj:IsA("Model") then return nil end
+
+    -- Some Hydra assets use Trunk as a MODEL, not a BasePart. V2.9 returned
+    -- that Model directly and later read .Position, which crashed the state
+    -- machine (e.g. WaterfallIslandModel.TallTree1.Trunk). Always resolve
+    -- the tree to a real BasePart before any spatial math.
+    if obj.PrimaryPart and obj.PrimaryPart:IsA("BasePart") then
+        return obj.PrimaryPart
     end
-    return nil
+
+    local trunk = obj:FindFirstChild("Trunk", true)
+    if trunk then
+        if trunk:IsA("BasePart") then
+            return trunk
+        elseif trunk:IsA("Model") then
+            if trunk.PrimaryPart and trunk.PrimaryPart:IsA("BasePart") then
+                return trunk.PrimaryPart
+            end
+            local trunkPart = trunk:FindFirstChildWhichIsA("BasePart", true)
+            if trunkPart then return trunkPart end
+        end
+    end
+
+    return obj:FindFirstChildWhichIsA("BasePart", true)
 end
 
 function PHX.hydraTreeCanonical(obj)
@@ -3053,14 +3089,17 @@ function PHX.scanHydraTrees(force)
         end
 
         for _,obj in ipairs(probes) do
-            if PHX.hydraTreeCandidate(obj) then
+            local okCandidate, isCandidate = pcall(PHX.hydraTreeCandidate, obj)
+            if okCandidate and isCandidate then
                 local canon = PHX.hydraTreeCanonical(obj)
                 local p = PHX.hydraTreePart(canon)
-                if canon and p and not seen[canon] then
+                if canon and p and p:IsA("BasePart") and not seen[canon] then
                     seen[canon] = true
                     out[#out+1] = canon
                 end
                 break
+            elseif not okCandidate then
+                logLine("TREE_SCAN_SKIP", tostring(obj:GetFullName()).." | "..tostring(isCandidate))
             end
         end
     end
@@ -3125,13 +3164,14 @@ local function farmTreeQuest(token)
     while isRunning(token) and questKind() == "TREE" and not PHX.questCompleteVisible() do
         local tree, part, detected = PHX.pickHydraTree()
 
-        if tree and part then
+        if tree and part and part:IsA("BasePart") then
             PHX._HydraTreeLastHit[tree] = os.clock()
             local targetPos = part.Position
             local label = tree.Name
             setStatus(PHX.questStatusText().." | TREE SCAN="..detected.." | "..label.." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
 
-            -- Stay above the trunk and aim every X/C/V/F at the detected tree.
+            -- Stay above the REAL BasePart resolved from the tree model and aim
+            -- every X/C/V/F at it. This cannot call .Position on a Model.
             highTween(CFrame.new(targetPos + Vector3.new(0,10,0)), 340, token)
             useXCVF(targetPos)
             PHX.pulseBlazeCollectRemote()
@@ -3856,10 +3896,18 @@ end
 local function openCraftMenu(token)
     if not openDragonHunter(token) then return false end
     local opts = dialogueOptions()
-    if #opts < 2 then return false end
+    if #opts < 2 then
+        PHX.closeDragonHunterDialogue()
+        return false
+    end
     fireButton(opts[2]) -- Craft from Hunt/Craft/Gacha/Nevermind menu
     task.wait(.5)
-    return findTextObject("volcanic magnet") ~= nil or findTextObject("select a recipe") ~= nil
+    local opened = findTextObject("volcanic magnet") ~= nil or findTextObject("select a recipe") ~= nil
+    if not opened then
+        -- Do not leave the four-option NPC menu covering the screen/state machine.
+        PHX.closeDragonHunterDialogue()
+    end
+    return opened
 end
 
 local function craftVolcanicMagnet(token)
@@ -4424,7 +4472,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.9 REMOTE HUNT + DYNAMIC TREES | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.9.1 QUEST/TREE CRASH FIX | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
