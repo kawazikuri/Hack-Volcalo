@@ -1,15 +1,3 @@
---[[
-    PREHISTORIC TEAM V2.1 NIGHT DEBUG (NET ATTACK FIX)
-    5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
-
-    IMPORTANT:
-    - All 5 clients must run this same file and use the same MASTER_NAME.
-    - MASTER = buys/drives MarineGrandBrigade + handles Volcano pressure.
-    - SLAVES = passenger seats + Lava Golem combat.
-    - WEBHOOK_URL is intentionally blank. Paste your Discord webhook in CONFIG.WEBHOOK_URL.
-    - This V1 validates important actions from visible game state instead of assuming success.
-]]
-
 --==============================================================
 -- SERVICES
 --==============================================================
@@ -19,16 +7,13 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
-local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 
 local LP = Players.LocalPlayer
 local PG = LP:WaitForChild("PlayerGui")
 
 --==============================================================
--- DELTA-SAFE BOOT UI
--- Created BEFORE remote waits / automation init so Delta users
--- can immediately see whether the chunk actually started.
+-- BOOT UI
 --==============================================================
 
 local BOOT_GUI_NAME = "PrehistoricTeamBoot"
@@ -53,7 +38,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.1 NET ATTACK\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2 (FIXED)\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -68,14 +53,13 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.1 NET ATTACK\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2 (FIXED)\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
 --==============================================================
 
 local CONFIG = {
-    -- Default is the boat owner observed in your dump. Change here if needed.
     MASTER_NAME = "Hunter_Gerald16",
 
     TEAM = {
@@ -85,8 +69,6 @@ local CONFIG = {
         "McDowellHuangk6",
         "Yoderep7",
     },
-
-    WEBHOOK_URL = "", -- <<<<<<<<<< PASTE WEBHOOK HERE
 
     BOAT_NAME = "MarineGrandBrigade",
     BOAT_BUY_NAME = "MarineGrandBrigade",
@@ -98,26 +80,12 @@ local CONFIG = {
     BOAT_TWEEN_SPEED = 475,
     SAFE_ALTITUDE = 70,
     FOREST_FARM_HEIGHT = 30,
-    FOREST_HITBOX_SIZE = 140,
+    FOREST_HITBOX_SIZE = 60,
     MELEE_HITBOX_MAGNITUDE = 120,
-    MELEE_NET_DISTANCE = 120,
-    MELEE_ATTACK_INTERVAL = 0.06,
-    MELEE_CLICK_DELAY = 0,
     PORTAL_CHAIN_DELAY = 2.5,
     RESPAWN_SETTLE_DELAY = 1.5,
     RESET_TO_TIKI_AFTER_EVENT = true,
 
-    DEBUG = {
-        ENABLED = true,
-        LOG_TO_FILE = true,
-        SNAPSHOT_INTERVAL = 15,
-        WATCHDOG_SECONDS = 120,
-        WATCHDOG_RESTART = true,
-        WEBHOOK_ERRORS = true,
-        MAX_MEMORY_LOG_LINES = 6000,
-    },
-
-    -- Public scripts use this offshore point as a Third Sea / high-danger travel target.
     SEA6_CENTER = Vector3.new(-37813.6953, 65, 6105.16895),
 
     BOAT_DEALER_CFRAME = CFrame.new(
@@ -144,7 +112,6 @@ local CONFIG = {
     MOB_CAMPS = {
         HydraEnforcer = CFrame.new(4481.20752, 1004.28436, 538.046082),
         VenomousAssailant = CFrame.new(4622.26514, 1078.49329, 894.30603),
-        -- User-captured safe point beside the Forest Pirate farming area on Floating Turtle.
         ForestPirate = CFrame.new(
             -13384.9883, 332.408264, -7814.93359,
             -0.840017498, 4.56535894e-08, 0.542559266,
@@ -173,97 +140,10 @@ _G.TeamConfig.IsRunning = false
 
 local RUN_TOKEN = 0
 local STATUS_LABEL
-local lastIslandWebhookKey = nil
 local lavaConnection = nil
 local CHARACTER_EPOCH = 0
 local lastPortalSuccessAt = -math.huge
 local boundHumanoids = {}
-
---==============================================================
--- NIGHT DEBUG LOGGER / WATCHDOG STATE
--- No manual log file is required. If the executor supports writefile/appendfile,
--- the script creates one automatically in the executor workspace.
---==============================================================
-
-local _nightStampOK, _nightStamp = pcall(function() return os.date("%Y%m%d_%H%M%S") end)
-if not _nightStampOK then _nightStamp = tostring(math.floor(os.clock())) end
-
-local NIGHT = {
-    LogPath = "PH_Night_" .. tostring(LP.Name):gsub("[^%w_%-]", "_") .. "_" .. tostring(_nightStamp) .. ".txt",
-    StartedAt = os.clock(),
-    LastProgressAt = os.clock(),
-    LastProgressSignature = "BOOT",
-    LastStatus = nil,
-    LastStatusLogAt = 0,
-    RuntimeSignature = nil,
-    RecoveryCount = 0,
-    MemoryLines = {},
-    FileReady = false,
-}
-
-local function nightTime()
-    local ok, t = pcall(function() return os.date("%Y-%m-%d %H:%M:%S") end)
-    return ok and t or tostring(math.floor(os.clock()))
-end
-
-local function initNightLog()
-    if not CONFIG.DEBUG.ENABLED or not CONFIG.DEBUG.LOG_TO_FILE then return end
-    local header = table.concat({
-        "===== PREHISTORIC V2 NIGHT DEBUG =====",
-        "ACCOUNT="..LP.Name,
-        "MASTER="..tostring(CONFIG.MASTER_NAME),
-        "JOB="..tostring(game.JobId),
-        "START="..nightTime(),
-        "LOG="..NIGHT.LogPath,
-        "======================================",
-        ""
-    }, "\n")
-    NIGHT.MemoryLines = {header}
-    if type(writefile) == "function" then
-        NIGHT.FileReady = pcall(writefile, NIGHT.LogPath, header)
-    end
-end
-
-local function flushNightLog()
-    if not CONFIG.DEBUG.ENABLED or not CONFIG.DEBUG.LOG_TO_FILE then return end
-    -- When appendfile exists, every line is already persisted; rewriting from the
-    -- memory fallback here would erase the appended overnight history.
-    if type(appendfile) == "function" and NIGHT.FileReady then return end
-    if type(writefile) ~= "function" then return end
-    local maxLines = CONFIG.DEBUG.MAX_MEMORY_LOG_LINES or 6000
-    while #NIGHT.MemoryLines > maxLines do
-        table.remove(NIGHT.MemoryLines, 1)
-    end
-    pcall(writefile, NIGHT.LogPath, table.concat(NIGHT.MemoryLines, "\n"))
-end
-
-local function logLine(tag, message)
-    if not CONFIG.DEBUG.ENABLED then return end
-    local line = string.format("[%s] [%s] %s", nightTime(), tostring(tag), tostring(message))
-    print("[PH-NIGHT] "..line)
-
-    if CONFIG.DEBUG.LOG_TO_FILE then
-        if type(appendfile) == "function" and NIGHT.FileReady then
-            pcall(appendfile, NIGHT.LogPath, line.."\n")
-        else
-            NIGHT.MemoryLines[#NIGHT.MemoryLines+1] = line
-            if (#NIGHT.MemoryLines % 10) == 0 then
-                flushNightLog()
-            end
-        end
-    end
-end
-
-local function noteProgress(signature)
-    signature = tostring(signature or "progress")
-    if signature ~= NIGHT.LastProgressSignature then
-        NIGHT.LastProgressSignature = signature
-        NIGHT.LastProgressAt = os.clock()
-    end
-end
-
-initNightLog()
-logLine("BOOT", "Script started | file="..NIGHT.LogPath.." | fileAPI="..tostring(NIGHT.FileReady or type(appendfile)=="function"))
 
 local function setStatus(s)
     s = tostring(s)
@@ -271,13 +151,6 @@ local function setStatus(s)
         STATUS_LABEL.Text = s
     end
     print("[PH-V2] " .. s)
-
-    if NIGHT.LastStatus ~= s or (os.clock() - NIGHT.LastStatusLogAt) > 20 then
-        NIGHT.LastStatus = s
-        NIGHT.LastStatusLogAt = os.clock()
-        logLine("STATUS", s)
-        noteProgress("STATUS:"..s)
-    end
 end
 
 local function isRunning(token)
@@ -327,8 +200,6 @@ local function bindCharacter(c)
 
     h.Died:Connect(function()
         CHARACTER_EPOCH = CHARACTER_EPOCH + 1
-        local r = c:FindFirstChild("HumanoidRootPart")
-        logLine("DEATH", "pos="..tostring(r and r.Position or "nil").." status="..tostring(NIGHT.LastStatus))
         setStatus("DIED -> automation paused until respawn")
     end)
 end
@@ -338,8 +209,6 @@ LP.CharacterAdded:Connect(function(c)
         bindCharacter(c)
         c:WaitForChild("HumanoidRootPart", 10)
         task.wait(CONFIG.RESPAWN_SETTLE_DELAY)
-        local rr = c:FindFirstChild("HumanoidRootPart")
-        logLine("RESPAWN", "pos="..tostring(rr and rr.Position or "nil"))
         if _G.TeamConfig.IsRunning then
             setStatus("RESPAWNED -> resuming current route")
         end
@@ -459,47 +328,7 @@ local function resetCharacter()
     task.wait(1)
 end
 
--- Defined later after portal helpers are available.
 local resetBackToTiki
-
---==============================================================
--- WEBHOOK
---==============================================================
-
-local function sendWebhook(title, description, fields)
-    if CONFIG.WEBHOOK_URL == nil or CONFIG.WEBHOOK_URL == "" then
-        return false
-    end
-
-    local req = nil
-    if syn and syn.request then req = syn.request end
-    if not req and http_request then req = http_request end
-    if not req and request then req = request end
-    if not req then return false end
-
-    local embed = {
-        title = title,
-        description = description,
-        fields = fields or {},
-        footer = {text = "Prehistoric Team V1 | " .. LP.Name},
-        timestamp = DateTime.now():ToIsoDate(),
-    }
-
-    local payload = HttpService:JSONEncode({
-        username = "Prehistoric Team",
-        embeds = {embed},
-    })
-
-    pcall(function()
-        req({
-            Url = CONFIG.WEBHOOK_URL,
-            Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = payload,
-        })
-    end)
-    return true
-end
 
 --==============================================================
 -- INVENTORY
@@ -628,17 +457,7 @@ local function useXCVF(targetPos)
     end
 end
 
---==============================================================
--- MELEE ATTACK BACKENDS
---==============================================================
--- V2 used Tool:Activate()/firesignal plus the legacy CombatFramework controller.
--- Current Blox Fruits clients can register melee swings through Modules.Net:
---   RE/RegisterAttack -> RE/RegisterHit
--- Keep the legacy controller only as a cooldown/range fallback. No real mouse click is used.
-
 local CombatState = nil
-local NetAttackCache = { Net = nil, RegisterAttack = nil, RegisterHit = nil }
-local AttackBackendLogged = false
 
 local function resolveCombatState()
     if type(CombatState) == "table" and CombatState.activeController then
@@ -664,12 +483,6 @@ local function resolveCombatState()
     for _,getter in ipairs(candidates) do
         local ok2, ups = pcall(getter, framework)
         if ok2 and type(ups) == "table" then
-            -- Most old clients expose the combat state as upvalue #2.
-            local direct = ups[2]
-            if type(direct) == "table" and direct.activeController then
-                CombatState = direct
-                return CombatState
-            end
             for _,v in pairs(ups) do
                 if type(v) == "table" and v.activeController then
                     CombatState = v
@@ -682,21 +495,6 @@ local function resolveCombatState()
     return nil
 end
 
-local function resolveNetAttack()
-    if NetAttackCache.RegisterAttack and NetAttackCache.RegisterHit then
-        return NetAttackCache.RegisterAttack, NetAttackCache.RegisterHit
-    end
-
-    local modules = ReplicatedStorage:FindFirstChild("Modules")
-    local net = modules and modules:FindFirstChild("Net")
-    if not net then return nil, nil end
-
-    NetAttackCache.Net = net
-    NetAttackCache.RegisterAttack = net:FindFirstChild("RE/RegisterAttack")
-    NetAttackCache.RegisterHit = net:FindFirstChild("RE/RegisterHit")
-    return NetAttackCache.RegisterAttack, NetAttackCache.RegisterHit
-end
-
 local function buffMeleeHitbox()
     local state = resolveCombatState()
     local ac = state and state.activeController
@@ -704,138 +502,45 @@ local function buffMeleeHitbox()
 
     pcall(function()
         ac.hitboxMagnitude = CONFIG.MELEE_HITBOX_MAGNITUDE
-        ac.timeToNextAttack = 0
-        ac.timeToNextBlock = 0
-        ac.focusStart = 0
-        ac.attacking = false
-        ac.blocking = false
-        ac.increment = 4
-        ac.currentAttackTrack = 0
-        if ac.humanoid then ac.humanoid.AutoRotate = true end
     end)
 
     return ac
 end
 
-local function normalizeAttackModels(models)
-    if typeof(models) == "Instance" then
-        return {models}
-    end
-    if type(models) == "table" then
-        return models
-    end
-    return nil
-end
-
-local function collectNetHits(models, distance)
-    local rp = root()
-    if not rp then return nil, {} end
-
-    local list = normalizeAttackModels(models)
-    local hits, basePart, seen = {}, nil, {}
-
-    local function addEnemy(enemy)
-        if not enemy or seen[enemy] or not enemy.Parent then return end
-        local eh = enemy:FindFirstChildOfClass("Humanoid")
-        local part = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-        if not eh or eh.Health <= 0 or not part then return end
-        if (part.Position - rp.Position).Magnitude > (distance or CONFIG.MELEE_NET_DISTANCE) then return end
-        seen[enemy] = true
-        basePart = basePart or part
-        hits[#hits+1] = {enemy, part}
-    end
-
-    if list then
-        for _,enemy in ipairs(list) do addEnemy(enemy) end
-    else
-        local enemies = workspace:FindFirstChild("Enemies")
-        if enemies then
-            for _,enemy in ipairs(enemies:GetChildren()) do addEnemy(enemy) end
-        end
-    end
-
-    return basePart, hits
-end
-
-local function attackViaNet(models)
-    local registerAttack, registerHit = resolveNetAttack()
-    if not registerAttack or not registerHit then return false, 0, "NET_MISSING" end
-
-    local basePart, hits = collectNetHits(models, CONFIG.MELEE_NET_DISTANCE)
-    if not basePart or #hits == 0 then return false, 0, "NO_HITS" end
-
-    local okA = pcall(function()
-        registerAttack:FireServer(CONFIG.MELEE_CLICK_DELAY)
-    end)
-    local okH = pcall(function()
-        registerHit:FireServer(basePart, hits)
-    end)
-
-    return okA and okH, #hits, (okA and okH) and "NET" or "NET_ERROR"
-end
-
-local function attackViaLeftClickRemote(tool, models)
-    if not tool then return false, 0 end
-    local remote = tool:FindFirstChild("LeftClickRemote")
-    if not remote or not remote.FireServer then return false, 0 end
-
-    local rp = root()
-    if not rp then return false, 0 end
-    local list = normalizeAttackModels(models) or {}
-    local fired = 0
-
-    for _,enemy in ipairs(list) do
-        local eh = enemy and enemy:FindFirstChildOfClass("Humanoid")
-        local erp = enemy and (enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChild("Head"))
-        if eh and eh.Health > 0 and erp then
-            local delta = erp.Position - rp.Position
-            if delta.Magnitude <= CONFIG.MELEE_NET_DISTANCE and delta.Magnitude > 0 then
-                local ok = pcall(function() remote:FireServer(delta.Unit, 1) end)
-                if ok then fired = fired + 1 end
-            end
-        end
-    end
-
-    return fired > 0, fired
-end
-
-local function virtualMeleeAttack(tool, models)
-    if not tool or not char() or tool.Parent ~= char() then return false, "NO_TOOL" end
+local function virtualMeleeAttack(tool)
+    if not tool or not char() or tool.Parent ~= char() then return false end
 
     local ac = buffMeleeHitbox()
-    local registerAttack, registerHit = resolveNetAttack()
-    if not AttackBackendLogged then
-        AttackBackendLogged = true
-        logLine("ATTACK_BACKEND", "RegisterAttack="..tostring(registerAttack ~= nil).." RegisterHit="..tostring(registerHit ~= nil).." CombatFramework="..tostring(ac ~= nil).." LeftClickRemote="..tostring(tool:FindFirstChild("LeftClickRemote") ~= nil))
-    end
-
-    -- Modern backend first. This is what actually tells the server that a melee swing hit.
-    local okNet, hitCount, backend = attackViaNet(models)
-    if okNet then return true, backend, hitCount end
-
-    -- Some equipped tools expose a dedicated left-click remote. Still no screen/real click.
-    local okLeft, leftCount = attackViaLeftClickRemote(tool, models)
-    if okLeft then return true, "LEFT_CLICK_REMOTE", leftCount end
-
-    -- Legacy controller fallback for older client layouts.
+    local fired = false
+    
     if ac and type(ac.attack) == "function" then
         local ok = pcall(function() ac:attack() end)
-        if ok then return true, "COMBAT_FRAMEWORK", 0 end
+        if ok then fired = true end
+    end
+    
+    local ok = pcall(function() tool:Activate() end)
+    if ok then fired = true end
+    
+    if firesignal then
+        pcall(function() firesignal(tool.Activated) end)
+    end
+    
+    local cam = workspace.CurrentCamera
+    if cam then
+        local midX = cam.ViewportSize.X / 2
+        local midY = cam.ViewportSize.Y / 2
+        VirtualInputManager:SendMouseButtonEvent(midX, midY, 0, true, game, 0)
+        task.wait(0.05)
+        VirtualInputManager:SendMouseButtonEvent(midX, midY, 0, false, game, 0)
     end
 
-    -- Final Roblox Tool fallback. This is activation of the Tool object, not a screen click.
-    local ok = pcall(function() tool:Activate() end)
-    if ok then return true, "TOOL_ACTIVATE", 0 end
-
-    return false, backend or "NO_BACKEND", hitCount or 0
+    return fired
 end
 
-local function virtualToolClick(tool, models)
-    return virtualMeleeAttack(tool, models)
+local function virtualToolClick(tool)
+    return virtualMeleeAttack(tool)
 end
 
--- Pin legacy controller values while automation is active. Modern Net attack does not
--- depend on hitboxMagnitude, but keeping this helps on old servers/client layouts.
 task.spawn(function()
     while task.wait(0.05) do
         if _G.TeamConfig and _G.TeamConfig.IsRunning then
@@ -852,27 +557,39 @@ local function meleeM1(targetModel, token)
     local _,_,_,epoch = waitAlive(token)
     if not epoch then return false end
 
-    pcall(function()
-        rr.CanCollide = false
-        rr.Size = Vector3.new(110,110,110)
-    end)
-
     local tool = equipTooltip("Melee")
+    
     while h.Parent and h.Health > 0 and (not token or isRunning(token)) do
         if CHARACTER_EPOCH ~= epoch or not hum() or hum().Health <= 0 then
             setStatus("Died during mob farm -> pause and resume after respawn")
             waitAlive(token)
             return false
         end
+        
         rr = targetModel:FindFirstChild("HumanoidRootPart")
         if not rr then break end
+        
         if not safeTween(rr.CFrame * CFrame.new(0, 16, 0), 330, token) then return false end
         aimAt(rr.Position)
+        
+        pcall(function()
+            rr.CanCollide = false
+            rr.Size = Vector3.new(60, 60, 60)
+            rr.Transparency = 0.8
+            h.WalkSpeed = 0
+            h.JumpPower = 0
+        end)
+
         tool = equipTooltip("Melee") or tool
         buffMeleeHitbox()
-        if tool and tool.Parent == char() then virtualToolClick(tool, {targetModel}) end
-        task.wait(CONFIG.MELEE_ATTACK_INTERVAL)
+        
+        if tool and tool.Parent == char() then 
+            virtualToolClick(tool) 
+        end
+        
+        task.wait(.07)
     end
+    
     return h.Health <= 0
 end
 
@@ -977,8 +694,6 @@ local function getRegion()
     return best, bestD
 end
 
--- Portal travel is NEVER allowed to fall through into long-distance island tweening.
--- We cross the portal plane several times and verify the destination region.
 local function waitPortalChainDelay(token)
     local remain = CONFIG.PORTAL_CHAIN_DELAY - (os.clock() - lastPortalSuccessAt)
     if remain <= 0 then return true end
@@ -1002,12 +717,8 @@ local function usePortal(cf, expectedRegion, token)
         if not waitPortalChainDelay(token) then return false end
         if not waitAlive(token) then return false end
 
-        local beforeRegion = getRegion()
-        local beforeRoot = root()
-        logLine("PORTAL", "attempt="..attempt.." from="..tostring(beforeRegion).." to="..tostring(expectedRegion).." pos="..tostring(beforeRoot and beforeRoot.Position or "nil"))
         setStatus("PORTAL -> "..tostring(expectedRegion).." ["..attempt.."/5]")
 
-        -- Approach from one side, then physically cross through the portal plane.
         safeTween(cf * CFrame.new(0,0,-12), 260, token)
         if token and not isRunning(token) then return false end
 
@@ -1016,7 +727,6 @@ local function usePortal(cf, expectedRegion, token)
 
         local r = root()
         if r then
-            -- Small local-space passes help portals whose trigger volume is thin.
             local passes = {
                 CFrame.new(0,0,8),
                 CFrame.new(0,0,-4),
@@ -1030,30 +740,22 @@ local function usePortal(cf, expectedRegion, token)
                 task.wait(.16)
                 if getRegion() == expectedRegion then
                     markPortalSuccess()
-                    local afterRoot = root()
-                    logLine("PORTAL_OK", "to="..tostring(expectedRegion).." pos="..tostring(afterRoot and afterRoot.Position or "nil"))
-                    noteProgress("PORTAL:"..tostring(expectedRegion))
                     task.wait(.65)
                     return true
                 end
             end
         end
 
-        -- Give replication/teleport a moment before retrying.
         for _=1,8 do
             task.wait(.15)
             if getRegion() == expectedRegion then
                 markPortalSuccess()
-                local afterRoot = root()
-                logLine("PORTAL_OK", "to="..tostring(expectedRegion).." pos="..tostring(afterRoot and afterRoot.Position or "nil"))
-                noteProgress("PORTAL:"..tostring(expectedRegion))
                 task.wait(.65)
                 return true
             end
         end
     end
 
-    logLine("PORTAL_FAIL", "expected="..tostring(expectedRegion).." current="..tostring(getRegion()))
     setStatus("PORTAL FAILED -> "..tostring(expectedRegion).." | STOP ROUTE")
     return false
 end
@@ -1117,8 +819,6 @@ resetBackToTiki = function(token)
     resetCharacter()
     if token and not isRunning(token) then return false end
 
-    -- If this account already had Tiki as its spawn, the reset is enough.
-    -- Otherwise, finish the return through the known Castle/Tiki portal route.
     if getRegion() ~= "TIKI" then
         goTiki(token)
     end
@@ -1623,10 +1323,6 @@ local function storeDragonFruitCritical()
     if not tool then return true end
 
     setStatus("!!! DRAGON FRUIT DETECTED: "..original.." -> STORE NOW")
-    sendWebhook("🐉 DRAGON FRUIT DETECTED", "Attempting immediate StoreFruit", {
-        {name="Account", value=LP.Name, inline=true},
-        {name="Fruit", value=original, inline=true},
-    })
 
     local ok = pcall(function()
         CommF:InvokeServer("StoreFruit", original, tool)
@@ -1636,18 +1332,10 @@ local function storeDragonFruitCritical()
     local stillTool = tool.Parent ~= nil
     local verified = storedFruitExists(original)
     if ok and (verified or not stillTool) then
-        sendWebhook("✅ DRAGON FRUIT STORED", "Storage call completed and the physical tool is no longer loose.", {
-            {name="Account", value=LP.Name, inline=true},
-            {name="Fruit", value=original, inline=true},
-        })
         setStatus("Dragon stored: "..original)
         return true
     end
 
-    sendWebhook("🚨 CRITICAL: DRAGON STORE FAILED", "Automation STOPPED on this account. Do not reset or leave.", {
-        {name="Account", value=LP.Name, inline=true},
-        {name="Fruit", value=original, inline=true},
-    })
     _G.TeamConfig.IsRunning = false
     setStatus("CRITICAL: StoreFruit failed -> STOPPED")
     return false
@@ -1868,8 +1556,6 @@ local function farmBlazeEmbers(token)
     end
 end
 
--- Forest Pirate/Scrap Metal farming is intentionally island-local.
--- Once Turtle is confirmed, this routine never long-distance tweens to another island.
 local function isForestPirate(m)
     if not m or not m:IsA("Model") then return false end
     return string.find(string.lower(m.Name), "forest pirate", 1, true) ~= nil
@@ -1949,15 +1635,12 @@ local function farmScrap(token)
             continue
         end
 
-        -- Hard guard: never start Forest Pirate farming unless the portal destination
-        -- was actually confirmed as Floating Turtle.
         if getRegion() ~= "TURTLE" then
             setStatus("Not on Floating Turtle -> abort Scrap farm cycle")
             task.wait(.8)
             continue
         end
 
-        -- Move only to the user-captured safe point beside the Forest Pirate area.
         highTween(camp * CFrame.new(0,18,0), CONFIG.PLAYER_TWEEN_SPEED, token)
         if not isRunning(token) then break end
         if getRegion() ~= "TURTLE" then
@@ -1984,24 +1667,19 @@ local function farmScrap(token)
                 task.wait(noMobPasses >= #patrol and 1.2 or .45)
             else
                 noMobPasses = 0
-
-                -- Pull the local wave into one point, enlarge hitboxes, fly above it,
-                -- force-equip Melee, then spam Tool:Activate() M1.
                 local anchor = CFrame.new(camp.Position + Vector3.new(0,2,0))
                 local farmCF = anchor * CFrame.new(0, CONFIG.FOREST_FARM_HEIGHT, 0)
                 local _,_,_,waveEpoch = waitAlive(token)
                 if not waveEpoch then break end
 
                 if not safeTween(farmCF, 300, token) then
-                    -- Death/respawn or movement interruption: exit local loop so outer
-                    -- route logic can re-confirm Turtle before farming again.
                     break
                 end
 
                 local tool = equipTooltip("Melee")
                 local ac = buffMeleeHitbox()
-                logLine("FOREST_WAVE", "mobs="..#mobs.." tool="..tostring(tool and tool.Name or "nil").." controller="..tostring(ac ~= nil).." hitbox="..tostring(ac and ac.hitboxMagnitude or "nil").." bodyHitbox="..tostring(CONFIG.FOREST_HITBOX_SIZE))
                 local waveDeadline = os.clock() + 22
+                
                 while isRunning(token)
                     and getRegion() == "TURTLE"
                     and inventoryCount("Scrap Metal") < 10
@@ -2016,8 +1694,6 @@ local function farmScrap(token)
                     local alive = magnetForestPirates(anchor, magnetRadius)
                     if alive <= 0 then break end
 
-                    -- Hold the player above the magnet point so Forest Pirates cannot
-                    -- body-block the character while the enlarged hitboxes catch M1.
                     local rr = root()
                     if rr then
                         rr.CFrame = farmCF
@@ -2027,12 +1703,9 @@ local function farmScrap(token)
                     tool = equipTooltip("Melee") or tool
                     buffMeleeHitbox()
                     if tool and tool.Parent == char() then
-                        local okAttack, backend, hitCount = virtualToolClick(tool, mobs)
-                        if not okAttack then
-                            logLine("ATTACK_FAIL", "backend="..tostring(backend).." hits="..tostring(hitCount))
-                        end
+                        virtualToolClick(tool)
                     end
-                    task.wait(CONFIG.MELEE_ATTACK_INTERVAL)
+                    task.wait(.055)
                 end
 
                 task.wait(.35)
@@ -2119,9 +1792,6 @@ local function recoverMagnet(token)
 
     setStatus("RECOVERY: Volcanic Magnet missing")
 
-    -- IMPORTANT: never reset again during portal recovery.
-    -- The only reset in the whole post-event flow happens in resetBackToTiki().
-    -- A second reset here could kill the character right after Hydra/Turtle -> Castle.
     if getRegion() ~= "TIKI" then
         setStatus("RECOVERY: returning to Tiki without reset")
         if not goTiki(token) then
@@ -2162,16 +1832,6 @@ end
 local function runPrehistoricEvent(island, token)
     if not island or not island.Parent then return end
 
-    local key = tostring(math.floor(island:GetPivot().Position.X))..":"..tostring(math.floor(island:GetPivot().Position.Z))
-    if lastIslandWebhookKey ~= key then
-        lastIslandWebhookKey = key
-        sendWebhook("🌋 PREHISTORIC ISLAND FOUND", "Team is moving to Fossil Relic.", {
-            {name="Server", value=tostring(game.JobId), inline=false},
-            {name="Account", value=LP.Name, inline=true},
-            {name="Role", value=roleText(), inline=true},
-        })
-    end
-
     setStatus("Prehistoric found -> Fossil Relic")
     moveToRelic(island, token)
 
@@ -2209,8 +1869,6 @@ local function runPrehistoricEvent(island, token)
 
     task.wait(.5)
 
-    -- User requirement: after the Volcano rewards are collected, every account
-    -- resets and ends up back at Tiki before deciding whether Magnet recovery is needed.
     if resetBackToTiki then
         resetBackToTiki(token)
     end
@@ -2323,174 +1981,10 @@ local function mainLoop(token)
     end
 end
 
-
---==============================================================
--- NIGHT SNAPSHOT + WATCHDOG
---==============================================================
-
-local function debugInventoryOnce()
-    local counts = {Scrap=0, Ember=0, Magnet=0}
-    local inv = getInventory()
-    for _,v in pairs(inv) do
-        if type(v) == "table" then
-            local name = string.lower(tostring(v.Name or ""))
-            local n = tonumber(v.Count or v.Amount or v.count or v.Quantity or 1) or 1
-            if name == "scrap metal" then counts.Scrap = counts.Scrap + n end
-            if name == "blaze ember" then counts.Ember = counts.Ember + n end
-            if name == "volcanic magnet" then counts.Magnet = counts.Magnet + n end
-        end
-    end
-    return counts
-end
-
-local function equippedToolName()
-    local c = char()
-    if not c then return "nil" end
-    local t = c:FindFirstChildOfClass("Tool")
-    return t and t.Name or "nil"
-end
-
-local function eventUiText(name)
-    local main = PG:FindFirstChild("Main")
-    local list = main and main:FindFirstChild("TopHUDList")
-    local o = list and list:FindFirstChild(name)
-    if o and pcall(function() return o.Text end) then
-        return tostring(o.Text)
-    end
-    return ""
-end
-
-local function debugRuntimeSnapshot()
-    local r = root()
-    local h = hum()
-    local region,regionD = getRegion()
-    local inv = debugInventoryOnce()
-    local island = findPrehistoric()
-    local active = island and island:GetAttribute("IsMinigameActive") == true or false
-    local relicHp,relicMax = -1,-1
-    if island then
-        local relic = getRelic(island)
-        local hv = relic and relic:FindFirstChild("Health")
-        local mv = relic and relic:FindFirstChild("MaxHealth")
-        relicHp = hv and hv.Value or -1
-        relicMax = mv and mv.Value or -1
-    end
-
-    local enemies = workspace:FindFirstChild("Enemies")
-    local forestCount,forestHp = 0,0
-    local golemHp = -1
-    if enemies then
-        for _,m in ipairs(enemies:GetChildren()) do
-            local mh = m:FindFirstChildOfClass("Humanoid")
-            if mh and mh.Health > 0 then
-                if string.find(string.lower(m.Name), "forest pirate", 1, true) then
-                    forestCount = forestCount + 1
-                    forestHp = forestHp + math.floor(mh.Health)
-                elseif string.find(string.lower(m.Name), "lava golem", 1, true) then
-                    golemHp = math.floor(mh.Health)
-                end
-            end
-        end
-    end
-
-    local state = resolveCombatState()
-    local ac = state and state.activeController
-    local hb = ac and ac.hitboxMagnitude or "nil"
-    local boat = getMasterBoat()
-    local aboard = boat and countTeamAboard(boat) or 0
-
-    local line = table.concat({
-        "status="..tostring(NIGHT.LastStatus),
-        "region="..tostring(region).."("..string.format("%.0f", tonumber(regionD) or -1)..")",
-        "pos="..tostring(r and r.Position or "nil"),
-        "hp="..tostring(h and math.floor(h.Health) or -1),
-        "tool="..equippedToolName(),
-        "hitbox="..tostring(hb),
-        "scrap="..inv.Scrap,
-        "ember="..inv.Ember,
-        "magnet="..inv.Magnet,
-        "island="..tostring(island ~= nil),
-        "event="..tostring(active),
-        "relic="..tostring(relicHp).."/"..tostring(relicMax),
-        "pressure="..eventUiText("PrehistoricRaidTimer"),
-        "forest="..forestCount..":"..forestHp,
-        "golemHp="..golemHp,
-        "boat="..tostring(boat ~= nil)..":"..aboard,
-    }, " | ")
-
-    -- Signature deliberately excludes exact player position so tiny movement cannot hide a stall.
-    local sig = table.concat({
-        tostring(NIGHT.LastStatus), tostring(region), tostring(inv.Scrap), tostring(inv.Ember), tostring(inv.Magnet),
-        tostring(active), tostring(relicHp), eventUiText("PrehistoricRaidTimer"), tostring(forestCount),
-        tostring(math.floor(forestHp/100)), tostring(math.floor(math.max(golemHp,0)/100)), tostring(aboard), tostring(hb)
-    }, ":")
-    return sig,line,active
-end
-
-local function restartNightStateMachine(reason)
-    if not _G.TeamConfig.IsRunning then return end
-    RUN_TOKEN = RUN_TOKEN + 1
-    local token = RUN_TOKEN
-    NIGHT.RecoveryCount = NIGHT.RecoveryCount + 1
-    NIGHT.LastProgressAt = os.clock()
-    NIGHT.LastProgressSignature = "WATCHDOG_RESTART:"..NIGHT.RecoveryCount
-    logLine("WATCHDOG_RECOVER", "count="..NIGHT.RecoveryCount.." reason="..tostring(reason).." | re-entering mainLoop without killing character")
-    task.spawn(function()
-        mainLoop(token)
-    end)
-end
-
-task.spawn(function()
-    local nextSnapshot = 0
-    while true do
-        task.wait(5)
-        if CONFIG.DEBUG.ENABLED and _G.TeamConfig.IsRunning then
-            local sig,line,eventActive = debugRuntimeSnapshot()
-            if sig ~= NIGHT.RuntimeSignature then
-                NIGHT.RuntimeSignature = sig
-                noteProgress("RUNTIME:"..sig)
-            end
-
-            if os.clock() >= nextSnapshot then
-                nextSnapshot = os.clock() + (CONFIG.DEBUG.SNAPSHOT_INTERVAL or 15)
-                logLine("SNAP", line)
-                flushNightLog()
-            end
-
-            local stalled = os.clock() - NIGHT.LastProgressAt
-            if stalled >= (CONFIG.DEBUG.WATCHDOG_SECONDS or 120) then
-                logLine("WATCHDOG", string.format("STALL %.0fs | %s", stalled, line))
-                if CONFIG.DEBUG.WEBHOOK_ERRORS then
-                    sendWebhook("⚠️ PREHISTORIC WATCHDOG", "Automation appears stalled on "..LP.Name, {
-                        {name="State", value=tostring(NIGHT.LastStatus), inline=false},
-                        {name="Stalled", value=string.format("%.0fs", stalled), inline=true},
-                        {name="Region", value=tostring(getRegion()), inline=true},
-                    })
-                end
-
-                -- During an active Volcano event, do not reset/restart state automatically;
-                -- preserving relic/event participation is safer. Log it for morning analysis.
-                if eventActive then
-                    NIGHT.LastProgressAt = os.clock()
-                    logLine("WATCHDOG", "Active Volcano event -> logging only, no forced restart")
-                elseif CONFIG.DEBUG.WATCHDOG_RESTART then
-                    restartNightStateMachine("no meaningful progress for "..math.floor(stalled).."s")
-                else
-                    NIGHT.LastProgressAt = os.clock()
-                end
-            end
-        else
-            nextSnapshot = 0
-        end
-    end
-end)
-
 --==============================================================
 -- UI: MASTER SELECTION + START / STOP
 --==============================================================
 
--- Delta-safe: always parent the real controls to PlayerGui.
--- gethui/CoreGui are only cleaned up so an older invisible copy cannot interfere.
 local guiParent = PG
 
 pcall(function()
@@ -2522,7 +2016,7 @@ SG.Parent = guiParent
 
 local F = Instance.new("Frame")
 F.Parent = SG
-F.Size = UDim2.fromOffset(385, 315)
+F.Size = UDim2.fromOffset(385, 295)
 F.Position = UDim2.new(0.5,-192,0.12,0)
 F.BackgroundColor3 = Color3.fromRGB(20,20,26)
 F.BorderSizePixel = 1
@@ -2537,7 +2031,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.1 NET ATTACK | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2 (FIXED) | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -2587,15 +2081,6 @@ START.Font = Enum.Font.SourceSansBold
 START.TextSize = 16
 START.Text = "▶ START FULL AUTO"
 
-local NOTE = Instance.new("TextLabel")
-NOTE.Parent = F
-NOTE.Size = UDim2.new(1,-20,0,25)
-NOTE.Position = UDim2.fromOffset(10,284)
-NOTE.BackgroundTransparency = 1
-NOTE.TextColor3 = Color3.fromRGB(180,180,190)
-NOTE.TextSize = 12
-NOTE.Text = "Night log: "..NIGHT.LogPath.." | file="..tostring(NIGHT.FileReady or type(appendfile)=="function")
-
 local function refreshRole()
     _G.TeamConfig.IsMaster = LP.Name == _G.TeamConfig.MasterName
     ROLE.Text = "LOCAL: "..LP.Name.."\nROLE: "..roleText().." | MASTER: ".._G.TeamConfig.MasterName
@@ -2618,8 +2103,6 @@ START.MouseButton1Click:Connect(function()
         START.Text = "▶ START FULL AUTO"
         START.BackgroundColor3 = Color3.fromRGB(45,150,70)
         disableLavaProtection()
-        logLine("RUN", "STOP pressed")
-        flushNightLog()
         setStatus("STOPPED")
         return
     end
@@ -2636,7 +2119,6 @@ START.MouseButton1Click:Connect(function()
     _G.TeamConfig.IsRunning = true
     START.Text = "⏹ STOP FULL AUTO"
     START.BackgroundColor3 = Color3.fromRGB(160,55,55)
-    logLine("RUN", "START | role="..roleText().." master="..tostring(_G.TeamConfig.MasterName))
     setStatus("STARTED | "..roleText())
 
     task.spawn(function()
@@ -2651,15 +2133,11 @@ end)
 
 refreshRole()
 
--- The real UI exists now, remove the boot banner.
 if BOOT_GUI and BOOT_GUI.Parent then
     BOOT_GUI:Destroy()
 end
 setStatus("UI READY | "..roleText().." | press START FULL AUTO")
-logLine("UI", "READY | log="..NIGHT.LogPath)
-flushNightLog()
 
--- Keep Marine team alive without spamming the server.
 task.spawn(function()
     while SG.Parent do
         task.wait(10)
