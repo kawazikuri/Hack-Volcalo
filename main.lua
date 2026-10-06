@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.5.1 (DELTA PARSE SAFE + COUNTERS + DRAGON GUARD + SAVE CPU)
+    PREHISTORIC TEAM V2.5.2 (DELTA DELTA LOCAL-LIMIT FIX + COUNTERS + DRAGON GUARD + SAVE CPU)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -25,6 +25,7 @@ local Lighting = game:GetService("Lighting")
 
 local LP = Players.LocalPlayer
 local PG = LP:WaitForChild("PlayerGui")
+local PHX = {} -- helper namespace; keeps Delta/Luau main-chunk local count below compiler limit
 
 --==============================================================
 -- DELTA-SAFE BOOT UI
@@ -54,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.5.1 PARSE SAFE\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.5.2 DELTA LOCAL-LIMIT FIX\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -69,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.5.1 PARSE SAFE\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.5.2 DELTA LOCAL-LIMIT FIX\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -550,7 +551,7 @@ end
 -- INVENTORY / LIVE ITEM COUNTERS
 --==============================================================
 
-local function normalizeItemName(v)
+function PHX.normalizeItemName(v)
     local x = string.lower(tostring(v or ""))
     x = x:gsub("[%[%]{}<>]", "")
     x = x:gsub("%s+", " ")
@@ -574,7 +575,7 @@ local function getInventory(force)
     return INVENTORY_CACHE.Raw or {}
 end
 
-local function entryCount(v)
+function PHX.entryCount(v)
     if type(v) == "number" then return math.max(0, v) end
     if type(v) ~= "table" then return nil end
     local n = v.Count or v.count or v.Amount or v.amount or v.Quantity or v.quantity or v.Owned or v.owned
@@ -583,8 +584,8 @@ local function entryCount(v)
     return nil
 end
 
-local function serverInventoryCount(itemName, force)
-    local wanted = normalizeItemName(itemName)
+function PHX.serverInventoryCount(itemName, force)
+    local wanted = PHX.normalizeItemName(itemName)
     local total = 0
     local matched = false
     local seen = {}
@@ -593,11 +594,11 @@ local function serverInventoryCount(itemName, force)
         if type(tbl) ~= "table" or seen[tbl] or depth > 3 then return end
         seen[tbl] = true
         for k,v in pairs(tbl) do
-            local keyName = type(k) == "string" and normalizeItemName(k) or ""
+            local keyName = type(k) == "string" and PHX.normalizeItemName(k) or ""
             if type(v) == "table" then
-                local name = normalizeItemName(v.Name or v.name or v.ItemName or v.itemName or v.Title or "")
+                local name = PHX.normalizeItemName(v.Name or v.name or v.ItemName or v.itemName or v.Title or "")
                 if name == wanted or keyName == wanted then
-                    local n = entryCount(v)
+                    local n = PHX.entryCount(v)
                     total = total + (n or 1)
                     matched = true
                 else
@@ -617,11 +618,11 @@ local function serverInventoryCount(itemName, force)
     return matched and total or 0
 end
 
-local function trackerFor(itemName)
-    local key = normalizeItemName(itemName)
+function PHX.trackerFor(itemName)
+    local key = PHX.normalizeItemName(itemName)
     local t = ITEM_TRACK[key]
     if not t then
-        local server = serverInventoryCount(itemName, true)
+        local server = PHX.serverInventoryCount(itemName, true)
         t = {Server=server, Optimistic=server, OptimisticUntil=0}
         ITEM_TRACK[key] = t
     end
@@ -629,8 +630,8 @@ local function trackerFor(itemName)
 end
 
 local function inventoryCount(itemName, force)
-    local t = trackerFor(itemName)
-    local server = serverInventoryCount(itemName, force)
+    local t = PHX.trackerFor(itemName)
+    local server = PHX.serverInventoryCount(itemName, force)
     t.Server = server
 
     if server >= (t.Optimistic or 0) then
@@ -648,20 +649,20 @@ local function inventoryCount(itemName, force)
     return server
 end
 
-local function clearOptimisticCount(itemName)
-    local t = trackerFor(itemName)
-    local server = serverInventoryCount(itemName, true)
+function PHX.clearOptimisticCount(itemName)
+    local t = PHX.trackerFor(itemName)
+    local server = PHX.serverInventoryCount(itemName, true)
     t.Server = server
     t.Optimistic = server
     t.OptimisticUntil = 0
     return server
 end
 
-local function recordItemGain(itemName, amount, sourceText)
+function PHX.recordItemGain(itemName, amount, sourceText)
     amount = math.max(1, tonumber(amount) or 1)
-    local t, key = trackerFor(itemName)
+    local t, key = PHX.trackerFor(itemName)
     local beforeServer = t.Server or 0
-    local nowServer = serverInventoryCount(itemName, true)
+    local nowServer = PHX.serverInventoryCount(itemName, true)
     t.Server = nowServer
 
     if nowServer > beforeServer then
@@ -682,7 +683,7 @@ local TRACKED_PICKUPS = {
     ["dinosaur bone"] = "Dinosaur Bones",
 }
 
-local function parsePickupText(text)
+function PHX.parsePickupText(text)
     local raw = tostring(text or "")
     local low = string.lower(raw)
     local amount = tonumber(raw:match("%((%d+)%s*[xX]%)") or raw:match("(%d+)%s*[xX]")) or 1
@@ -692,13 +693,13 @@ local function parsePickupText(text)
     if not looksLikeGain then return end
     for needle,itemName in pairs(TRACKED_PICKUPS) do
         if low:find(needle,1,true) then
-            recordItemGain(itemName, amount, raw)
+            PHX.recordItemGain(itemName, amount, raw)
             return
         end
     end
 end
 
-local function watchPickupTextObject(obj)
+function PHX.watchPickupTextObject(obj)
     if PICKUP_WATCHED[obj] then return end
     if not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then return end
     PICKUP_WATCHED[obj] = tostring(obj.Text or "")
@@ -707,19 +708,19 @@ local function watchPickupTextObject(obj)
         local text = tostring(obj.Text or "")
         if text ~= PICKUP_WATCHED[obj] then
             PICKUP_WATCHED[obj] = text
-            parsePickupText(text)
+            PHX.parsePickupText(text)
         end
     end
 
     obj:GetPropertyChangedSignal("Text"):Connect(inspect)
-    parsePickupText(obj.Text)
+    PHX.parsePickupText(obj.Text)
 end
 
 for _,obj in ipairs(PG:GetDescendants()) do
-    pcall(watchPickupTextObject, obj)
+    pcall(PHX.watchPickupTextObject, obj)
 end
 PG.DescendantAdded:Connect(function(obj)
-    pcall(watchPickupTextObject, obj)
+    pcall(PHX.watchPickupTextObject, obj)
 end)
 
 local function hasVolcanicMagnet()
@@ -730,16 +731,7 @@ end
 -- SAVE CPU / LOW GRAPHICS (SAFE: visual-only, no gameplay objects destroyed)
 --==============================================================
 
-local function isDescendantOfNamed(obj, ancestorName)
-    local p = obj
-    while p and p ~= workspace do
-        if p.Name == ancestorName then return true end
-        p = p.Parent
-    end
-    return false
-end
-
-local function isPressureSensorVFX(obj)
+function PHX.isPressureSensorVFX(obj)
     local p = obj
     local sawRocks = false
     local sawPrehistoric = false
@@ -751,7 +743,7 @@ local function isPressureSensorVFX(obj)
     return sawRocks and sawPrehistoric
 end
 
-local function isDynamicGameplayPart(obj)
+function PHX.isDynamicGameplayPart(obj)
     if not obj then return false end
     local c = LP.Character
     if c and obj:IsDescendantOf(c) then return true end
@@ -765,7 +757,7 @@ local function isDynamicGameplayPart(obj)
     return false
 end
 
-local function optimizeVisualObject(obj)
+function PHX.optimizeVisualObject(obj)
     if not SAVE_CPU_APPLIED or not obj or not obj.Parent then return end
 
     if obj:IsA("BasePart") then
@@ -773,7 +765,7 @@ local function optimizeVisualObject(obj)
         pcall(function() obj.Reflectance = 0 end)
         if CONFIG.SAVE_CPU.HIDE_STATIC_MAP_VISUALS then
             local map = workspace:FindFirstChild("Map")
-            if map and obj:IsDescendantOf(map) and not isDynamicGameplayPart(obj) then
+            if map and obj:IsDescendantOf(map) and not PHX.isDynamicGameplayPart(obj) then
                 -- LocalTransparencyModifier is render-only. Collision/touch/query and the
                 -- instance tree stay intact, so portal/event logic can still use the map.
                 pcall(function() obj.LocalTransparencyModifier = 1 end)
@@ -788,7 +780,7 @@ local function optimizeVisualObject(obj)
     end
 
     if CONFIG.SAVE_CPU.DISABLE_NONESSENTIAL_VFX then
-        if isPressureSensorVFX(obj) then
+        if PHX.isPressureSensorVFX(obj) then
             -- Pressure detection reads Beam.Enabled / ParticleEmitter.Enabled. Never
             -- disable these sensor VFX or pressure farming would lose its runtime signal.
             return
@@ -809,7 +801,7 @@ local function optimizeVisualObject(obj)
     end
 end
 
-local function applySaveCpu()
+function PHX.applySaveCpu()
     if SAVE_CPU_APPLIED or not CONFIG.SAVE_CPU.ENABLED then return end
     SAVE_CPU_APPLIED = true
 
@@ -837,13 +829,13 @@ local function applySaveCpu()
 
     local cpuObjects = workspace:GetDescendants()
     for i,obj in ipairs(cpuObjects) do
-        optimizeVisualObject(obj)
+        PHX.optimizeVisualObject(obj)
         -- Yield periodically so Delta/mobile does not freeze the UI while optimizing a huge map.
         if i % 250 == 0 then task.wait() end
     end
     cpuObjects = nil
     workspace.DescendantAdded:Connect(function(obj)
-        task.defer(function() pcall(optimizeVisualObject, obj) end)
+        task.defer(function() pcall(PHX.optimizeVisualObject, obj) end)
     end)
 
     if CONFIG.SAVE_CPU.FULL_3D_RENDER_OFF then
@@ -855,7 +847,7 @@ end
 
 task.spawn(function()
     task.wait(1)
-    applySaveCpu()
+    PHX.applySaveCpu()
 end)
 
 --==============================================================
@@ -1928,20 +1920,20 @@ local function fruitOriginalName(tool)
     end
 end
 
-local function isDragonFruitTool(tool)
+function PHX.isDragonFruitTool(tool)
     if not tool or not tool:IsA("Tool") then return false end
     local orig = fruitOriginalName(tool)
     local combined = string.lower(tostring(orig or "").." "..tostring(tool.Name or ""))
     return combined:find("dragon",1,true) ~= nil
 end
 
-local function findPhysicalDragonFruits()
+function PHX.findPhysicalDragonFruits()
     local result = {}
     local seen = {}
     for _,container in ipairs({LP.Backpack, char()}) do
         if container then
             for _,v in ipairs(container:GetChildren()) do
-                if v:IsA("Tool") and isDragonFruitTool(v) and not seen[v] then
+                if v:IsA("Tool") and PHX.isDragonFruitTool(v) and not seen[v] then
                     seen[v] = true
                     result[#result+1] = v
                 end
@@ -1952,27 +1944,27 @@ local function findPhysicalDragonFruits()
 end
 
 local function findPhysicalDragonFruit()
-    local list = findPhysicalDragonFruits()
+    local list = PHX.findPhysicalDragonFruits()
     local tool = list[1]
     return tool, tool and fruitOriginalName(tool) or nil
 end
 
-local function storedDragonFruitCount(originalName)
+function PHX.storedDragonFruitCount(originalName)
     local ok, fruits = pcall(function()
         return CommF:InvokeServer("getInventoryFruits")
     end)
     if not ok or type(fruits) ~= "table" then return nil end
 
-    local wanted = normalizeItemName(originalName)
+    local wanted = PHX.normalizeItemName(originalName)
     local total = 0
     for k,v in pairs(fruits) do
         if type(v) == "table" then
-            local n = normalizeItemName(v.Name or v.OriginalName or v.name or k)
+            local n = PHX.normalizeItemName(v.Name or v.OriginalName or v.name or k)
             if n == wanted or (n:find("dragon",1,true) and wanted:find("dragon",1,true)) then
-                total = total + (entryCount(v) or 1)
+                total = total + (PHX.entryCount(v) or 1)
             end
         elseif type(k) == "string" then
-            local n = normalizeItemName(k)
+            local n = PHX.normalizeItemName(k)
             if n == wanted or (n:find("dragon",1,true) and wanted:find("dragon",1,true)) then
                 total = total + (tonumber(v) or 1)
             end
@@ -1981,10 +1973,10 @@ local function storedDragonFruitCount(originalName)
     return total
 end
 
-local function storeOneDragonFruit(tool)
-    if not tool or not tool.Parent or not isDragonFruitTool(tool) then return true end
+function PHX.storeOneDragonFruit(tool)
+    if not tool or not tool.Parent or not PHX.isDragonFruitTool(tool) then return true end
     local original = fruitOriginalName(tool) or tool.Name
-    local beforeStored = storedDragonFruitCount(original)
+    local beforeStored = PHX.storedDragonFruitCount(original)
 
     setStatus("!!! DRAGON FRUIT DETECTED: "..tostring(original).." -> STORE NOW")
     sendWebhook("🐉 DRAGON FRUIT DETECTED", "Immediate storage guard activated", {
@@ -2004,7 +1996,7 @@ local function storeOneDragonFruit(tool)
         end)
         task.wait(CONFIG.DRAGON_GUARD.RETRY_DELAY)
 
-        local afterStored = storedDragonFruitCount(original)
+        local afterStored = PHX.storedDragonFruitCount(original)
         local disappeared = tool.Parent == nil
         local countIncreased = beforeStored ~= nil and afterStored ~= nil and afterStored > beforeStored
         logLine("DRAGON_STORE", "attempt="..attempt.." pcall="..tostring(ok).." result="..tostring(result).." disappeared="..tostring(disappeared).." storedBefore="..tostring(beforeStored).." storedAfter="..tostring(afterStored))
@@ -2022,7 +2014,7 @@ local function storeOneDragonFruit(tool)
 
         -- Some executors/games refresh the Tool reference after a failed call. Re-scan
         -- and continue with the newest physical Dragon tool if one exists.
-        local again = findPhysicalDragonFruits()
+        local again = PHX.findPhysicalDragonFruits()
         if #again == 0 then
             DRAGON_GUARD_STATE.LastStored = original
             return true
@@ -2046,7 +2038,7 @@ local function storeDragonFruitCritical()
     if DRAGON_GUARD_STATE.Busy then
         local deadline = os.clock() + 8
         while DRAGON_GUARD_STATE.Busy and os.clock() < deadline do task.wait(.05) end
-        return #findPhysicalDragonFruits() == 0 and not DRAGON_GUARD_STATE.Critical
+        return #PHX.findPhysicalDragonFruits() == 0 and not DRAGON_GUARD_STATE.Critical
     end
 
     DRAGON_GUARD_STATE.Busy = true
@@ -2054,29 +2046,29 @@ local function storeDragonFruitCritical()
     local safety = 0
     while safety < 4 do
         safety = safety + 1
-        local fruits = findPhysicalDragonFruits()
+        local fruits = PHX.findPhysicalDragonFruits()
         if #fruits == 0 then break end
-        if not storeOneDragonFruit(fruits[1]) then
+        if not PHX.storeOneDragonFruit(fruits[1]) then
             okAll = false
             break
         end
         task.wait(.1)
     end
     DRAGON_GUARD_STATE.Busy = false
-    return okAll and #findPhysicalDragonFruits() == 0
+    return okAll and #PHX.findPhysicalDragonFruits() == 0
 end
 
-local function secureDragonWindow(seconds, token)
+function PHX.secureDragonWindow(seconds, token)
     local deadline = os.clock() + (seconds or 3)
     while os.clock() < deadline do
         if token and not isRunning(token) then return false end
-        local fruits = findPhysicalDragonFruits()
+        local fruits = PHX.findPhysicalDragonFruits()
         if #fruits > 0 then
             if not storeDragonFruitCritical() then return false end
         end
         task.wait(.15)
     end
-    if #findPhysicalDragonFruits() > 0 then
+    if #PHX.findPhysicalDragonFruits() > 0 then
         return storeDragonFruitCritical()
     end
     return not DRAGON_GUARD_STATE.Critical
@@ -2084,13 +2076,13 @@ end
 
 -- Always-on emergency guard: if a Dragon fruit Tool appears in Backpack/Character,
 -- attempt storage immediately instead of waiting for the event routine to notice it.
-local function hookDragonContainer(container)
+function PHX.hookDragonContainer(container)
     if not container then return end
     container.ChildAdded:Connect(function(obj)
         if obj:IsA("Tool") then
             task.defer(function()
                 task.wait(.05)
-                if isDragonFruitTool(obj) then
+                if PHX.isDragonFruitTool(obj) then
                     logLine("DRAGON_WATCH", "ChildAdded -> "..tostring(obj.Name))
                     storeDragonFruitCritical()
                 end
@@ -2099,10 +2091,10 @@ local function hookDragonContainer(container)
     end)
 end
 
-hookDragonContainer(LP.Backpack)
-if char() then hookDragonContainer(char()) end
+PHX.hookDragonContainer(LP.Backpack)
+if char() then PHX.hookDragonContainer(char()) end
 LP.CharacterAdded:Connect(function(c)
-    hookDragonContainer(c)
+    PHX.hookDragonContainer(c)
     task.defer(function()
         task.wait(.25)
         storeDragonFruitCritical()
@@ -2142,7 +2134,7 @@ local function collectAssignedEgg(island, token)
                 interactCollectible(eggs[rank], token)
                 -- Reward replication can lag behind the interaction. Guard this window
                 -- so a physical Dragon East/West cannot appear after we already reset.
-                return secureDragonWindow(CONFIG.DRAGON_GUARD.POST_EGG_GUARD_SECONDS, token)
+                return PHX.secureDragonWindow(CONFIG.DRAGON_GUARD.POST_EGG_GUARD_SECONDS, token)
             else
                 setStatus("No egg assigned this run (rotating slot)")
                 return true
@@ -2858,9 +2850,9 @@ local function craftVolcanicMagnet(token)
     if crafted then
         -- Scrap/Ember were consumed by crafting; discard short-lived popup optimism
         -- so every counter immediately returns to authoritative post-craft values.
-        clearOptimisticCount("Scrap Metal")
-        clearOptimisticCount("Blaze Ember")
-        clearOptimisticCount("Volcanic Magnet")
+        PHX.clearOptimisticCount("Scrap Metal")
+        PHX.clearOptimisticCount("Blaze Ember")
+        PHX.clearOptimisticCount("Volcanic Magnet")
     end
     return crafted
 end
@@ -2958,7 +2950,7 @@ local function runPrehistoricEvent(island, token)
     -- if a Dragon fruit appears here it must be stored first. On failure the account
     -- stops in place and never resets/leaves.
     setStatus("Reward safety check -> Dragon guard before reset")
-    if not secureDragonWindow(CONFIG.DRAGON_GUARD.PRE_RESET_GUARD_SECONDS, token) then return end
+    if not PHX.secureDragonWindow(CONFIG.DRAGON_GUARD.PRE_RESET_GUARD_SECONDS, token) then return end
     if not isRunning(token) then return end
 
     task.wait(.5)
@@ -3222,7 +3214,7 @@ local function debugRuntimeSnapshot()
         "ember="..inv.Ember,
         "magnet="..inv.Magnet,
         "bones="..tostring(inv.Bones or 0),
-        "dragonLoose="..tostring(#findPhysicalDragonFruits()),
+        "dragonLoose="..tostring(#PHX.findPhysicalDragonFruits()),
         "dragonStored="..tostring(DRAGON_GUARD_STATE.LastStored or "none"),
         "island="..tostring(island ~= nil),
         "event="..tostring(active),
@@ -3352,7 +3344,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.5.1 PARSE SAFE | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.5.2 DELTA LOCAL-LIMIT FIX | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -3433,7 +3425,7 @@ local function refreshCounters()
     local ember = inventoryCount("Blaze Ember")
     local magnet = inventoryCount("Volcanic Magnet")
     local bones = inventoryCount("Dinosaur Bones")
-    local dragonLoose = #findPhysicalDragonFruits()
+    local dragonLoose = #PHX.findPhysicalDragonFruits()
     local dragonText
     if DRAGON_GUARD_STATE.Critical then
         dragonText = "DRAGON CRITICAL"
