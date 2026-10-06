@@ -55,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.7.2 DRAGON-HUNTER FIX\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.7.3 DRAGON-HUNTER FIX\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -70,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.7.2 DRAGON-HUNTER FIX\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.7.3 DRAGON-HUNTER FIX\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -1440,12 +1440,24 @@ end
 
 local function getRegion()
     local r = root()
-    if not r then return "UNKNOWN" end
+    if not r then return "UNKNOWN", math.huge end
     local p = r.Position
+
+    -- Landmark-first region detection. The old nearest-portal-only method could
+    -- misclassify a whole island and make Hydra recovery bounce through Castle/Turtle.
+    local hydraD = (p - CONFIG.DRAGON_HUNTER.STAND.Position).Magnitude
+    local turtleD = (p - CONFIG.MOB_CAMPS.ForestPirate.Position).Magnitude
+    local tikiD = (p - CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude
+    local castleD = (p - CONFIG.PORTALS.Castle_To_Hydra.Position).Magnitude
+
+    if hydraD <= 5200 then return "HYDRA", hydraD end
+    if turtleD <= 6500 then return "TURTLE", turtleD end
+    if tikiD <= 5200 then return "TIKI", tikiD end
+    if castleD <= 4200 then return "CASTLE", castleD end
 
     local regions = {
         TIKI = CONFIG.PORTALS.Tiki_To_Castle.Position,
-        CASTLE = CONFIG.PORTALS.Castle_To_Tiki.Position,
+        CASTLE = CONFIG.PORTALS.Castle_To_Hydra.Position,
         TURTLE = CONFIG.PORTALS.Turtle_To_Castle.Position,
         HYDRA = CONFIG.PORTALS.Hydra_To_Castle.Position,
     }
@@ -1455,6 +1467,7 @@ local function getRegion()
         local d = (p-pos).Magnitude
         if d < bestD then best,bestD = name,d end
     end
+    if bestD > 8000 then return "UNKNOWN", bestD end
     return best, bestD
 end
 
@@ -1488,48 +1501,67 @@ local function usePortal(cf, expectedRegion, token)
         logLine("PORTAL", "attempt="..attempt.." from="..tostring(beforeRegion).." to="..tostring(expectedRegion).." pos="..tostring(beforeRoot and beforeRoot.Position or "nil"))
         setStatus("PORTAL -> "..tostring(expectedRegion).." ["..attempt.."/5]")
 
-        -- Approach from one side, then physically cross through the portal plane.
-        safeTween(cf * CFrame.new(0,0,-12), 260, token)
+        -- Critical V2.7.3 fix: Castle portals sit close together. A straight tween
+        -- to Hydra can physically cross the Turtle/Tiki trigger first. Always approach
+        -- from ABOVE the selected gate, then descend to its own entry side.
+        local approach = cf * CFrame.new(0,0,-12)
+        if not highTween(approach, 320, token) then
+            task.wait(.15)
+        end
         if token and not isRunning(token) then return false end
 
-        safeTween(cf * CFrame.new(0,0,3), 110, token)
-        task.wait(.20)
+        safeTween(cf * CFrame.new(0,0,3), 90, token)
+        task.wait(.30)
 
         local r = root()
         if r then
-            -- Small local-space passes help portals whose trigger volume is thin.
             local passes = {
                 CFrame.new(0,0,8),
-                CFrame.new(0,0,-4),
-                CFrame.new(4,0,2),
-                CFrame.new(-4,0,2),
-                CFrame.new(0,2,0),
+                CFrame.new(0,0,-3),
+                CFrame.new(3,0,1),
+                CFrame.new(-3,0,1),
+                CFrame.new(0,1.5,0),
             }
             for _,off in ipairs(passes) do
                 if token and not isRunning(token) then return false end
                 r.CFrame = cf * off
-                task.wait(.16)
-                if getRegion() == expectedRegion then
+                task.wait(.18)
+                local current = getRegion()
+                if current == expectedRegion then
                     markPortalSuccess()
                     local afterRoot = root()
                     logLine("PORTAL_OK", "to="..tostring(expectedRegion).." pos="..tostring(afterRoot and afterRoot.Position or "nil"))
                     noteProgress("PORTAL:"..tostring(expectedRegion))
-                    task.wait(.65)
+                    task.wait(1.25)
                     return true
+                end
+                -- If another nearby Castle portal fired, STOP manipulating CFrame
+                -- immediately. The next route iteration will deliberately return to Castle.
+                if current ~= beforeRegion and current ~= "UNKNOWN" then
+                    logLine("PORTAL_WRONG_DEST", "wanted="..tostring(expectedRegion).." got="..tostring(current).." attempt="..attempt)
+                    markPortalSuccess()
+                    task.wait(1.25)
+                    break
                 end
             end
         end
 
-        -- Give replication/teleport a moment before retrying.
-        for _=1,8 do
-            task.wait(.15)
-            if getRegion() == expectedRegion then
+        for _=1,10 do
+            task.wait(.18)
+            local current = getRegion()
+            if current == expectedRegion then
                 markPortalSuccess()
                 local afterRoot = root()
                 logLine("PORTAL_OK", "to="..tostring(expectedRegion).." pos="..tostring(afterRoot and afterRoot.Position or "nil"))
                 noteProgress("PORTAL:"..tostring(expectedRegion))
-                task.wait(.65)
+                task.wait(1.25)
                 return true
+            end
+            if current ~= beforeRegion and current ~= "UNKNOWN" then
+                logLine("PORTAL_WRONG_DEST", "wanted="..tostring(expectedRegion).." got="..tostring(current).." replication phase")
+                markPortalSuccess()
+                task.wait(1.25)
+                break
             end
         end
     end
@@ -2475,6 +2507,24 @@ function PHX.questStatusText()
     return "QUEST "..kind.." | "..text
 end
 
+function PHX.questCompleteVisible()
+    local dg = dialogueGui()
+    local roots = {dg, PG:FindFirstChild("Notifications"), PG:FindFirstChild("Main")}
+    for _,base in ipairs(roots) do
+        if base then
+            for _,v in ipairs(base:GetDescendants()) do
+                if (v:IsA("TextLabel") or v:IsA("TextButton")) and visibleGui(v) then
+                    local l = string.lower(tostring(v.Text or ""))
+                    if l:find("task completed",1,true) or l:find("quest completed",1,true) then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
 function PHX.fireDragonHunterWorldInteract()
     local npcPos = CONFIG.DRAGON_HUNTER.NPC.Position
     local best, bestD = nil, math.huge
@@ -2510,24 +2560,50 @@ function PHX.fireDragonHunterWorldInteract()
 end
 
 local function openDragonHunter(token)
+    -- This is the interaction path that previously worked on this account: move to
+    -- Dragon Hunter, virtual-click the NPC to open DialogueGui, then signal the
+    -- dialogue buttons. The script UI is disabled for the click so STOP cannot be hit.
     if not safeTween(CONFIG.DRAGON_HUNTER.STAND, 260, token) then return false end
-    task.wait(.18)
+    task.wait(.20)
 
-    for attempt=1,6 do
+    for attempt=1,8 do
         if not isRunning(token) then return false end
         local opts = dialogueOptions()
-        if #opts >= 3 then return true end
+        if #opts >= 3 then
+            logLine("DRAGON_HUNTER_INTERACT", "dialogue already open | options="..#opts)
+            return true
+        end
 
-        local ok, backend = PHX.fireDragonHunterWorldInteract()
-        logLine("DRAGON_HUNTER_INTERACT", "attempt="..attempt.." backend="..tostring(backend).." ok="..tostring(ok))
-        if ok then
-            local deadline = os.clock() + .75
-            while os.clock() < deadline do
-                if #dialogueOptions() >= 3 then return true end
-                task.wait(.06)
+        local cam = workspace.CurrentCamera
+        if cam then
+            cam.CFrame = CFrame.lookAt(cam.CFrame.Position, CONFIG.DRAGON_HUNTER.NPC.Position)
+            task.wait(.03)
+            local p,on = cam:WorldToViewportPoint(CONFIG.DRAGON_HUNTER.NPC.Position)
+            if on then
+                local ownGui = PG:FindFirstChild("PrehistoricTeamV1")
+                local wasEnabled = nil
+                if ownGui and ownGui:IsA("ScreenGui") then
+                    wasEnabled = ownGui.Enabled
+                    ownGui.Enabled = false
+                    task.wait(.03)
+                end
+                pcall(function()
+                    VirtualInputManager:SendMouseButtonEvent(p.X,p.Y,0,true,game,0)
+                    task.wait(.07)
+                    VirtualInputManager:SendMouseButtonEvent(p.X,p.Y,0,false,game,0)
+                end)
+                task.wait(.08)
+                if ownGui and ownGui:IsA("ScreenGui") and wasEnabled ~= nil then
+                    ownGui.Enabled = wasEnabled
+                end
+                logLine("DRAGON_HUNTER_INTERACT", "virtual NPC click | attempt="..attempt)
             end
-        else
-            task.wait(.12)
+        end
+
+        local deadline = os.clock() + .55
+        while os.clock() < deadline do
+            if #dialogueOptions() >= 3 then return true end
+            task.wait(.04)
         end
     end
     return #dialogueOptions() >= 3
@@ -2539,72 +2615,77 @@ local function receiveDragonHunterQuest(token)
         return true
     end
 
-    if not safeTween(CONFIG.DRAGON_HUNTER.STAND, 260, token) then return false end
-    task.wait(.15)
+    -- Proven GUI path FIRST. RF RequestQuest is only a fallback now.
+    for cycle=1,3 do
+        if not isRunning(token) then return false end
+        setStatus("Dragon Hunter -> opening Hunt menu ["..cycle.."/3]")
+        if openDragonHunter(token) then
+            local opts = dialogueOptions()
+            if #opts >= 3 then
+                fireButton(opts[1]) -- Hunt is the top option on the known 4-option menu.
+                logLine("DRAGON_HUNTER", "Hunt option fired | options="..#opts)
 
-    -- Direct RF is the primary path. Public/current Dragon Hunter automations use
-    -- RequestQuest + Check; pulse RequestQuest a few times instead of one fragile call.
+                local deadline = os.clock() + 1.5
+                while os.clock() < deadline and isRunning(token) do
+                    local kind = questKind()
+                    if kind ~= "NONE" then
+                        local qt = PHX.questStatusText()
+                        setStatus(qt)
+                        logLine("DRAGON_HUNTER", "quest accepted without confirm | "..qt)
+                        return true
+                    end
+                    opts = dialogueOptions()
+                    if #opts >= 1 and #opts <= 2 then
+                        fireButton(opts[1]) -- Sure / Yes is top option.
+                        logLine("DRAGON_HUNTER", "Sure option fired | options="..#opts)
+                        break
+                    end
+                    task.wait(.04)
+                end
+
+                deadline = os.clock() + 2.2
+                while os.clock() < deadline and isRunning(token) do
+                    if questKind() ~= "NONE" then
+                        local qt = PHX.questStatusText()
+                        setStatus(qt)
+                        logLine("DRAGON_HUNTER", "quest accepted through GUI | "..qt)
+                        noteProgress("QUEST_ACCEPTED:"..questKind())
+                        return true
+                    end
+                    task.wait(.05)
+                end
+            end
+        end
+        task.wait(.12)
+    end
+
+    -- Fallback only: direct RF. Do not spam it continuously.
     local rf = PHX.dragonHunterRemote()
     if rf then
-        for attempt=1,10 do
+        for attempt=1,3 do
             if not isRunning(token) then return false end
             pcall(function() rf:InvokeServer({Context="RequestQuest"}) end)
-            local deadline = os.clock() + .28
+            local deadline = os.clock() + .45
             while os.clock() < deadline do
-                local kind = questKind()
-                if kind ~= "NONE" then
+                if questKind() ~= "NONE" then
                     local qt = PHX.questStatusText()
                     setStatus(qt)
-                    logLine("DRAGON_HUNTER", "quest accepted through RF | attempt="..attempt.." | "..qt)
+                    logLine("DRAGON_HUNTER", "quest accepted through RF fallback | "..qt)
+                    noteProgress("QUEST_ACCEPTED_RF:"..questKind())
                     return true
                 end
-                task.wait(.04)
+                task.wait(.05)
             end
         end
     end
 
-    -- Fallback: open the actual NPC dialogue without a screen mouse click, then
-    -- fire Hunt and confirmation button signals directly.
-    if not openDragonHunter(token) then
-        logLine("DRAGON_HUNTER", "RF request failed and dialogue could not be opened")
-        return false
-    end
-
-    local opts = dialogueOptions()
-    if #opts < 3 then return false end
-    fireButton(opts[1]) -- Hunt
-
-    local deadline = os.clock() + 1.6
-    while os.clock() < deadline and isRunning(token) do
-        local kind = questKind()
-        if kind ~= "NONE" then
-            setStatus(PHX.questStatusText())
-            return true
-        end
-        opts = dialogueOptions()
-        if #opts >= 1 and #opts <= 2 then
-            fireButton(opts[1]) -- Yes / Sure
-            break
-        end
-        task.wait(.05)
-    end
-
-    deadline = os.clock() + 2.0
-    while os.clock() < deadline and isRunning(token) do
-        if questKind() ~= "NONE" then
-            local qt = PHX.questStatusText()
-            setStatus(qt)
-            logLine("DRAGON_HUNTER", "quest accepted through GUI signals | "..qt)
-            return true
-        end
-        task.wait(.05)
-    end
+    logLine("DRAGON_HUNTER", "quest request FAILED after GUI + RF fallback")
     return false
 end
 
 local function farmTreeQuest(token)
     local i = 1
-    while isRunning(token) and questKind() == "TREE" do
+    while isRunning(token) and questKind() == "TREE" and not PHX.questCompleteVisible() do
         local cf = CONFIG.TREES[i]
         setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
         highTween(cf * CFrame.new(0,10,0), 300, token)
@@ -2691,7 +2772,7 @@ function PHX.touchVisibleBlaze(token, allowTween)
             end)
             count = count + 1
         elseif allowTween and d <= 2800 then
-            highTween(p.CFrame * CFrame.new(0,1.5,0), 650, token)
+            safeTween(p.CFrame * CFrame.new(0,1.5,0), 900, token)
             rr = root()
             if rr and firetouchinterest and p.Parent then
                 pcall(function()
@@ -2713,20 +2794,22 @@ local function farmHunterQuest(token)
     if kind == "TREE" then
         farmTreeQuest(token)
     elseif kind == "HYDRA" then
-        while isRunning(token) and questKind() == "HYDRA" do
+        while isRunning(token) and questKind() == "HYDRA" and not PHX.questCompleteVisible() do
             setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
             farmNamedMob("Hydra Enforcer", CONFIG.MOB_CAMPS.HydraEnforcer, token)
             PHX.pulseBlazeCollectRemote()
             PHX.touchVisibleBlaze(token, false)
-            task.wait(.03)
+            if PHX.questCompleteVisible() then break end
+            task.wait(.02)
         end
     elseif kind == "VENOM" then
-        while isRunning(token) and questKind() == "VENOM" do
+        while isRunning(token) and questKind() == "VENOM" and not PHX.questCompleteVisible() do
             setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
             farmNamedMob("Venomous Assailant", CONFIG.MOB_CAMPS.VenomousAssailant, token)
             PHX.pulseBlazeCollectRemote()
             PHX.touchVisibleBlaze(token, false)
-            task.wait(.03)
+            if PHX.questCompleteVisible() then break end
+            task.wait(.02)
         end
     end
 
@@ -2747,8 +2830,8 @@ function PHX.collectBlazeEmberDrops(token, seconds)
         local now = inventoryCount("Blaze Ember", true)
         if now >= before + 3 then break end
         -- Once no pickup is visible for a short grace window, immediately move on.
-        if touched == 0 and os.clock() - lastSeenAt > .38 then break end
-        task.wait(.04)
+        if touched == 0 and os.clock() - lastSeenAt > .16 then break end
+        task.wait(.02)
     end
 
     local after = inventoryCount("Blaze Ember", true)
@@ -2764,11 +2847,22 @@ local function farmBlazeEmbers(token)
         else
             local kind = questKind()
             if kind == "NONE" then
+                -- Re-anchor at Dragon Hunter before every request. Do not let a wrong Castle portal
+                -- destination leave the quest loop running from Turtle/Mansion.
+                local rr = root()
+                if not rr then
+                    waitAlive(token)
+                    rr = root()
+                end
+                if rr and (rr.Position - CONFIG.DRAGON_HUNTER.STAND.Position).Magnitude > 120 then
+                    safeTween(CONFIG.DRAGON_HUNTER.STAND, 300, token)
+                    task.wait(.12)
+                end
                 setStatus("Dragon Hunter -> requesting Hunt quest")
                 if not receiveDragonHunterQuest(token) then
-                    setStatus("Dragon Hunter quest request failed -> fast retry")
-                    logLine("DRAGON_HUNTER", "quest request failed | no screen click used")
-                    task.wait(.25)
+                    setStatus("Dragon Hunter quest request failed -> retry at NPC")
+                    logLine("DRAGON_HUNTER", "quest request failed | virtual NPC click path used")
+                    task.wait(.12)
                 end
                 kind = questKind()
             end
@@ -3873,7 +3967,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.7.2 QUEST/EMBER | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.7.3 QUEST/PORTAL HOTFIX | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -4013,24 +4107,22 @@ START.MouseButton1Click:Connect(function()
     setStatus("STARTED | "..roleText())
 
     task.spawn(function()
-        local ok, err = pcall(mainLoop, token)
-        if not ok then
-            logLine("RUN_FATAL", tostring(err))
-            setStatus("RUN ERROR: "..tostring(err).." | auto remains armed for retry")
-            if token == RUN_TOKEN and _G.TeamConfig.IsRunning then
-                task.wait(.4)
-                task.spawn(function() mainLoop(token) end)
-                return
+        while token == RUN_TOKEN and _G.TeamConfig.IsRunning do
+            local ok, err = pcall(mainLoop, token)
+            if not ok then
+                logLine("RUN_FATAL", tostring(err))
+                setStatus("RUN ERROR: "..tostring(err).." | retrying state machine")
+                task.wait(.35)
+            elseif token == RUN_TOKEN and _G.TeamConfig.IsRunning then
+                -- Transient route/quest failures must NEVER flip the button back to START.
+                logLine("RUN_RESTART", "mainLoop returned while still armed -> restart")
+                setStatus("State machine returned -> auto retry")
+                task.wait(.30)
             end
         end
+
         if token == RUN_TOKEN then
-            if _G.TeamConfig.IsRunning then
-                _G.TeamConfig.StopReason = _G.TeamConfig.StopReason or "MAINLOOP_RETURNED"
-                logLine("RUN_END", "unexpected mainLoop return | reason="..tostring(_G.TeamConfig.StopReason))
-            else
-                logLine("RUN_END", "reason="..tostring(_G.TeamConfig.StopReason))
-            end
-            _G.TeamConfig.IsRunning = false
+            logLine("RUN_END", "reason="..tostring(_G.TeamConfig.StopReason))
             START.Text = "▶ START FULL AUTO"
             START.BackgroundColor3 = Color3.fromRGB(45,150,70)
         end
