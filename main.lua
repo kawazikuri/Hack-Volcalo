@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.9.3 (NPC HUNT + FIXED TREES + ITEM CHECK)
+    PREHISTORIC TEAM V2.9.5 (REMOTE HUNT + STRICT NPC + ITEM REFRESH)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -55,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.9.3 NPC HUNT + FIXED TREES\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.9.5 REMOTE HUNT + STRICT NPC\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -70,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.9.3 NPC HUNT + FIXED TREES\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.9.5 REMOTE HUNT + STRICT NPC\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -557,7 +557,7 @@ local function sendWebhook(title, description, fields)
         title = title,
         description = description,
         fields = fields or {},
-        footer = {text = "Prehistoric Team V2.9.3 | " .. LP.Name},
+        footer = {text = "Prehistoric Team V2.9.5 | " .. LP.Name},
         timestamp = DateTime.now():ToIsoDate(),
     }
 
@@ -726,40 +726,227 @@ end
 -- Fallback for the new Stash UI. If the card is instantiated client-side, read the
 -- count text nearest the exact material name. This is only used when getInventory
 -- does not expose the Material entry; it never overrides a valid server count.
+function PHX.guiTextNormalized(obj)
+    local txt = ""
+    pcall(function() txt = tostring(obj.Text or "") end)
+    txt = txt:gsub("<.->", "")
+    txt = txt:gsub("&nbsp;", " ")
+    return PHX.normalizeItemName(txt)
+end
+
 function PHX.guiMaterialCount(itemName)
     local wanted = PHX.normalizeItemName(itemName)
-    local best, bestDist = nil, math.huge
-    for _,obj in ipairs(PG:GetDescendants()) do
-        if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and PHX.normalizeItemName(obj.Text) == wanted then
-            local okPos, center = pcall(function()
-                return obj.AbsolutePosition + obj.AbsoluteSize/2
+    local best, bestScore = nil, -math.huge
+
+    local function numericText(o)
+        if not (o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox")) then return nil end
+        local raw = tostring(o.Text or ""):gsub("<.->", ""):gsub(",", "")
+        local n = tonumber(raw:match("^%s*(%d+)%s*$"))
+        if n and n >= 0 and n <= 999999 then return n end
+        return nil
+    end
+
+    for _,label in ipairs(PG:GetDescendants()) do
+        if (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox"))
+            and PHX.guiTextNormalized(label) == wanted then
+            local okCenter, center = pcall(function()
+                return label.AbsolutePosition + label.AbsoluteSize/2
             end)
-            local ancestor = obj.Parent
-            local hops = 0
-            while ancestor and ancestor ~= PG and hops < 7 do
+            local ancestor = label.Parent
+            local depth = 0
+            while ancestor and ancestor ~= PG and depth < 10 do
                 if ancestor:IsA("GuiObject") then
-                    for _,x in ipairs(ancestor:GetDescendants()) do
-                        if x ~= obj and (x:IsA("TextLabel") or x:IsA("TextButton")) then
-                            local raw = tostring(x.Text or ""):gsub(",",""):match("^%s*(%d+)%s*$")
-                            local n = tonumber(raw)
-                            if n and n >= 0 and n <= 999 then
-                                local dist = 999999
-                                if okPos then
-                                    local ok2, p2 = pcall(function() return x.AbsolutePosition + x.AbsoluteSize/2 end)
-                                    if ok2 then dist = (p2-center).Magnitude end
+                    for _,cand in ipairs(ancestor:GetDescendants()) do
+                        if cand ~= label then
+                            local n = numericText(cand)
+                            if n ~= nil then
+                                local score = 1000 - depth * 60
+                                local nm = string.lower(cand.Name or "")
+                                if nm:find("count",1,true) or nm:find("amount",1,true) or nm:find("quantity",1,true) or nm:find("owned",1,true) then
+                                    score = score + 500
                                 end
-                                if dist < bestDist then best, bestDist = n, dist end
+                                if okCenter then
+                                    local ok2,p2 = pcall(function() return cand.AbsolutePosition + cand.AbsoluteSize/2 end)
+                                    if ok2 then score = score - math.min(700, (p2-center).Magnitude) end
+                                end
+                                if score > bestScore then
+                                    best, bestScore = n, score
+                                end
                             end
                         end
                     end
                 end
                 ancestor = ancestor.Parent
-                hops = hops + 1
+                depth = depth + 1
             end
         end
     end
-    if best ~= nil and bestDist <= 520 then return best end
+    return best
+end
+
+function PHX.buttonAncestor(o)
+    local p = o
+    for _=1,12 do
+        if not p or p == PG then break end
+        if p:IsA("TextButton") or p:IsA("ImageButton") then return p end
+        p = p.Parent
+    end
     return nil
+end
+
+function PHX.findStashButton()
+    local best, bestScore = nil, -math.huge
+    for _,o in ipairs(PG:GetDescendants()) do
+        if o:IsA("GuiObject") then
+            local name = string.lower(tostring(o.Name or ""))
+            local txt = ""
+            if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
+                txt = PHX.guiTextNormalized(o)
+            end
+            local hit = name:find("stash",1,true) ~= nil or txt == "stash" or txt:find("stash",1,true) ~= nil
+            if hit then
+                local b = (o:IsA("TextButton") or o:IsA("ImageButton")) and o or PHX.buttonAncestor(o)
+                if b then
+                    local score = 0
+                    if txt == "stash" then score = score + 1000 end
+                    if name:find("stash",1,true) then score = score + 700 end
+                    pcall(function() if b.Visible then score = score + 100 end end)
+                    if score > bestScore then best,bestScore = b,score end
+                end
+            end
+        end
+    end
+    return best
+end
+
+function PHX.stashLooksOpen()
+    local materialHits = 0
+    local allHits = 0
+    for _,o in ipairs(PG:GetDescendants()) do
+        if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
+            local t = PHX.guiTextNormalized(o)
+            if t == "scrap metal" or t == "blaze ember" or t == "dinosaur bones" or t == "volcanic magnet" then
+                materialHits = materialHits + 1
+            elseif t:match("^all%s*%(%d+%)$") or t == "items" then
+                allHits = allHits + 1
+            end
+        end
+    end
+    return materialHits > 0 or allHits >= 2
+end
+
+function PHX.findVisibleStashClose()
+    for _,o in ipairs(PG:GetDescendants()) do
+        if o:IsA("TextButton") or o:IsA("ImageButton") then
+            local nm = string.lower(tostring(o.Name or ""))
+            local tx = ""
+            if o:IsA("TextButton") then tx = string.lower(tostring(o.Text or "")) end
+            if (nm:find("close",1,true) or tx == "x" or tx == "×") then
+                local vis = false
+                pcall(function() vis = o.Visible end)
+                if vis then return o end
+            end
+        end
+    end
+    return nil
+end
+
+
+function PHX.signalGuiButton(btn)
+    if not btn then return false end
+    local fired = false
+    local function hit(sig)
+        if getconnections then
+            local ok, cons = pcall(function() return getconnections(sig) end)
+            if ok and type(cons) == "table" then
+                for _,c in ipairs(cons) do
+                    if c.Fire then pcall(function() c:Fire() end); fired = true
+                    elseif c.Function then pcall(function() c.Function() end); fired = true end
+                end
+            end
+        end
+        if firesignal then
+            local ok = pcall(function() firesignal(sig) end)
+            if ok then fired = true end
+        end
+    end
+    pcall(function() hit(btn.Activated) end)
+    pcall(function() hit(btn.MouseButton1Click) end)
+    task.wait(.08)
+    return fired
+end
+
+function PHX.refreshMaterialViaStash()
+    -- V2.9.5: open the real Stash UI via GUI signals, scrape exact card counts,
+    -- then close it. No VirtualInputManager / physical mouse click is used.
+    local wasOpen = PHX.stashLooksOpen()
+    local b = PHX.findStashButton()
+    if not wasOpen then
+        if not b then
+            logLine("STASH_SYNC_FAIL", "could not locate Stash GuiButton")
+            return false
+        end
+        pcall(function() PHX.signalGuiButton(b) end)
+        local deadline = os.clock() + 1.25
+        repeat task.wait(.05) until PHX.stashLooksOpen() or os.clock() >= deadline
+    end
+
+    local found = 0
+    for _,name in ipairs({"Scrap Metal","Blaze Ember","Dinosaur Bones","Volcanic Magnet"}) do
+        local n = PHX.guiMaterialCount(name)
+        if n ~= nil then
+            local key = PHX.normalizeItemName(name)
+            PHX.persistMaterial(name, n, "STASH_GUI_AUTO")
+            local t = ITEM_TRACK[key]
+            if t then
+                t.Server = math.max(0, n)
+                t.Optimistic = math.max(0, n)
+                t.OptimisticUntil = 0
+                t.Source = "STASH_GUI_AUTO"
+                t.Known = true
+            end
+            found = found + 1
+            logLine("STASH_ITEM", name.."="..tostring(n))
+        end
+    end
+
+    if not wasOpen then
+        local close = PHX.findVisibleStashClose()
+        if close then
+            pcall(function() PHX.signalGuiButton(close) end)
+        elseif b then
+            pcall(function() PHX.signalGuiButton(b) end)
+        end
+        task.wait(.05)
+    end
+
+    if found > 0 then
+        logLine("STASH_REFRESH", "read "..tostring(found).." material counters")
+        return true
+    end
+    logLine("STASH_SYNC_FAIL", "Stash opened but no material count was parsed")
+    return false
+end
+
+PHX.CounterSyncBusy = false
+function PHX.forceCounterSync()
+    if PHX.CounterSyncBusy then return false end
+    PHX.CounterSyncBusy = true
+    local ok = false
+    pcall(function()
+        getInventory(true)
+        local s = PHX.exactMaterialCount(INVENTORY_CACHE.Raw, "Scrap Metal") or PHX.smartTableCount(INVENTORY_CACHE.Raw, "Scrap Metal")
+        local e = PHX.exactMaterialCount(INVENTORY_CACHE.Raw, "Blaze Ember") or PHX.smartTableCount(INVENTORY_CACHE.Raw, "Blaze Ember")
+        if s ~= nil then PHX.setKnownMaterial("Scrap Metal", s, "REMOTE_EXACT") end
+        if e ~= nil then PHX.setKnownMaterial("Blaze Ember", e, "REMOTE_EXACT") end
+        if s == nil or e == nil then
+            ok = PHX.refreshMaterialViaStash() or ok
+        else
+            ok = true
+        end
+    end)
+    PHX.CounterSyncBusy = false
+    return ok
 end
 
 function PHX.inventoryHasMaterialSchema(inv)
@@ -782,6 +969,18 @@ function PHX.serverInventoryCount(itemName, force)
     local gui = PHX.guiMaterialCount(itemName)
     if gui ~= nil then return gui, "STASH_GUI" end
 
+    -- If the Stash cards are not instantiated because the panel is closed, open it
+    -- through GUI signals (not a physical click), read all materials, then close it.
+    if not PHX.InventoryStashRefreshBusy then
+        PHX.InventoryStashRefreshBusy = true
+        pcall(function() PHX.refreshMaterialViaStash() end)
+        PHX.InventoryStashRefreshBusy = false
+        local mem = PHX.MaterialPersistent[PHX.normalizeItemName(itemName)]
+        if type(mem) == "table" and tonumber(mem.Count) then
+            return math.max(0, tonumber(mem.Count)), tostring(mem.Source or "STASH_GUI_AUTO")
+        end
+    end
+
     -- Only call a missing entry ZERO when the returned table demonstrably contains
     -- Material records. If the current game build returns weapons/other inventory only,
     -- "not found" is UNKNOWN, not zero. This was the V2.6.1 2/10-vs-27 bug.
@@ -792,7 +991,7 @@ function PHX.serverInventoryCount(itemName, force)
 end
 
 
--- V2.9.3 runtime inventory probe. When material schema is unknown we dump the
+-- V2.9.5 runtime inventory probe. When material schema is unknown we dump the
 -- exact getInventory table shape once. This is diagnostic only and does not
 -- influence routing/counters.
 function PHX.valuePreview(v)
@@ -806,7 +1005,7 @@ function PHX.dumpInventoryProbe(reason)
     if not writefile then return nil end
     local inv = getInventory(true)
     local lines = {
-        "===== PREHISTORIC INVENTORY PROBE V2.9.3 =====",
+        "===== PREHISTORIC INVENTORY PROBE V2.9.5 =====",
         "ACCOUNT="..LP.Name,
         "REASON="..tostring(reason or "manual"),
         "LastInventoryReadOK="..tostring(PHX.LastInventoryReadOK),
@@ -867,7 +1066,7 @@ function PHX.dumpInventoryProbe(reason)
         end
     end
 
-    local path = "PH_InventoryProbe_"..LP.Name.."_V293.txt"
+    local path = "PH_InventoryProbe_"..LP.Name.."_V294.txt"
     pcall(function() writefile(path, table.concat(lines, "\n")) end)
     logLine("INV_PROBE", "wrote "..path.." | nodes="..tostring(nodes))
     return path
@@ -3018,48 +3217,94 @@ PG.DescendantAdded:Connect(function(obj) pcall(PHX.watchQuestPopupObject, obj) e
 
 function PHX.fireDragonHunterWorldInteract()
     local npcPos = CONFIG.DRAGON_HUNTER.NPC.Position
-    local best, bestD = nil, math.huge
-    -- Only interaction objects near Dragon Hunter are eligible; this avoids touching unrelated NPCs.
+    local candidates = {}
+
+    local function ancestryText(inst)
+        local parts = {}
+        local p = inst
+        local hops = 0
+        while p and p ~= workspace and hops < 8 do
+            parts[#parts+1] = string.lower(tostring(p.Name or ""))
+            p = p.Parent
+            hops = hops + 1
+        end
+        return table.concat(parts, "/")
+    end
+
+    local function worldPos(inst)
+        local p = inst.Parent
+        if p and p:IsA("BasePart") then return p.Position end
+        if p and p:IsA("Model") then
+            local pp = p.PrimaryPart or p:FindFirstChildWhichIsA("BasePart", true)
+            return pp and pp.Position or nil
+        end
+        if p then
+            local m = p:FindFirstAncestorOfClass("Model")
+            if m then
+                local pp = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart", true)
+                return pp and pp.Position or nil
+            end
+        end
+        return nil
+    end
+
     for _,v in ipairs(workspace:GetDescendants()) do
         if v:IsA("ProximityPrompt") or v:IsA("ClickDetector") then
-            local p = v.Parent
-            local pos = nil
-            if p and p:IsA("BasePart") then
-                pos = p.Position
-            elseif p and p:IsA("Model") then
-                local pp = p.PrimaryPart or p:FindFirstChildWhichIsA("BasePart", true)
-                pos = pp and pp.Position or nil
-            end
+            local pos = worldPos(v)
             if pos then
                 local d = (pos - npcPos).Magnitude
-                if d < 45 and d < bestD then
-                    best, bestD = v, d
+                if d <= 26 then
+                    local path = ancestryText(v)
+                    local bad = path:find("uzoth",1,true)
+                        or path:find("dragon talon",1,true)
+                        or path:find("talon trainer",1,true)
+                        or path:find("draco",1,true)
+                    local positive = path:find("dragon hunter",1,true) or path:find("dragonhunter",1,true)
+                    local score = d
+                    if positive then score = score - 1000 end
+                    if bad then score = score + 5000 end
+                    if v:IsA("ProximityPrompt") then
+                        local action = string.lower(tostring(v.ActionText or ""))
+                        local object = string.lower(tostring(v.ObjectText or ""))
+                        if object:find("dragon hunter",1,true) or object:find("dragonhunter",1,true) then score = score - 800 end
+                        if object:find("uzoth",1,true) or object:find("talon",1,true) then score = score + 5000 end
+                        if action:find("interact",1,true) or action:find("talk",1,true) then score = score - 5 end
+                    end
+                    candidates[#candidates+1] = {obj=v, score=score, d=d, path=path}
                 end
             end
         end
     end
-    if not best then return false, "NO_WORLD_INTERACT" end
-    if best:IsA("ProximityPrompt") then
+
+    table.sort(candidates, function(a,b) return a.score < b.score end)
+    local pick = candidates[1]
+    if not pick or pick.score > 1000 then
+        logLine("DRAGON_HUNTER_INTERACT", "STRICT target not found | candidates="..tostring(#candidates))
+        return false, "NO_STRICT_DRAGON_HUNTER_INTERACT"
+    end
+
+    logLine("DRAGON_HUNTER_INTERACT", "STRICT pick="..pick.obj:GetFullName().." d="..string.format("%.1f",pick.d).." score="..string.format("%.1f",pick.score))
+    if pick.obj:IsA("ProximityPrompt") then
         if fireproximityprompt then
-            local ok = pcall(function() fireproximityprompt(best) end)
-            return ok, "PROXIMITY_PROMPT"
+            local ok = pcall(function() fireproximityprompt(pick.obj) end)
+            return ok, "STRICT_PROXIMITY_PROMPT"
         end
         local ok = pcall(function()
-            best:InputHoldBegin()
-            task.wait(math.max(.05, tonumber(best.HoldDuration) or 0))
-            best:InputHoldEnd()
+            pick.obj:InputHoldBegin()
+            task.wait(math.max(.05, tonumber(pick.obj.HoldDuration) or 0))
+            pick.obj:InputHoldEnd()
         end)
-        if ok then return true, "PROMPT_HOLD" end
+        if ok then return true, "STRICT_PROMPT_HOLD" end
     end
-    if best:IsA("ClickDetector") and fireclickdetector then
-        local ok = pcall(function() fireclickdetector(best) end)
-        return ok, "CLICK_DETECTOR"
+    if pick.obj:IsA("ClickDetector") and fireclickdetector then
+        local ok = pcall(function() fireclickdetector(pick.obj) end)
+        return ok, "STRICT_CLICK_DETECTOR"
     end
     return false, "EXECUTOR_NO_WORLD_INTERACT"
 end
 
 local function openDragonHunter(token)
-    -- V2.9.3: NO screen-space mouse click. We only use the NPC's world
+    -- V2.9.5: NO screen-space mouse click. We only use the NPC's world
     -- interaction object (ProximityPrompt/ClickDetector) so the click cannot
     -- accidentally open Uzoth/Dragon-Talon lore panels or hit our own UI.
     if not safeTween(CONFIG.DRAGON_HUNTER.STAND, 260, token) then return false end
@@ -3098,41 +3343,18 @@ end
 -- the world prompt, not a screen click. Close-like GUI controls are a secondary
 -- fallback, and hiding DialogueGui is UI cleanup only after the quest was accepted.
 function PHX.dismissDragonHunterFinalBubble()
+    -- V2.9.5: never press the world interact again to close a bubble.
+    -- The Hunt path is remote-only; if stale DialogueGui exists, hide it locally.
     local dg = dialogueGui()
     if not dg then return true end
-
-    -- First try explicit Close/Continue/OK/Bye controls if this build exposes one.
-    for _,v in ipairs(dg:GetDescendants()) do
-        if (v:IsA("TextButton") or v:IsA("ImageButton")) and visibleGui(v) then
-            local txt = string.lower(tostring((v:IsA("TextButton") and v.Text) or ""))
-            local nm = string.lower(v.Name or "")
-            if txt:find("continue",1,true) or txt:find("close",1,true)
-                or txt == "ok" or txt == "okay" or txt:find("bye",1,true)
-                or txt:find("leave",1,true) or nm:find("close",1,true)
-                or nm:find("continue",1,true) then
-                pcall(function() fireButton(v) end)
-                task.wait(.08)
-                if not dialogueGui() or #dialogueOptions() == 0 then return true end
-            end
-        end
+    if dg:IsA("ScreenGui") then
+        pcall(function() dg.Enabled = false end)
+        PHX.DialogueLocallyHidden = true
+    elseif dg:IsA("GuiObject") then
+        pcall(function() dg.Visible = false end)
+        PHX.DialogueLocallyHidden = true
     end
-
-    -- The normal in-game behavior in the supplied video: press Interact once more.
-    local ok, mode = PHX.fireDragonHunterWorldInteract()
-    logLine("DRAGON_HUNTER_DISMISS", "world interact="..tostring(mode).." ok="..tostring(ok))
-    task.wait(.16)
-
-    dg = dialogueGui()
-    if dg and visibleGui(dg) then
-        -- Final visual cleanup. Mark it so openDragonHunter can re-enable it next time.
-        if dg:IsA("ScreenGui") then
-            pcall(function() dg.Enabled = false end)
-            PHX.DialogueLocallyHidden = true
-        elseif dg:IsA("GuiObject") then
-            pcall(function() dg.Visible = false end)
-            PHX.DialogueLocallyHidden = true
-        end
-    end
+    logLine("DRAGON_HUNTER_DISMISS", "local dialogue cleanup only; no world click")
     return true
 end
 
@@ -3147,84 +3369,79 @@ function PHX.closeDragonHunterDialogue()
 end
 
 local function receiveDragonHunterQuest(token)
-    -- A completed popup means the previous Hunt is finished even if RF/DragonHunter
-    -- still returns stale text for a short time. Never treat that stale text as active.
-    if questKind() ~= "NONE" and PHX.QuestCompletedAt < (PHX.LastQuestAcceptedAt or -math.huge) then
+    -- V2.9.5: Hunt is 100% server-remote driven. Do NOT open/touch any NPC GUI.
+    -- This prevents the nearby Uzoth / Dragon Talon Trainer lore panel from ever being opened.
+    local existingKind = questKind()
+    if existingKind ~= "NONE" and PHX.QuestCompletedAt < (PHX.LastQuestAcceptedAt or -math.huge) then
         setStatus(PHX.questStatusText())
         return true
     end
 
-    -- Restore the exact interaction path that previously worked on this account:
-    -- physically return to Dragon Hunter, open DialogueGui, fire Hunt, then fire Sure.
-    setStatus("Dragon Hunter NPC -> opening dialogue")
-    for cycle=1,4 do
-        if not isRunning(token) then return false end
-        if openDragonHunter(token) then
-            local opts = dialogueOptions()
-            if #opts >= 3 then
-                setStatus("Dragon Hunter NPC -> HUNT")
-                fireButton(opts[1])
+    local rf = PHX.dragonHunterRemote()
+    if not rf then
+        setStatus("Dragon Hunter RF missing -> retry")
+        logLine("DRAGON_HUNTER_RF", "RF/DragonHunter missing")
+        return false
+    end
 
-                local confirmDeadline = os.clock() + 2.0
-                local confirmed = false
-                while isRunning(token) and os.clock() < confirmDeadline do
-                    opts = dialogueOptions()
-                    if #opts >= 1 and #opts <= 2 then
-                        setStatus("Dragon Hunter NPC -> SURE")
-                        fireButton(opts[1])
-                        confirmed = true
-                        break
-                    end
-                    task.wait(.04)
-                end
-
-                if confirmed then
-                    local acceptedAt = os.clock()
-                    local verifyDeadline = acceptedAt + 3.5
-                    while isRunning(token) and os.clock() < verifyDeadline do
-                        -- A fresh quest can be the same TYPE as the previous one, so the
-                        -- confirmation/dialogue transition itself is accepted, while Check
-                        -- is used only to populate the status text.
-                        local kind = questKind()
-                        if kind ~= "NONE" or #dialogueOptions() == 0 then
-                            PHX.LastQuestAcceptedAt = acceptedAt
-                            PHX.QuestCompletedAt = -math.huge
-                            PHX.QuestCompletedText = ""
-                            local qt = kind ~= "NONE" and PHX.questStatusText() or "QUEST ACCEPTED | waiting replicated text"
-                            setStatus(qt)
-                            logLine("DRAGON_HUNTER_NPC", "accepted cycle="..cycle.." | "..qt)
-                            noteProgress("QUEST_ACCEPTED_NPC:"..tostring(kind))
-                            PHX.dismissDragonHunterFinalBubble()
-                            return true
-                        end
-                        task.wait(.05)
-                    end
+    -- Clear any locally lingering dialogue/lore UI from earlier buggy builds.
+    local dg = dialogueGui()
+    if dg then
+        pcall(function()
+            if dg:IsA("ScreenGui") then dg.Enabled = false
+            elseif dg:IsA("GuiObject") then dg.Visible = false end
+        end)
+        PHX.DialogueLocallyHidden = true
+    end
+    for _,o in ipairs(PG:GetDescendants()) do
+        if (o:IsA("TextLabel") or o:IsA("TextButton")) then
+            local txt = string.lower(tostring(o.Text or ""))
+            if txt:find("the legend of the dragon talon trainer",1,true) then
+                local p = o.Parent
+                for _=1,8 do
+                    if not p or p == PG then break end
+                    if p:IsA("GuiObject") then pcall(function() p.Visible = false end) end
+                    p = p.Parent
                 end
             end
         end
-        PHX.closeDragonHunterDialogue()
-        task.wait(.12)
     end
 
-    -- Last-resort direct request only after the proven NPC path failed.
-    local rf = PHX.dragonHunterRemote()
-    if rf then
-        local ok = pcall(function() rf:InvokeServer({Context="RequestQuest"}) end)
-        if ok then
-            task.wait(.25)
-            local kind = questKind()
+    for attempt=1,14 do
+        if not isRunning(token) then return false end
+        setStatus("Dragon Hunter REMOTE HUNT ["..attempt.."/14]")
+
+        local okReq, response = pcall(function()
+            return rf:InvokeServer({Context="RequestQuest"})
+        end)
+        logLine("DRAGON_HUNTER_RF", "RequestQuest attempt="..attempt.." ok="..tostring(okReq).." type="..typeof(response))
+
+        local deadline = os.clock() + .55
+        while isRunning(token) and os.clock() < deadline do
+            local text = PHX.dragonHunterCheckText()
+            local l = string.lower(text)
+            local kind = "NONE"
+            if l:find("hydra enforcer",1,true) then kind = "HYDRA"
+            elseif l:find("venomous assailant",1,true) then kind = "VENOM"
+            elseif l:find("destroy",1,true) and l:find("tree",1,true) then kind = "TREE" end
+
             if kind ~= "NONE" then
                 PHX.LastQuestAcceptedAt = os.clock()
                 PHX.QuestCompletedAt = -math.huge
-                setStatus("RF FALLBACK ACCEPTED | "..PHX.questStatusText())
-                logLine("DRAGON_HUNTER_RF_FALLBACK", PHX.questStatusText())
+                PHX.QuestCompletedText = ""
+                local msg = "REMOTE QUEST ACCEPTED | QUEST "..kind.." | "..text
+                setStatus(msg)
+                logLine("DRAGON_HUNTER_RF", msg)
+                noteProgress("QUEST_ACCEPTED_REMOTE:"..kind)
                 return true
             end
+            task.wait(.05)
         end
+        task.wait(.10)
     end
 
-    setStatus("Dragon Hunter quest FAILED -> retrying NPC")
-    logLine("DRAGON_HUNTER", "NPC Hunt/Sure + RF fallback failed")
+    setStatus("Dragon Hunter remote quest FAILED -> retry state")
+    logLine("DRAGON_HUNTER_RF", "RequestQuest/Check failed after 14 attempts")
     return false
 end
 
@@ -4222,6 +4439,7 @@ end
 local function recoverMagnet(token)
     -- V2.7.1: never require three unrelated material counters to be readable before progressing.
     -- Decide phase-by-phase: Scrap -> craft probe -> Blaze Ember -> craft.
+    PHX.forceCounterSync()
     PHX.warmMaterialInventory(1.0)
 
     if hasVolcanicMagnet() then return true end
@@ -4749,7 +4967,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.9.3 NO-MOUSE DIALOG/INV PROBE | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.9.5 REMOTE HUNT/STRICT NPC/INV REFRESH | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -4788,7 +5006,7 @@ COUNTER_LABEL.TextColor3 = Color3.fromRGB(120,235,170)
 COUNTER_LABEL.Font = Enum.Font.SourceSansBold
 COUNTER_LABEL.TextSize = 13
 COUNTER_LABEL.TextWrapped = true
-COUNTER_LABEL.Text = "Scrap ?/10 | Ember ?/15 | Magnet ? | Bones ? | DragonGuard ARMED"
+COUNTER_LABEL.Text = "Scrap SYNC/10 | Ember SYNC/15 | Magnet SYNC | Bones SYNC | DragonGuard ARMED"
 
 STATUS_LABEL = Instance.new("TextLabel")
 STATUS_LABEL.Parent = F
@@ -4842,15 +5060,18 @@ local function refreshCounters()
 
     local function srcTag(source)
         if source == "REMOTE_EXACT" then return "R" end
-        if source == "STASH_GUI" then return "G" end
+        if source == "STASH_GUI" or source == "STASH_GUI_AUTO" then return "G" end
         if source == "REMOTE_DEEP" then return "D" end
         if source == "CRAFT_GUI" then return "C" end
         if source == "MEMORY" then return "M" end
         if source == "CRAFT_LOCAL" then return "L" end
         return "?"
     end
-    local scrapText = scrapKnown and tostring(scrap) or "?"
-    local emberText = emberKnown and tostring(ember) or "?"
+    if (not scrapKnown or not emberKnown) and not PHX.CounterSyncBusy then
+        task.spawn(function() PHX.forceCounterSync() end)
+    end
+    local scrapText = scrapKnown and tostring(scrap) or "SYNC"
+    local emberText = emberKnown and tostring(ember) or "SYNC"
     COUNTER_LABEL.Text = "Scrap "..scrapText.."/10["..srcTag(scrapSource).."] | Ember "..emberText.."/15["..srcTag(emberSource).."] | Magnet "..(magnet > 0 and "YES" or "NO").." | Bones "..tostring(bones).." | "..dragonText
 end
 
