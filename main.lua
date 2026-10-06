@@ -55,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.7.1 MATERIAL-PHASE FIX\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.7.2 DRAGON-HUNTER FIX\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -70,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.7.1 MATERIAL-PHASE FIX\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.7.2 DRAGON-HUNTER FIX\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -202,6 +202,7 @@ _G.TeamConfig = _G.TeamConfig or {}
 _G.TeamConfig.MasterName = CONFIG.MASTER_NAME
 _G.TeamConfig.IsMaster = LP.Name == CONFIG.MASTER_NAME
 _G.TeamConfig.IsRunning = false
+_G.TeamConfig.StopReason = nil
 
 local RUN_TOKEN = 0
 local STATUS_LABEL
@@ -527,7 +528,7 @@ local function sendWebhook(title, description, fields)
         title = title,
         description = description,
         fields = fields or {},
-        footer = {text = "Prehistoric Team V2.7.1 | " .. LP.Name},
+        footer = {text = "Prehistoric Team V2.7.2 | " .. LP.Name},
         timestamp = DateTime.now():ToIsoDate(),
     }
 
@@ -2211,6 +2212,7 @@ function PHX.storeOneDragonFruit(tool)
     end
 
     DRAGON_GUARD_STATE.Critical = true
+    _G.TeamConfig.StopReason = "DRAGON_STORE_FAIL"
     _G.TeamConfig.IsRunning = false
     setStatus("CRITICAL: PHYSICAL DRAGON still present -> STOPPED")
     logLine("DRAGON_STORE_FAIL", "physical Dragon Fruit remained after retries")
@@ -2393,53 +2395,45 @@ local function fireButton(btn)
     return true
 end
 
-local function openDragonHunter(token)
-    safeTween(CONFIG.DRAGON_HUNTER.STAND, 260, token)
-
-    for _=1,6 do
-        local opts = dialogueOptions()
-        if #opts >= 3 then return true end
-
-        local cam = workspace.CurrentCamera
-        if cam then
-            cam.CFrame = CFrame.lookAt(cam.CFrame.Position, CONFIG.DRAGON_HUNTER.NPC.Position)
-            local p,on = cam:WorldToViewportPoint(CONFIG.DRAGON_HUNTER.NPC.Position)
-            if on then
-                VirtualInputManager:SendMouseButtonEvent(p.X,p.Y,0,true,game,0)
-                task.wait(.08)
-                VirtualInputManager:SendMouseButtonEvent(p.X,p.Y,0,false,game,0)
-            end
-        end
-        task.wait(.35)
-    end
-    return #dialogueOptions() >= 3
-end
-
+-- Dragon Hunter interaction is intentionally screen-click free.
+-- V2.7.1 used VirtualInputManager on the NPC's projected screen position; that could
+-- accidentally hit this script's STOP button and was also unreliable on mobile UI layers.
 function PHX.dragonHunterRemote()
-    local modules = ReplicatedStorage:FindFirstChild("Modules")
-    local net = modules and modules:FindFirstChild("Net")
-    return net and net:FindFirstChild("RF/DragonHunter")
+    local modules = ReplicatedStorage:FindFirstChild("Modules") or ReplicatedStorage:WaitForChild("Modules", 5)
+    local net = modules and (modules:FindFirstChild("Net") or modules:WaitForChild("Net", 5))
+    return net and (net:FindFirstChild("RF/DragonHunter") or net:WaitForChild("RF/DragonHunter", 5))
 end
 
-function PHX.dragonHunterCheckText()
+function PHX.dragonHunterCheckRaw()
     local rf = PHX.dragonHunterRemote()
-    if not rf then return "" end
+    if not rf then return nil end
     local ok, response = pcall(function()
         return rf:InvokeServer({Context="Check"})
     end)
-    if not ok then return "" end
+    if not ok then return nil end
+    return response
+end
+
+function PHX.dragonHunterCheckText()
+    local response = PHX.dragonHunterCheckRaw()
+    if response == nil then return "" end
     local found = ""
     local seen = {}
     local function walk(v, depth)
-        if found ~= "" or depth > 6 then return end
+        if found ~= "" or depth > 8 then return end
         if type(v) == "string" then
             local l = string.lower(v)
-            if l:find("hydra enforcer",1,true) or l:find("venomous assailant",1,true) or l:find("destroy 10 trees",1,true) then
+            if l:find("hydra enforcer",1,true)
+                or l:find("venomous assailant",1,true)
+                or (l:find("destroy",1,true) and l:find("tree",1,true)) then
                 found = v
             end
         elseif type(v) == "table" and not seen[v] then
             seen[v] = true
-            for k,x in pairs(v) do walk(k, depth+1) walk(x, depth+1) end
+            for k,x in pairs(v) do
+                walk(k, depth + 1)
+                walk(x, depth + 1)
+            end
         end
     end
     walk(response, 0)
@@ -2457,7 +2451,7 @@ local function questText()
             local l = string.lower(t)
             if l:find("hydra enforcer",1,true)
                 or l:find("venomous assailant",1,true)
-                or l:find("destroy 10 trees",1,true) then
+                or (l:find("destroy",1,true) and l:find("tree",1,true)) then
                 return t
             end
         end
@@ -2469,49 +2463,142 @@ local function questKind()
     local l = string.lower(questText())
     if l:find("hydra enforcer",1,true) then return "HYDRA" end
     if l:find("venomous assailant",1,true) then return "VENOM" end
-    if l:find("destroy 10 trees",1,true) then return "TREE" end
+    if l:find("destroy",1,true) and l:find("tree",1,true) then return "TREE" end
     return "NONE"
 end
 
-local function receiveDragonHunterQuest(token)
-    if questKind() ~= "NONE" then return true end
+function PHX.questStatusText()
+    local kind = questKind()
+    local text = questText()
+    if kind == "NONE" then return "No active Dragon Hunter quest" end
+    if text == "" then text = kind end
+    return "QUEST "..kind.." | "..text
+end
 
-    -- Current hubs request the Hunt directly through RF/DragonHunter. Use it first;
-    -- the old DialogueGui path remains as a fallback for clients where the RF is hidden.
+function PHX.fireDragonHunterWorldInteract()
+    local npcPos = CONFIG.DRAGON_HUNTER.NPC.Position
+    local best, bestD = nil, math.huge
+    -- Only interaction objects near Dragon Hunter are eligible; this avoids touching unrelated NPCs.
+    for _,v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("ProximityPrompt") or v:IsA("ClickDetector") then
+            local p = v.Parent
+            local pos = nil
+            if p and p:IsA("BasePart") then
+                pos = p.Position
+            elseif p and p:IsA("Model") then
+                local pp = p.PrimaryPart or p:FindFirstChildWhichIsA("BasePart", true)
+                pos = pp and pp.Position or nil
+            end
+            if pos then
+                local d = (pos - npcPos).Magnitude
+                if d < 45 and d < bestD then
+                    best, bestD = v, d
+                end
+            end
+        end
+    end
+    if not best then return false, "NO_WORLD_INTERACT" end
+    if best:IsA("ProximityPrompt") and fireproximityprompt then
+        local ok = pcall(function() fireproximityprompt(best) end)
+        return ok, "PROXIMITY_PROMPT"
+    end
+    if best:IsA("ClickDetector") and fireclickdetector then
+        local ok = pcall(function() fireclickdetector(best) end)
+        return ok, "CLICK_DETECTOR"
+    end
+    return false, "EXECUTOR_NO_WORLD_INTERACT"
+end
+
+local function openDragonHunter(token)
+    if not safeTween(CONFIG.DRAGON_HUNTER.STAND, 260, token) then return false end
+    task.wait(.18)
+
+    for attempt=1,6 do
+        if not isRunning(token) then return false end
+        local opts = dialogueOptions()
+        if #opts >= 3 then return true end
+
+        local ok, backend = PHX.fireDragonHunterWorldInteract()
+        logLine("DRAGON_HUNTER_INTERACT", "attempt="..attempt.." backend="..tostring(backend).." ok="..tostring(ok))
+        if ok then
+            local deadline = os.clock() + .75
+            while os.clock() < deadline do
+                if #dialogueOptions() >= 3 then return true end
+                task.wait(.06)
+            end
+        else
+            task.wait(.12)
+        end
+    end
+    return #dialogueOptions() >= 3
+end
+
+local function receiveDragonHunterQuest(token)
+    if questKind() ~= "NONE" then
+        setStatus(PHX.questStatusText())
+        return true
+    end
+
+    if not safeTween(CONFIG.DRAGON_HUNTER.STAND, 260, token) then return false end
+    task.wait(.15)
+
+    -- Direct RF is the primary path. Public/current Dragon Hunter automations use
+    -- RequestQuest + Check; pulse RequestQuest a few times instead of one fragile call.
     local rf = PHX.dragonHunterRemote()
     if rf then
-        local ok = pcall(function() rf:InvokeServer({Context="RequestQuest"}) end)
-        if ok then
-            local deadline = os.clock() + 4
+        for attempt=1,10 do
+            if not isRunning(token) then return false end
+            pcall(function() rf:InvokeServer({Context="RequestQuest"}) end)
+            local deadline = os.clock() + .28
             while os.clock() < deadline do
-                if not isRunning(token) then return false end
-                if questKind() ~= "NONE" then
-                    logLine("DRAGON_HUNTER", "quest accepted through RF/DragonHunter | "..questText())
+                local kind = questKind()
+                if kind ~= "NONE" then
+                    local qt = PHX.questStatusText()
+                    setStatus(qt)
+                    logLine("DRAGON_HUNTER", "quest accepted through RF | attempt="..attempt.." | "..qt)
                     return true
                 end
-                task.wait(.18)
+                task.wait(.04)
             end
         end
     end
 
-    if not openDragonHunter(token) then return false end
+    -- Fallback: open the actual NPC dialogue without a screen mouse click, then
+    -- fire Hunt and confirmation button signals directly.
+    if not openDragonHunter(token) then
+        logLine("DRAGON_HUNTER", "RF request failed and dialogue could not be opened")
+        return false
+    end
+
     local opts = dialogueOptions()
     if #opts < 3 then return false end
-    fireButton(opts[1])
-    local deadline = os.clock()+2
-    repeat
-        task.wait(.12)
-        if questKind() ~= "NONE" then return true end
+    fireButton(opts[1]) -- Hunt
+
+    local deadline = os.clock() + 1.6
+    while os.clock() < deadline and isRunning(token) do
+        local kind = questKind()
+        if kind ~= "NONE" then
+            setStatus(PHX.questStatusText())
+            return true
+        end
         opts = dialogueOptions()
-        if #opts >= 1 and #opts <= 2 then break end
-    until os.clock()>deadline
-    opts = dialogueOptions()
-    if #opts >= 1 then fireButton(opts[1]) end
-    deadline = os.clock()+4
-    repeat
-        task.wait(.15)
-        if questKind() ~= "NONE" then return true end
-    until os.clock()>deadline
+        if #opts >= 1 and #opts <= 2 then
+            fireButton(opts[1]) -- Yes / Sure
+            break
+        end
+        task.wait(.05)
+    end
+
+    deadline = os.clock() + 2.0
+    while os.clock() < deadline and isRunning(token) do
+        if questKind() ~= "NONE" then
+            local qt = PHX.questStatusText()
+            setStatus(qt)
+            logLine("DRAGON_HUNTER", "quest accepted through GUI signals | "..qt)
+            return true
+        end
+        task.wait(.05)
+    end
     return false
 end
 
@@ -2519,107 +2606,202 @@ local function farmTreeQuest(token)
     local i = 1
     while isRunning(token) and questKind() == "TREE" do
         local cf = CONFIG.TREES[i]
+        setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
         highTween(cf * CFrame.new(0,10,0), 300, token)
         useXCVF(cf.Position)
+        PHX.pulseBlazeCollectRemote()
         i = i + 1
         if i > #CONFIG.TREES then i = 1 end
-        task.wait(.12)
+        task.wait(.05)
     end
 end
 
 function PHX.pulseBlazeCollectRemote()
     local re = PHX.blazeCollectRemote and PHX.blazeCollectRemote() or nil
-    if re and re.FireServer then pcall(function() re:FireServer() end) return true end
+    if re and re.FireServer then
+        local ok = pcall(function() re:FireServer() end)
+        return ok
+    end
     return false
+end
+
+function PHX.blazeCollectRemote()
+    local modules = ReplicatedStorage:FindFirstChild("Modules") or ReplicatedStorage:WaitForChild("Modules", 3)
+    local net = modules and (modules:FindFirstChild("Net") or modules:WaitForChild("Net", 3))
+    return net and (net:FindFirstChild("RE/DragonDojoEmber") or net:FindFirstChild("RE/DragonDojoEmber", true))
+end
+
+function PHX.findBlazeParts()
+    local out, seen = {}, {}
+    local function addObj(obj)
+        if not obj then return end
+        local p = interactionPart(obj)
+        if p and p:IsA("BasePart") and not seen[p] then
+            -- Blaze Ember lives on Hydra; reject obviously unrelated Azure/Kitsune objects.
+            local fp = string.lower(p:GetFullName())
+            if not fp:find("azure",1,true) and not fp:find("kitsune",1,true) then
+                seen[p] = true
+                out[#out+1] = p
+            end
+        end
+    end
+
+    for _,name in ipairs({"AttachedBlazeEmber","BlazeEmber","FireFlowers","EmberTemplate"}) do
+        local obj = workspace:FindFirstChild(name)
+        if obj then
+            addObj(obj)
+            for _,d in ipairs(obj:GetDescendants()) do
+                local l = string.lower(d.Name)
+                if d:IsA("BasePart") and (l:find("ember",1,true) or l:find("fire",1,true) or name == "EmberTemplate") then
+                    addObj(d)
+                end
+            end
+        end
+    end
+
+    -- Some builds parent the moving pickup under a differently named container.
+    -- Scan only direct workspace children and their immediate children, not the whole map tree.
+    for _,obj in ipairs(workspace:GetChildren()) do
+        local l = string.lower(obj.Name)
+        if (l:find("blaze",1,true) and l:find("ember",1,true)) or l == "fireflowers" then
+            addObj(obj)
+            for _,d in ipairs(obj:GetChildren()) do addObj(d) end
+        end
+    end
+    return out
+end
+
+function PHX.touchVisibleBlaze(token, allowTween)
+    local r = root()
+    if not r then return 0 end
+    local count = 0
+    local parts = PHX.findBlazeParts()
+    table.sort(parts, function(a,b)
+        return (a.Position-r.Position).Magnitude < (b.Position-r.Position).Magnitude
+    end)
+    for _,p in ipairs(parts) do
+        if not isRunning(token) or not p.Parent then break end
+        local rr = root()
+        if not rr then break end
+        local d = (p.Position - rr.Position).Magnitude
+        if firetouchinterest and d <= 220 then
+            pcall(function()
+                firetouchinterest(rr, p, 0)
+                firetouchinterest(rr, p, 1)
+            end)
+            count = count + 1
+        elseif allowTween and d <= 2800 then
+            highTween(p.CFrame * CFrame.new(0,1.5,0), 650, token)
+            rr = root()
+            if rr and firetouchinterest and p.Parent then
+                pcall(function()
+                    firetouchinterest(rr, p, 0)
+                    firetouchinterest(rr, p, 1)
+                end)
+            end
+            count = count + 1
+        end
+    end
+    return count
 end
 
 local function farmHunterQuest(token)
     local kind = questKind()
+    if kind == "NONE" then return end
+    logLine("QUEST", "start | "..PHX.questStatusText())
+
     if kind == "TREE" then
         farmTreeQuest(token)
     elseif kind == "HYDRA" then
         while isRunning(token) and questKind() == "HYDRA" do
+            setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
             farmNamedMob("Hydra Enforcer", CONFIG.MOB_CAMPS.HydraEnforcer, token)
+            PHX.pulseBlazeCollectRemote()
+            PHX.touchVisibleBlaze(token, false)
+            task.wait(.03)
         end
     elseif kind == "VENOM" then
         while isRunning(token) and questKind() == "VENOM" do
+            setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
             farmNamedMob("Venomous Assailant", CONFIG.MOB_CAMPS.VenomousAssailant, token)
+            PHX.pulseBlazeCollectRemote()
+            PHX.touchVisibleBlaze(token, false)
+            task.wait(.03)
         end
     end
-end
 
-function PHX.blazeCollectRemote()
-    local modules = ReplicatedStorage:FindFirstChild("Modules")
-    local net = modules and modules:FindFirstChild("Net")
-    return net and net:FindFirstChild("RE/DragonDojoEmber")
+    logLine("QUEST", "complete-detected | previous="..kind.." | now="..questKind())
 end
 
 function PHX.collectBlazeEmberDrops(token, seconds)
     local before = inventoryCount("Blaze Ember", true)
-    local untilAt = os.clock() + (seconds or 5.5)
-    setStatus("Dragon Hunter complete -> collecting spawned Blaze Embers")
-    while isRunning(token) and os.clock() < untilAt and inventoryCount("Blaze Ember") < 15 do
-        local re = PHX.blazeCollectRemote()
-        if re and re.FireServer then pcall(function() re:FireServer() end) end
+    local maxUntil = os.clock() + (seconds or 2.4)
+    local lastSeenAt = os.clock()
+    setStatus("Quest complete -> FAST collecting Blaze Embers")
 
-        local touched = false
-        for _,folderName in ipairs({"FireFlowers","EmberTemplate"}) do
-            local folder = workspace:FindFirstChild(folderName)
-            if folder then
-                for _,obj in ipairs(folder:GetChildren()) do
-                    local p = interactionPart(obj)
-                    if p and root() and (p.Position-root().Position).Magnitude < 2600 then
-                        touched = true
-                        highTween(p.CFrame * CFrame.new(0,2,0), 360, token)
-                        if firetouchinterest and root() then
-                            pcall(function()
-                                firetouchinterest(root(), p, 0)
-                                task.wait(.05)
-                                firetouchinterest(root(), p, 1)
-                            end)
-                        end
-                        task.wait(.08)
-                    end
-                end
-            end
-        end
+    while isRunning(token) and os.clock() < maxUntil and inventoryCount("Blaze Ember") < 15 do
+        PHX.pulseBlazeCollectRemote()
+        local touched = PHX.touchVisibleBlaze(token, true)
+        if touched > 0 then lastSeenAt = os.clock() end
 
-        if inventoryCount("Blaze Ember") >= before + 3 then break end
-        if not touched then task.wait(.15) end
+        local now = inventoryCount("Blaze Ember", true)
+        if now >= before + 3 then break end
+        -- Once no pickup is visible for a short grace window, immediately move on.
+        if touched == 0 and os.clock() - lastSeenAt > .38 then break end
+        task.wait(.04)
     end
+
     local after = inventoryCount("Blaze Ember", true)
-    logLine("BLAZE_COLLECT", "before="..tostring(before).." after="..tostring(after).." expectedQuestDrops=3")
+    logLine("BLAZE_COLLECT", "before="..tostring(before).." after="..tostring(after).." fastWindow="..tostring(seconds or 2.4))
     return after > before
 end
 
 local function farmBlazeEmbers(token)
     while isRunning(token) and inventoryCount("Blaze Ember", true) < 15 do
-        setStatus("Blaze Ember "..inventoryCount("Blaze Ember").."/15")
         if not goHydra(token) then
             setStatus("Hydra portal failed - NOT flying across sea")
-            task.wait(1)
+            task.wait(.35)
         else
-            if questKind() == "NONE" then
+            local kind = questKind()
+            if kind == "NONE" then
+                setStatus("Dragon Hunter -> requesting Hunt quest")
                 if not receiveDragonHunterQuest(token) then
-                    setStatus("Dragon Hunter quest request failed -> retry")
-                    task.wait(.8)
+                    setStatus("Dragon Hunter quest request failed -> fast retry")
+                    logLine("DRAGON_HUNTER", "quest request failed | no screen click used")
+                    task.wait(.25)
                 end
+                kind = questKind()
             end
 
-            if questKind() ~= "NONE" then
+            if kind ~= "NONE" then
+                setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
                 local before = inventoryCount("Blaze Ember", true)
-                PHX.pulseBlazeCollectRemote()
+
+                -- Pulse collection while questing, so embers spawned after each kill/tree step
+                -- are picked up immediately instead of waiting for the whole quest to end.
+                local collectorAlive = true
+                task.spawn(function()
+                    while collectorAlive and isRunning(token) do
+                        PHX.pulseBlazeCollectRemote()
+                        PHX.touchVisibleBlaze(token, false)
+                        task.wait(.06)
+                    end
+                end)
+
                 farmHunterQuest(token)
-                PHX.pulseBlazeCollectRemote()
+                collectorAlive = false
+
                 if isRunning(token) and questKind() == "NONE" then
-                    -- Both supplied hub videos show the important missing phase: after
-                    -- Task completed, three Blaze Ember pickups are collected before the next Hunt.
-                    PHX.collectBlazeEmberDrops(token, 6.5)
-                    if inventoryCount("Blaze Ember") <= before then task.wait(.5) end
+                    PHX.collectBlazeEmberDrops(token, 2.4)
+                    local after = inventoryCount("Blaze Ember", true)
+                    setStatus("Quest done | Blaze Ember "..tostring(after).."/15 | preparing next Hunt")
+                    logLine("QUEST", "cycle done | emberBefore="..tostring(before).." emberAfter="..tostring(after))
+                    if after < 15 then task.wait(.08) end
                 end
             end
         end
     end
+    return inventoryCount("Blaze Ember", true) >= 15
 end
 
 -- Forest Pirate/Scrap Metal farming is intentionally island-local.
@@ -3451,6 +3633,7 @@ end
 local function mainLoop(token)
     if not isTeamName(LP.Name) then
         setStatus("This account is not in CONFIG.TEAM")
+        _G.TeamConfig.StopReason = "NOT_IN_TEAM"
         _G.TeamConfig.IsRunning = false
         return
     end
@@ -3690,7 +3873,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.7.1 MATERIAL-PHASE | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.7.2 QUEST/EMBER | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -3797,6 +3980,7 @@ end)
 
 START.MouseButton1Click:Connect(function()
     if _G.TeamConfig.IsRunning then
+        _G.TeamConfig.StopReason = "USER_BUTTON"
         _G.TeamConfig.IsRunning = false
         RUN_TOKEN = RUN_TOKEN + 1
         START.Text = "▶ START FULL AUTO"
@@ -3821,6 +4005,7 @@ START.MouseButton1Click:Connect(function()
 
     RUN_TOKEN = RUN_TOKEN + 1
     local token = RUN_TOKEN
+    _G.TeamConfig.StopReason = nil
     _G.TeamConfig.IsRunning = true
     START.Text = "⏹ STOP FULL AUTO"
     START.BackgroundColor3 = Color3.fromRGB(160,55,55)
@@ -3828,8 +4013,23 @@ START.MouseButton1Click:Connect(function()
     setStatus("STARTED | "..roleText())
 
     task.spawn(function()
-        mainLoop(token)
+        local ok, err = pcall(mainLoop, token)
+        if not ok then
+            logLine("RUN_FATAL", tostring(err))
+            setStatus("RUN ERROR: "..tostring(err).." | auto remains armed for retry")
+            if token == RUN_TOKEN and _G.TeamConfig.IsRunning then
+                task.wait(.4)
+                task.spawn(function() mainLoop(token) end)
+                return
+            end
+        end
         if token == RUN_TOKEN then
+            if _G.TeamConfig.IsRunning then
+                _G.TeamConfig.StopReason = _G.TeamConfig.StopReason or "MAINLOOP_RETURNED"
+                logLine("RUN_END", "unexpected mainLoop return | reason="..tostring(_G.TeamConfig.StopReason))
+            else
+                logLine("RUN_END", "reason="..tostring(_G.TeamConfig.StopReason))
+            end
             _G.TeamConfig.IsRunning = false
             START.Text = "▶ START FULL AUTO"
             START.BackgroundColor3 = Color3.fromRGB(45,150,70)
