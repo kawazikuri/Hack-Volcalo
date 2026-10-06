@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.10 (PROBE-TRAINED QUEST + STASH + TREE)
+    PREHISTORIC TEAM V2.10.1 (TREE7 + STASH EXACT FIX)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -55,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.10 PROBE-TRAINED QUEST/STASH/TREE\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.10.1 TREE7/STASH FIX\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -70,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.10 PROBE-TRAINED QUEST/STASH/TREE\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.10.1 TREE7/STASH FIX\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -215,12 +215,50 @@ local CONFIG = {
     },
 
     TREES = {
-        CFrame.new(5254.79297,1004.09454,469.443573),
-        CFrame.new(5187.3042,1004.08722,281.555573),
-        CFrame.new(5323.68555,1004.099,316.628693),
-        CFrame.new(5424.94434,1004.09265,145.194458),
-        CFrame.new(5671.45557,1211.30786,844.747864),
+        CFrame.new(
+            5431.108398, 1253.348877, 965.289429,
+            0.295610, -0.000000, 0.955309,
+            -0.000000, 1.000000, 0.000000,
+            -0.955309, -0.000000, 0.295610
+        ),
+        CFrame.new(
+            4976.212891, 1144.915039, 623.489624,
+            -0.078839, 0.000000, -0.996887,
+            0.000000, 1.000000, 0.000000,
+            0.996887, 0.000000, -0.078839
+        ),
+        CFrame.new(
+            5569.339355, 1264.950562, 702.382935,
+            -0.431751, 0.000000, -0.901993,
+            0.000000, 1.000000, 0.000000,
+            0.901993, 0.000000, -0.431751
+        ),
+        CFrame.new(
+            5312.936523, 1159.892822, 0.588688,
+            -0.862379, 0.000000, -0.506264,
+            0.000000, 1.000000, 0.000000,
+            0.506264, 0.000000, -0.862379
+        ),
+        CFrame.new(
+            5043.579590, 1149.748535, 180.001953,
+            -0.936677, -0.000000, -0.350194,
+            -0.000000, 1.000000, -0.000000,
+            0.350194, -0.000000, -0.936677
+        ),
+        CFrame.new(
+            4477.374023, 1356.148926, 26.291494,
+            0.614400, 0.000000, 0.788995,
+            -0.000000, 1.000000, -0.000000,
+            -0.788995, 0.000000, 0.614400
+        ),
+        CFrame.new(
+            4410.110840, 1384.577026, 306.693695,
+            0.503457, 0.000000, 0.864020,
+            -0.000000, 1.000000, -0.000000,
+            -0.864020, 0.000000, 0.503457
+        ),
     },
+}
 }
 
 --==============================================================
@@ -981,7 +1019,7 @@ function PHX.scanStashTilesExact()
             local btn = PHX.stashTileClickTarget(tile)
             if btn then
                 PHX.signalGuiButton(btn)
-                task.wait(.035)
+                task.wait(.075)
                 local title,count,category = PHX.readSelectedStashCard()
                 local key = PHX.normalizeItemName(title or "")
                 if wanted[key] and count ~= nil then
@@ -1005,19 +1043,107 @@ function PHX.scanStashTilesExact()
     return n
 end
 
+function PHX.openStashPageExact()
+    -- Probe-confirmed hierarchy:
+    -- PlayerGui.Inventory.Inventory.Main.NavigationRail.Category4.Text == "Stash"
+    -- Temporarily expose the Inventory UI locally, fire the exact Stash tab by
+    -- signal (no screen click), then let the material tiles populate.
+    local top = PG:FindFirstChild("Inventory")
+    local root = top and top:FindFirstChild("Inventory")
+    local main = root and root:FindFirstChild("Main")
+    local nav = main and main:FindFirstChild("NavigationRail")
+    local cat = nav and nav:FindFirstChild("Category4")
+
+    local state = {top=top, root=root, main=main}
+    if top and top:IsA("ScreenGui") then
+        pcall(function() state.topEnabled = top.Enabled; top.Enabled = true end)
+    end
+    if root and root:IsA("GuiObject") then
+        pcall(function() state.rootVisible = root.Visible; root.Visible = true end)
+    end
+    if main and main:IsA("GuiObject") then
+        pcall(function() state.mainVisible = main.Visible; main.Visible = true end)
+    end
+
+    local btn = nil
+    if cat then
+        if cat:IsA("TextButton") or cat:IsA("ImageButton") then btn = cat end
+        if not btn then
+            for _,o in ipairs(cat:GetDescendants()) do
+                if o:IsA("TextButton") or o:IsA("ImageButton") then btn = o; break end
+            end
+        end
+        if not btn then
+            local textObj = cat:FindFirstChild("Text", true)
+            btn = textObj and PHX.buttonAncestor(textObj) or PHX.buttonAncestor(cat)
+        end
+    end
+    btn = btn or PHX.findStashButton()
+    if not btn then
+        logLine("STASH_SYNC_FAIL", "exact Category4/Stash button not found")
+        return false, state
+    end
+
+    PHX.signalGuiButton(btn)
+    local deadline = os.clock() + 1.8
+    repeat
+        task.wait(.06)
+        local rr = PHX.inventoryUiRoot()
+        local mm = rr and rr:FindFirstChild("Main")
+        local pp = mm and mm:FindFirstChild("PageContent")
+        local gg = pp and pp:FindFirstChild("TileGrid")
+        if gg then
+            for _,o in ipairs(gg:GetDescendants()) do
+                if o:IsA("TextLabel") and string.lower(tostring(o.Name)) == "label" then
+                    local par = o.Parent
+                    if par and string.lower(tostring(par.Name)) == "count" then
+                        return true, state
+                    end
+                end
+            end
+        end
+    until os.clock() >= deadline
+    return true, state
+end
+
+function PHX.restoreInventoryUiState(state)
+    if not state then return end
+    if state.main and state.mainVisible ~= nil then pcall(function() state.main.Visible = state.mainVisible end) end
+    if state.root and state.rootVisible ~= nil then pcall(function() state.root.Visible = state.rootVisible end) end
+    if state.top and state.topEnabled ~= nil then pcall(function() state.top.Enabled = state.topEnabled end) end
+end
+
 function PHX.refreshMaterialViaStash()
-    -- Open the real Stash with GUI signals only. First use the exact RightCard
-    -- scanner learned from the probe; proximity heuristics are fallback only.
+    -- V2.10.1: open the exact Stash tab learned from the probe. Do not treat a
+    -- closed/unpopulated Stash as zero/NOT_FOUND; retry instead.
     local wasOpen = PHX.stashLooksOpen()
-    local b = PHX.findStashButton()
+    local state = nil
+
     if not wasOpen then
-        if not b then
-            logLine("STASH_SYNC_FAIL", "could not locate Stash GuiButton")
+        local okOpen
+        okOpen, state = PHX.openStashPageExact()
+        if not okOpen then
+            PHX.restoreInventoryUiState(state)
             return false
         end
-        pcall(function() PHX.signalGuiButton(b) end)
-        local deadline = os.clock() + 1.4
-        repeat task.wait(.05) until PHX.stashLooksOpen() or os.clock() >= deadline
+    else
+        -- Even if Inventory is already visible, force Category4 once so we are
+        -- not accidentally scanning Backpack/Treasure tiles.
+        local root = PHX.inventoryUiRoot()
+        local main = root and root:FindFirstChild("Main")
+        local nav = main and main:FindFirstChild("NavigationRail")
+        local cat = nav and nav:FindFirstChild("Category4")
+        local btn = nil
+        if cat then
+            if cat:IsA("TextButton") or cat:IsA("ImageButton") then btn = cat end
+            if not btn then
+                for _,o in ipairs(cat:GetDescendants()) do
+                    if o:IsA("TextButton") or o:IsA("ImageButton") then btn=o; break end
+                end
+            end
+            if not btn then btn = PHX.buttonAncestor(cat:FindFirstChild("Text", true) or cat) end
+        end
+        if btn then PHX.signalGuiButton(btn); task.wait(.12) end
     end
 
     local found = PHX.scanStashTilesExact()
@@ -1035,12 +1161,7 @@ function PHX.refreshMaterialViaStash()
     end
 
     if not wasOpen then
-        local close = PHX.findVisibleStashClose()
-        if close then
-            pcall(function() PHX.signalGuiButton(close) end)
-        elseif b then
-            pcall(function() PHX.signalGuiButton(b) end)
-        end
+        PHX.restoreInventoryUiState(state)
         task.wait(.05)
     end
 
@@ -1048,7 +1169,7 @@ function PHX.refreshMaterialViaStash()
         logLine("STASH_REFRESH", "exact/fallback material counters="..tostring(found))
         return true
     end
-    logLine("STASH_SYNC_FAIL", "Stash opened but exact scan parsed no target materials")
+    logLine("STASH_SYNC_FAIL", "Stash page did not populate target materials; will retry, not assume zero")
     return false
 end
 
@@ -3842,7 +3963,7 @@ local function farmTreeQuest(token)
     local questStartedAt = PHX.LastQuestAcceptedAt
     if not questStartedAt or questStartedAt == -math.huge then questStartedAt = os.clock() end
 
-    -- Fixed five user-provided Hydra CFrames. Do not re-check Dragon Hunter while
+    -- Fixed seven user-provided Hydra CFrames. Do not re-check Dragon Hunter while
     -- the tree quest is active. Keep cycling/spamming straight upward until the
     -- real Task Completed / Quest Completed popup is observed.
     while isRunning(token) and not PHX.questCompleteSince(questStartedAt) do
@@ -5161,7 +5282,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.10 PROBE-TRAINED QUEST/STASH/TREE | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.10.1 TREE7/STASH FIX | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
