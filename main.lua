@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.5 (COUNTERS + DRAGON GUARD + SAVE CPU)
+    PREHISTORIC TEAM V2.5.1 (DELTA PARSE SAFE + COUNTERS + DRAGON GUARD + SAVE CPU)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -54,7 +54,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.5 SAFE FARM\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.5.1 PARSE SAFE\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -69,7 +69,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.5 SAFE FARM\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.5.1 PARSE SAFE\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -835,9 +835,13 @@ local function applySaveCpu()
         end
     end
 
-    for _,obj in ipairs(workspace:GetDescendants()) do
+    local cpuObjects = workspace:GetDescendants()
+    for i,obj in ipairs(cpuObjects) do
         optimizeVisualObject(obj)
+        -- Yield periodically so Delta/mobile does not freeze the UI while optimizing a huge map.
+        if i % 250 == 0 then task.wait() end
     end
+    cpuObjects = nil
     workspace.DescendantAdded:Connect(function(obj)
         task.defer(function() pcall(optimizeVisualObject, obj) end)
     end)
@@ -2312,13 +2316,13 @@ local function farmBlazeEmbers(token)
         if not goHydra(token) then
             setStatus("Hydra portal failed - NOT flying across sea")
             task.wait(1)
-            continue
+        else
+            if questKind() == "NONE" then
+                receiveDragonHunterQuest(token)
+            end
+            farmHunterQuest(token)
+            task.wait(.4)
         end
-        if questKind() == "NONE" then
-            receiveDragonHunterQuest(token)
-        end
-        farmHunterQuest(token)
-        task.wait(.4)
     end
 end
 
@@ -2652,10 +2656,12 @@ local function farmScrap(token)
         local scrap = inventoryCount("Scrap Metal")
         setStatus("Scrap Metal "..scrap.."/10 | route -> Floating Turtle")
 
+        -- Delta parse-safe iteration guard: use repeat/break instead of Luau `continue`.
+        repeat
         if not goTurtle(token) then
             setStatus("Turtle portal failed - retrying portal only")
             task.wait(1)
-            continue
+            break
         end
 
         -- Hard guard: never start Forest Pirate farming unless the portal destination
@@ -2663,7 +2669,7 @@ local function farmScrap(token)
         if getRegion() ~= "TURTLE" then
             setStatus("Not on Floating Turtle -> abort Scrap farm cycle")
             task.wait(.8)
-            continue
+            break
         end
 
         -- Move only to the user-captured safe point beside the Forest Pirate area.
@@ -2672,7 +2678,7 @@ local function farmScrap(token)
         if getRegion() ~= "TURTLE" then
             setStatus("Left Turtle unexpectedly -> stop local farm")
             task.wait(.8)
-            continue
+            break
         end
 
         local noMobPasses = 0
@@ -2773,6 +2779,7 @@ local function farmScrap(token)
                 end
             end
         end
+        until true
     end
 
     setForestMagnet(false)
@@ -3345,7 +3352,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.5 SAFE FARM | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.5.1 PARSE SAFE | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
