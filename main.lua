@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.9.5 (REMOTE HUNT + STRICT NPC + ITEM REFRESH)
+    PREHISTORIC TEAM V2.10 (PROBE-TRAINED QUEST + STASH + TREE)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -55,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.9.5 REMOTE HUNT + STRICT NPC\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.10 PROBE-TRAINED QUEST/STASH/TREE\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -70,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.9.5 REMOTE HUNT + STRICT NPC\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.10 PROBE-TRAINED QUEST/STASH/TREE\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -557,7 +557,7 @@ local function sendWebhook(title, description, fields)
         title = title,
         description = description,
         fields = fields or {},
-        footer = {text = "Prehistoric Team V2.9.5 | " .. LP.Name},
+        footer = {text = "Prehistoric Team V2.10 | " .. LP.Name},
         timestamp = DateTime.now():ToIsoDate(),
     }
 
@@ -876,9 +876,138 @@ function PHX.signalGuiButton(btn)
     return fired
 end
 
+
+-- V2.10: exact Stash reader learned from PH_FULL_PROBE.
+-- The live UI exposes:
+--   Inventory.Inventory.RightCard.ItemCard.Title.Text
+--   Inventory.Inventory.RightCard.ItemCard.Display.Footer.CountRibbon.Count
+-- We select Stash tiles through GUI signals and read that authoritative pair.
+function PHX.inventoryUiRoot()
+    local top = PG:FindFirstChild("Inventory")
+    if not top then return nil end
+    return top:FindFirstChild("Inventory")
+end
+
+function PHX.readSelectedStashCard()
+    local root = PHX.inventoryUiRoot()
+    local right = root and root:FindFirstChild("RightCard")
+    local card = right and right:FindFirstChild("ItemCard")
+    if not card then return nil,nil,nil end
+
+    local titleObj = card:FindFirstChild("Title")
+    titleObj = titleObj and titleObj:FindFirstChild("Text")
+    local display = card:FindFirstChild("Display")
+    local footer = display and display:FindFirstChild("Footer")
+    local ribbon = footer and footer:FindFirstChild("CountRibbon")
+    local countObj = ribbon and ribbon:FindFirstChild("Count")
+    local header = display and display:FindFirstChild("Header")
+    local catObj = header and header:FindFirstChild("Category")
+
+    local title = titleObj and tostring(titleObj.Text or "") or ""
+    local raw = countObj and tostring(countObj.Text or "") or ""
+    local category = catObj and tostring(catObj.Text or "") or ""
+    raw = raw:gsub(",", "")
+    local count = tonumber(raw:match("(%d+)"))
+    return title, count, category
+end
+
+function PHX.stashTileClickTarget(tile)
+    if not tile then return nil end
+    if tile:IsA("TextButton") or tile:IsA("ImageButton") then return tile end
+    for _,o in ipairs(tile:GetDescendants()) do
+        if o:IsA("TextButton") or o:IsA("ImageButton") then
+            return o
+        end
+    end
+    return nil
+end
+
+function PHX.scanStashTilesExact()
+    local root = PHX.inventoryUiRoot()
+    local main = root and root:FindFirstChild("Main")
+    local page = main and main:FindFirstChild("PageContent")
+    local grid = page and page:FindFirstChild("TileGrid")
+    if not grid then
+        logLine("STASH_EXACT", "TileGrid missing")
+        return 0
+    end
+
+    local scroller = grid:IsA("ScrollingFrame") and grid or grid:FindFirstAncestorWhichIsA("ScrollingFrame")
+    local oldCanvas = nil
+    if scroller then pcall(function() oldCanvas = scroller.CanvasPosition end) end
+
+    local wanted = {
+        ["scrap metal"]="Scrap Metal",
+        ["blaze ember"]="Blaze Ember",
+        ["dinosaur bones"]="Dinosaur Bones",
+        ["volcanic magnet"]="Volcanic Magnet",
+    }
+    local found = {}
+    local pages = {0}
+    if scroller then
+        local ok, maxY, step = pcall(function()
+            local total = math.max(scroller.AbsoluteCanvasSize.Y, scroller.CanvasSize.Y.Offset)
+            local view = math.max(150, scroller.AbsoluteWindowSize.Y)
+            return math.max(0, total - view), math.max(120, view * .72)
+        end)
+        if ok and maxY and step then
+            local y = 0
+            while y < maxY do
+                y = math.min(maxY, y + step)
+                pages[#pages+1] = y
+                if #pages > 20 then break end
+            end
+        end
+    end
+
+    for _,y in ipairs(pages) do
+        if scroller then
+            pcall(function() scroller.CanvasPosition = Vector2.new(scroller.CanvasPosition.X, y) end)
+            task.wait(.08)
+        end
+
+        local tiles = {}
+        for _,tile in ipairs(grid:GetChildren()) do
+            if tostring(tile.Name):match("^Tile%-") then tiles[#tiles+1] = tile end
+        end
+        table.sort(tiles,function(a,b)
+            local la,lb = 0,0
+            pcall(function() la=a.LayoutOrder end)
+            pcall(function() lb=b.LayoutOrder end)
+            return la < lb
+        end)
+
+        for _,tile in ipairs(tiles) do
+            local btn = PHX.stashTileClickTarget(tile)
+            if btn then
+                PHX.signalGuiButton(btn)
+                task.wait(.035)
+                local title,count,category = PHX.readSelectedStashCard()
+                local key = PHX.normalizeItemName(title or "")
+                if wanted[key] and count ~= nil then
+                    local canonical = wanted[key]
+                    found[key] = count
+                    PHX.persistMaterial(canonical, count, "STASH_EXACT")
+                    PHX.setKnownMaterial(canonical, count, "STASH_EXACT")
+                    logLine("STASH_EXACT", canonical.."="..tostring(count).." | category="..tostring(category))
+                end
+            end
+            if found["scrap metal"] and found["blaze ember"] and found["dinosaur bones"] and found["volcanic magnet"] then
+                break
+            end
+        end
+    end
+
+    if scroller and oldCanvas then pcall(function() scroller.CanvasPosition = oldCanvas end) end
+
+    local n = 0
+    for _ in pairs(found) do n = n + 1 end
+    return n
+end
+
 function PHX.refreshMaterialViaStash()
-    -- V2.9.5: open the real Stash UI via GUI signals, scrape exact card counts,
-    -- then close it. No VirtualInputManager / physical mouse click is used.
+    -- Open the real Stash with GUI signals only. First use the exact RightCard
+    -- scanner learned from the probe; proximity heuristics are fallback only.
     local wasOpen = PHX.stashLooksOpen()
     local b = PHX.findStashButton()
     if not wasOpen then
@@ -887,26 +1016,21 @@ function PHX.refreshMaterialViaStash()
             return false
         end
         pcall(function() PHX.signalGuiButton(b) end)
-        local deadline = os.clock() + 1.25
+        local deadline = os.clock() + 1.4
         repeat task.wait(.05) until PHX.stashLooksOpen() or os.clock() >= deadline
     end
 
-    local found = 0
-    for _,name in ipairs({"Scrap Metal","Blaze Ember","Dinosaur Bones","Volcanic Magnet"}) do
-        local n = PHX.guiMaterialCount(name)
-        if n ~= nil then
-            local key = PHX.normalizeItemName(name)
-            PHX.persistMaterial(name, n, "STASH_GUI_AUTO")
-            local t = ITEM_TRACK[key]
-            if t then
-                t.Server = math.max(0, n)
-                t.Optimistic = math.max(0, n)
-                t.OptimisticUntil = 0
-                t.Source = "STASH_GUI_AUTO"
-                t.Known = true
+    local found = PHX.scanStashTilesExact()
+
+    if found < 2 then
+        for _,name in ipairs({"Scrap Metal","Blaze Ember","Dinosaur Bones","Volcanic Magnet"}) do
+            local n = PHX.guiMaterialCount(name)
+            if n ~= nil then
+                PHX.persistMaterial(name, n, "STASH_GUI_FALLBACK")
+                PHX.setKnownMaterial(name, n, "STASH_GUI_FALLBACK")
+                found = found + 1
+                logLine("STASH_ITEM", name.."="..tostring(n).." fallback")
             end
-            found = found + 1
-            logLine("STASH_ITEM", name.."="..tostring(n))
         end
     end
 
@@ -921,10 +1045,10 @@ function PHX.refreshMaterialViaStash()
     end
 
     if found > 0 then
-        logLine("STASH_REFRESH", "read "..tostring(found).." material counters")
+        logLine("STASH_REFRESH", "exact/fallback material counters="..tostring(found))
         return true
     end
-    logLine("STASH_SYNC_FAIL", "Stash opened but no material count was parsed")
+    logLine("STASH_SYNC_FAIL", "Stash opened but exact scan parsed no target materials")
     return false
 end
 
@@ -1005,7 +1129,7 @@ function PHX.dumpInventoryProbe(reason)
     if not writefile then return nil end
     local inv = getInventory(true)
     local lines = {
-        "===== PREHISTORIC INVENTORY PROBE V2.9.5 =====",
+        "===== PREHISTORIC INVENTORY PROBE V2.10 =====",
         "ACCOUNT="..LP.Name,
         "REASON="..tostring(reason or "manual"),
         "LastInventoryReadOK="..tostring(PHX.LastInventoryReadOK),
@@ -1537,23 +1661,33 @@ local SKILL_KEYS = {
 }
 
 local function useXCVF(targetPos)
+    -- Probe confirms Dragon Talon exposes ToolTip="Melee" and the fruit exposes
+    -- ToolTip="Blox Fruit". Give equip/input replication time, then spam a full
+    -- X/C/V/F cycle twice. No mouse input is used.
+    local function castSet(tooltip)
+        local tool = equipTooltip(tooltip)
+        if not tool then
+            logLine("SKILL_CAST", "missing tooltip="..tostring(tooltip))
+            return false
+        end
+        task.wait(.18)
+
+        for pass=1,2 do
+            for _,k in ipairs(SKILL_KEYS) do
+                if targetPos then aimAt(targetPos) end
+                pressKey(k, .11)
+                task.wait(.17)
+            end
+            task.wait(.06)
+        end
+        logLine("SKILL_CAST", tostring(tooltip).." XCVF x2 | "..tostring(tool.Name))
+        return true
+    end
+
     if targetPos then aimAt(targetPos) end
-
-    if equipTooltip("Melee") then
-        for _,k in ipairs(SKILL_KEYS) do
-            if targetPos then aimAt(targetPos) end
-            pressKey(k, .07)
-            task.wait(.12)
-        end
-    end
-
-    if equipTooltip("Blox Fruit") then
-        for _,k in ipairs(SKILL_KEYS) do
-            if targetPos then aimAt(targetPos) end
-            pressKey(k, .07)
-            task.wait(.12)
-        end
-    end
+    castSet("Melee")
+    task.wait(.08)
+    castSet("Blox Fruit")
 end
 
 --==============================================================
@@ -3105,13 +3239,15 @@ function PHX.dragonHunterCheckRaw()
     return response
 end
 
-function PHX.dragonHunterCheckText()
-    local response = PHX.dragonHunterCheckRaw()
+PHX.ActiveQuestKind = PHX.ActiveQuestKind or "NONE"
+PHX.ActiveQuestText = PHX.ActiveQuestText or ""
+
+function PHX.questTextFromValue(response)
     if response == nil then return "" end
     local found = ""
     local seen = {}
     local function walk(v, depth)
-        if found ~= "" or depth > 8 then return end
+        if found ~= "" or depth > 10 then return end
         if type(v) == "string" then
             local l = string.lower(v)
             if l:find("hydra enforcer",1,true)
@@ -3127,35 +3263,64 @@ function PHX.dragonHunterCheckText()
             end
         end
     end
-    walk(response, 0)
+    walk(response,0)
     return found
 end
 
-local function questText()
-    local direct = PHX.dragonHunterCheckText()
-    if direct ~= "" then return direct end
-    local dg = dialogueGui()
-    if not dg then return "" end
-    for _,v in ipairs(dg:GetDescendants()) do
-        if v:IsA("TextLabel") or v:IsA("TextButton") then
+function PHX.questKindFromText(text)
+    local l = string.lower(tostring(text or ""))
+    if l:find("hydra enforcer",1,true) then return "HYDRA" end
+    if l:find("venomous assailant",1,true) then return "VENOM" end
+    if l:find("destroy",1,true) and l:find("tree",1,true) then return "TREE" end
+    return "NONE"
+end
+
+function PHX.questTextFromVisibleGui()
+    for _,v in ipairs(PG:GetDescendants()) do
+        if (v:IsA("TextLabel") or v:IsA("TextButton")) and visibleGui(v) then
             local t = tostring(v.Text or "")
-            local l = string.lower(t)
-            if l:find("hydra enforcer",1,true)
-                or l:find("venomous assailant",1,true)
-                or (l:find("destroy",1,true) and l:find("tree",1,true)) then
-                return t
-            end
+            if PHX.questKindFromText(t) ~= "NONE" then return t end
         end
     end
     return ""
 end
 
+function PHX.latchQuest(text, source)
+    local kind = PHX.questKindFromText(text)
+    if kind == "NONE" then return false end
+    PHX.ActiveQuestKind = kind
+    PHX.ActiveQuestText = tostring(text or kind)
+    PHX.LastQuestAcceptedAt = os.clock()
+    PHX.QuestCompletedAt = -math.huge
+    PHX.QuestCompletedText = ""
+    local msg = tostring(source or "QUEST").." | QUEST "..kind.." | "..PHX.ActiveQuestText
+    setStatus(msg)
+    logLine("DRAGON_HUNTER_QUEST", msg)
+    noteProgress("QUEST_ACCEPTED:"..kind)
+    return true
+end
+
+function PHX.dragonHunterCheckText()
+    return PHX.questTextFromValue(PHX.dragonHunterCheckRaw())
+end
+
+local function questText()
+    if PHX.ActiveQuestKind and PHX.ActiveQuestKind ~= "NONE"
+        and (PHX.QuestCompletedAt or -math.huge) < (PHX.LastQuestAcceptedAt or -math.huge) then
+        return PHX.ActiveQuestText or PHX.ActiveQuestKind
+    end
+
+    local direct = PHX.dragonHunterCheckText()
+    if direct ~= "" then return direct end
+    return PHX.questTextFromVisibleGui()
+end
+
 local function questKind()
-    local l = string.lower(questText())
-    if l:find("hydra enforcer",1,true) then return "HYDRA" end
-    if l:find("venomous assailant",1,true) then return "VENOM" end
-    if l:find("destroy",1,true) and l:find("tree",1,true) then return "TREE" end
-    return "NONE"
+    if PHX.ActiveQuestKind and PHX.ActiveQuestKind ~= "NONE"
+        and (PHX.QuestCompletedAt or -math.huge) < (PHX.LastQuestAcceptedAt or -math.huge) then
+        return PHX.ActiveQuestKind
+    end
+    return PHX.questKindFromText(questText())
 end
 
 function PHX.questStatusText()
@@ -3171,10 +3336,15 @@ PHX.QuestCompletedText = ""
 PHX.LastQuestAcceptedAt = -math.huge
 
 function PHX.markQuestCompleteText(text)
-    local l = string.lower(tostring(text or ""))
-    if l:find("task completed",1,true) or l:find("quest completed",1,true) then
+    local raw = tostring(text or ""):gsub("<.->", ""):gsub("^%s+",""):gsub("%s+$","")
+    local l = string.lower(raw)
+    -- Do not use substring matching: our own status/help text contains the words
+    -- "Quest Completed", which caused false positives in the probe.
+    local exact = (l == "task completed" or l == "task completed!"
+        or l == "quest completed" or l == "quest completed!")
+    if exact then
         PHX.QuestCompletedAt = os.clock()
-        PHX.QuestCompletedText = tostring(text or "Quest Completed")
+        PHX.QuestCompletedText = raw
         logLine("QUEST_POPUP", PHX.QuestCompletedText)
         noteProgress("QUEST_COMPLETED_POPUP")
         return true
@@ -3368,81 +3538,97 @@ function PHX.closeDragonHunterDialogue()
     end
 end
 
+
+function PHX.acceptHuntViaDialogue(token)
+    setStatus("Dragon Hunter fallback -> signal Hunt/Sure")
+    if not openDragonHunter(token) then
+        logLine("DRAGON_HUNTER_DIALOG", "open failed")
+        return false
+    end
+
+    local opts = dialogueOptions()
+    if #opts >= 4 then
+        fireButton(opts[1]) -- Hunt
+    end
+
+    local deadline = os.clock() + 1.4
+    while isRunning(token) and os.clock() < deadline do
+        opts = dialogueOptions()
+        if #opts == 2 then break end
+        local guiText = PHX.questTextFromVisibleGui()
+        if guiText ~= "" and PHX.latchQuest(guiText, "DIALOG QUEST ACCEPTED") then
+            PHX.dismissDragonHunterFinalBubble()
+            return true
+        end
+        task.wait(.04)
+    end
+
+    opts = dialogueOptions()
+    if #opts >= 2 then
+        fireButton(opts[1]) -- Sure
+    end
+
+    deadline = os.clock() + 1.8
+    while isRunning(token) and os.clock() < deadline do
+        local t = PHX.dragonHunterCheckText()
+        if t == "" then t = PHX.questTextFromVisibleGui() end
+        if t ~= "" and PHX.latchQuest(t, "DIALOG QUEST ACCEPTED") then
+            PHX.dismissDragonHunterFinalBubble()
+            return true
+        end
+        task.wait(.05)
+    end
+
+    PHX.dismissDragonHunterFinalBubble()
+    logLine("DRAGON_HUNTER_DIALOG", "Hunt/Sure fired but no quest text confirmed")
+    return false
+end
+
 local function receiveDragonHunterQuest(token)
-    -- V2.9.5: Hunt is 100% server-remote driven. Do NOT open/touch any NPC GUI.
-    -- This prevents the nearby Uzoth / Dragon Talon Trainer lore panel from ever being opened.
-    local existingKind = questKind()
-    if existingKind ~= "NONE" and PHX.QuestCompletedAt < (PHX.LastQuestAcceptedAt or -math.huge) then
-        setStatus(PHX.questStatusText())
-        return true
+    local existingText = PHX.dragonHunterCheckText()
+    if existingText == "" then existingText = PHX.questTextFromVisibleGui() end
+    if existingText ~= "" then
+        return PHX.latchQuest(existingText, "EXISTING QUEST")
     end
 
     local rf = PHX.dragonHunterRemote()
     if not rf then
-        setStatus("Dragon Hunter RF missing -> retry")
-        logLine("DRAGON_HUNTER_RF", "RF/DragonHunter missing")
-        return false
+        setStatus("Dragon Hunter RF missing -> dialogue fallback")
+        return PHX.acceptHuntViaDialogue(token)
     end
 
-    -- Clear any locally lingering dialogue/lore UI from earlier buggy builds.
-    local dg = dialogueGui()
-    if dg then
-        pcall(function()
-            if dg:IsA("ScreenGui") then dg.Enabled = false
-            elseif dg:IsA("GuiObject") then dg.Visible = false end
-        end)
-        PHX.DialogueLocallyHidden = true
-    end
-    for _,o in ipairs(PG:GetDescendants()) do
-        if (o:IsA("TextLabel") or o:IsA("TextButton")) then
-            local txt = string.lower(tostring(o.Text or ""))
-            if txt:find("the legend of the dragon talon trainer",1,true) then
-                local p = o.Parent
-                for _=1,8 do
-                    if not p or p == PG then break end
-                    if p:IsA("GuiObject") then pcall(function() p.Visible = false end) end
-                    p = p.Parent
-                end
-            end
-        end
-    end
-
-    for attempt=1,14 do
+    -- Probe recorded the exact manual acceptance call:
+    -- RF/DragonHunter InvokeServer({Context="RequestQuest"}), then Check.
+    -- Try that exact sequence from anywhere first.
+    for attempt=1,4 do
         if not isRunning(token) then return false end
-        setStatus("Dragon Hunter REMOTE HUNT ["..attempt.."/14]")
+        setStatus("Dragon Hunter DIRECT HUNT ["..attempt.."/4]")
 
         local okReq, response = pcall(function()
             return rf:InvokeServer({Context="RequestQuest"})
         end)
-        logLine("DRAGON_HUNTER_RF", "RequestQuest attempt="..attempt.." ok="..tostring(okReq).." type="..typeof(response))
+        local fromReq = okReq and PHX.questTextFromValue(response) or ""
+        logLine("DRAGON_HUNTER_RF", "RequestQuest attempt="..attempt.." ok="..tostring(okReq).." responseType="..typeof(response))
 
-        local deadline = os.clock() + .55
+        if fromReq ~= "" and PHX.latchQuest(fromReq, "REMOTE RESPONSE") then
+            return true
+        end
+
+        local deadline = os.clock() + .85
         while isRunning(token) and os.clock() < deadline do
-            local text = PHX.dragonHunterCheckText()
-            local l = string.lower(text)
-            local kind = "NONE"
-            if l:find("hydra enforcer",1,true) then kind = "HYDRA"
-            elseif l:find("venomous assailant",1,true) then kind = "VENOM"
-            elseif l:find("destroy",1,true) and l:find("tree",1,true) then kind = "TREE" end
-
-            if kind ~= "NONE" then
-                PHX.LastQuestAcceptedAt = os.clock()
-                PHX.QuestCompletedAt = -math.huge
-                PHX.QuestCompletedText = ""
-                local msg = "REMOTE QUEST ACCEPTED | QUEST "..kind.." | "..text
-                setStatus(msg)
-                logLine("DRAGON_HUNTER_RF", msg)
-                noteProgress("QUEST_ACCEPTED_REMOTE:"..kind)
+            local t = PHX.dragonHunterCheckText()
+            if t == "" then t = PHX.questTextFromVisibleGui() end
+            if t ~= "" and PHX.latchQuest(t, "REMOTE QUEST ACCEPTED") then
                 return true
             end
             task.wait(.05)
         end
-        task.wait(.10)
+        task.wait(.12)
     end
 
-    setStatus("Dragon Hunter remote quest FAILED -> retry state")
-    logLine("DRAGON_HUNTER_RF", "RequestQuest/Check failed after 14 attempts")
-    return false
+    -- If the server build requires a dialogue session flag, use the real Dragon
+    -- Hunter dialogue but still no physical/screen click: world prompt + GUI signals.
+    return PHX.acceptHuntViaDialogue(token)
 end
 
 --==============================================================
@@ -3656,16 +3842,19 @@ local function farmTreeQuest(token)
     local questStartedAt = PHX.LastQuestAcceptedAt
     if not questStartedAt or questStartedAt == -math.huge then questStartedAt = os.clock() end
 
-    -- User-verified method: cycle ONLY the five known Hydra CFrames. Do not try to
-    -- identify map tree models. At every point cast Melee X/C/V/F + Fruit X/C/V/F
-    -- straight UP into the sky, then move to the next point.
+    -- Fixed five user-provided Hydra CFrames. Do not re-check Dragon Hunter while
+    -- the tree quest is active. Keep cycling/spamming straight upward until the
+    -- real Task Completed / Quest Completed popup is observed.
     while isRunning(token) and not PHX.questCompleteSince(questStartedAt) do
         local cf = CONFIG.TREES[i]
-        setStatus(PHX.questStatusText().." | TREE CFrame "..i.."/"..#CONFIG.TREES.." | wait Quest Completed popup")
+        local qtxt = PHX.ActiveQuestText ~= "" and PHX.ActiveQuestText or "Destroy 10 trees on Hydra Island."
+        setStatus("QUEST TREE | "..qtxt.." | CFrame "..i.."/"..#CONFIG.TREES.." | XCVF UP")
 
         if not highTween(cf * CFrame.new(0,10,0), 340, token) then return false end
         local rr = root()
-        local upTarget = rr and (rr.Position + Vector3.new(0, 1500, 0)) or (cf.Position + Vector3.new(0,1500,0))
+        local upTarget = rr and (rr.Position + Vector3.new(0, 2500, 0)) or (cf.Position + Vector3.new(0,2500,0))
+
+        -- Two complete XCVF passes per weapon are performed by useXCVF().
         useXCVF(upTarget)
 
         PHX.pulseBlazeCollectRemote()
@@ -3674,10 +3863,15 @@ local function farmTreeQuest(token)
         if PHX.questCompleteSince(questStartedAt) then break end
         i = i + 1
         if i > #CONFIG.TREES then i = 1 end
-        task.wait(.035)
+        task.wait(.04)
     end
 
-    return PHX.questCompleteSince(questStartedAt)
+    if PHX.questCompleteSince(questStartedAt) then
+        PHX.ActiveQuestKind = "NONE"
+        PHX.ActiveQuestText = ""
+        return true
+    end
+    return false
 end
 
 function PHX.pulseBlazeCollectRemote()
@@ -4967,7 +5161,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.9.5 REMOTE HUNT/STRICT NPC/INV REFRESH | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.10 PROBE-TRAINED QUEST/STASH/TREE | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
