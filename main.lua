@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.9.2 (NPC HUNT + FIXED TREES + ITEM CHECK)
+    PREHISTORIC TEAM V2.9.3 (NPC HUNT + FIXED TREES + ITEM CHECK)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -55,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.9.2 NPC HUNT + FIXED TREES\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.9.3 NPC HUNT + FIXED TREES\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -70,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.9.2 NPC HUNT + FIXED TREES\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.9.3 NPC HUNT + FIXED TREES\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -557,7 +557,7 @@ local function sendWebhook(title, description, fields)
         title = title,
         description = description,
         fields = fields or {},
-        footer = {text = "Prehistoric Team V2.9.2 | " .. LP.Name},
+        footer = {text = "Prehistoric Team V2.9.3 | " .. LP.Name},
         timestamp = DateTime.now():ToIsoDate(),
     }
 
@@ -789,6 +789,99 @@ function PHX.serverInventoryCount(itemName, force)
         return 0, "REMOTE_ABSENT"
     end
     return nil, "UNAVAILABLE"
+end
+
+
+-- V2.9.3 runtime inventory probe. When material schema is unknown we dump the
+-- exact getInventory table shape once. This is diagnostic only and does not
+-- influence routing/counters.
+function PHX.valuePreview(v)
+    local tv = type(v)
+    if tv == "string" then return string.format("%q", v) end
+    if tv == "number" or tv == "boolean" or tv == "nil" then return tostring(v) end
+    return "<"..tv..">"
+end
+
+function PHX.dumpInventoryProbe(reason)
+    if not writefile then return nil end
+    local inv = getInventory(true)
+    local lines = {
+        "===== PREHISTORIC INVENTORY PROBE V2.9.3 =====",
+        "ACCOUNT="..LP.Name,
+        "REASON="..tostring(reason or "manual"),
+        "LastInventoryReadOK="..tostring(PHX.LastInventoryReadOK),
+        "LastError="..tostring(PHX.InventoryLastError),
+        "",
+    }
+    local seen, nodes = {}, 0
+    local function walk(v, path, depth)
+        if nodes > 1800 or depth > 7 then return end
+        if type(v) ~= "table" then
+            lines[#lines+1] = path.." = "..PHX.valuePreview(v)
+            nodes = nodes + 1
+            return
+        end
+        if seen[v] then return end
+        seen[v] = true
+        for k,x in pairs(v) do
+            if nodes > 1800 then break end
+            local kp = path.."["..PHX.valuePreview(k).."]"
+            if type(x) == "table" then
+                lines[#lines+1] = kp.." = <table>"
+                nodes = nodes + 1
+                walk(x, kp, depth + 1)
+            else
+                lines[#lines+1] = kp.." = "..PHX.valuePreview(x)
+                nodes = nodes + 1
+            end
+        end
+    end
+    walk(inv, "inventory", 0)
+
+    lines[#lines+1] = ""
+    lines[#lines+1] = "===== PLAYER DATA CANDIDATES ====="
+    local dataRoots = {LP:FindFirstChild("Data"), LP:FindFirstChild("Backpack")}
+    for _,root in ipairs(dataRoots) do
+        if root then
+            for _,o in ipairs(root:GetDescendants()) do
+                local n = string.lower(o.Name or "")
+                if n:find("scrap",1,true) or n:find("ember",1,true) or n:find("magnet",1,true) or n:find("bone",1,true) then
+                    local val = ""
+                    pcall(function() val = " value="..tostring(o.Value) end)
+                    lines[#lines+1] = o:GetFullName().." | "..o.ClassName..val
+                end
+            end
+        end
+    end
+
+    lines[#lines+1] = ""
+    lines[#lines+1] = "===== VISIBLE GUI ITEM TEXT ====="
+    for _,o in ipairs(PG:GetDescendants()) do
+        if (o:IsA("TextLabel") or o:IsA("TextButton")) and visibleGui(o) then
+            local txt = tostring(o.Text or "")
+            local l = string.lower(txt)
+            if l:find("scrap",1,true) or l:find("ember",1,true) or l:find("magnet",1,true) or l:find("bone",1,true)
+                or txt:match("^%s*%d+%s*$") then
+                lines[#lines+1] = o:GetFullName().." | text="..string.format("%q",txt)
+            end
+        end
+    end
+
+    local path = "PH_InventoryProbe_"..LP.Name.."_V293.txt"
+    pcall(function() writefile(path, table.concat(lines, "\n")) end)
+    logLine("INV_PROBE", "wrote "..path.." | nodes="..tostring(nodes))
+    return path
+end
+
+PHX.InventoryProbeWritten = false
+function PHX.ensureInventoryProbeIfUnknown()
+    if PHX.InventoryProbeWritten then return end
+    local _,ss,sk = PHX.materialCountInfo("Scrap Metal", true)
+    local _,es,ek = PHX.materialCountInfo("Blaze Ember", true)
+    if not sk or not ek or ss == "UNAVAILABLE" or es == "UNAVAILABLE" then
+        PHX.InventoryProbeWritten = true
+        task.spawn(function() PHX.dumpInventoryProbe("material_count_unknown") end)
+    end
 end
 
 function PHX.trackerFor(itemName)
@@ -2946,9 +3039,17 @@ function PHX.fireDragonHunterWorldInteract()
         end
     end
     if not best then return false, "NO_WORLD_INTERACT" end
-    if best:IsA("ProximityPrompt") and fireproximityprompt then
-        local ok = pcall(function() fireproximityprompt(best) end)
-        return ok, "PROXIMITY_PROMPT"
+    if best:IsA("ProximityPrompt") then
+        if fireproximityprompt then
+            local ok = pcall(function() fireproximityprompt(best) end)
+            return ok, "PROXIMITY_PROMPT"
+        end
+        local ok = pcall(function()
+            best:InputHoldBegin()
+            task.wait(math.max(.05, tonumber(best.HoldDuration) or 0))
+            best:InputHoldEnd()
+        end)
+        if ok then return true, "PROMPT_HOLD" end
     end
     if best:IsA("ClickDetector") and fireclickdetector then
         local ok = pcall(function() fireclickdetector(best) end)
@@ -2958,13 +3059,19 @@ function PHX.fireDragonHunterWorldInteract()
 end
 
 local function openDragonHunter(token)
-    -- This is the interaction path that previously worked on this account: move to
-    -- Dragon Hunter, virtual-click the NPC to open DialogueGui, then signal the
-    -- dialogue buttons. The script UI is disabled for the click so STOP cannot be hit.
+    -- V2.9.3: NO screen-space mouse click. We only use the NPC's world
+    -- interaction object (ProximityPrompt/ClickDetector) so the click cannot
+    -- accidentally open Uzoth/Dragon-Talon lore panels or hit our own UI.
     if not safeTween(CONFIG.DRAGON_HUNTER.STAND, 260, token) then return false end
     task.wait(.20)
 
-    for attempt=1,8 do
+    local dg = dialogueGui()
+    if dg and dg:IsA("ScreenGui") and PHX.DialogueLocallyHidden then
+        pcall(function() dg.Enabled = true end)
+        PHX.DialogueLocallyHidden = false
+    end
+
+    for attempt=1,10 do
         if not isRunning(token) then return false end
         local opts = dialogueOptions()
         if #opts >= 3 then
@@ -2973,48 +3080,60 @@ local function openDragonHunter(token)
         end
 
         local worldOK, worldMode = PHX.fireDragonHunterWorldInteract()
+        logLine("DRAGON_HUNTER_INTERACT", "world interact="..tostring(worldMode).." ok="..tostring(worldOK).." | attempt="..attempt)
         if worldOK then
-            logLine("DRAGON_HUNTER_INTERACT", "world interact="..tostring(worldMode).." | attempt="..attempt)
-            local worldDeadline = os.clock() + .35
-            while os.clock() < worldDeadline do
+            local deadline = os.clock() + .75
+            while os.clock() < deadline do
                 if #dialogueOptions() >= 3 then return true end
                 task.wait(.03)
             end
         end
-
-        local cam = workspace.CurrentCamera
-        if cam then
-            cam.CFrame = CFrame.lookAt(cam.CFrame.Position, CONFIG.DRAGON_HUNTER.NPC.Position)
-            task.wait(.03)
-            local p,on = cam:WorldToViewportPoint(CONFIG.DRAGON_HUNTER.NPC.Position)
-            if on then
-                local ownGui = PG:FindFirstChild("PrehistoricTeamV1")
-                local wasEnabled = nil
-                if ownGui and ownGui:IsA("ScreenGui") then
-                    wasEnabled = ownGui.Enabled
-                    ownGui.Enabled = false
-                    task.wait(.03)
-                end
-                pcall(function()
-                    VirtualInputManager:SendMouseButtonEvent(p.X,p.Y,0,true,game,0)
-                    task.wait(.07)
-                    VirtualInputManager:SendMouseButtonEvent(p.X,p.Y,0,false,game,0)
-                end)
-                task.wait(.08)
-                if ownGui and ownGui:IsA("ScreenGui") and wasEnabled ~= nil then
-                    ownGui.Enabled = wasEnabled
-                end
-                logLine("DRAGON_HUNTER_INTERACT", "virtual NPC click | attempt="..attempt)
-            end
-        end
-
-        local deadline = os.clock() + .55
-        while os.clock() < deadline do
-            if #dialogueOptions() >= 3 then return true end
-            task.wait(.04)
-        end
+        task.wait(.08)
     end
     return #dialogueOptions() >= 3
+end
+
+-- After Hunt -> Sure the game may leave one last NPC speech bubble open.
+-- The user's recording shows that one more Interact closes it. Do that with
+-- the world prompt, not a screen click. Close-like GUI controls are a secondary
+-- fallback, and hiding DialogueGui is UI cleanup only after the quest was accepted.
+function PHX.dismissDragonHunterFinalBubble()
+    local dg = dialogueGui()
+    if not dg then return true end
+
+    -- First try explicit Close/Continue/OK/Bye controls if this build exposes one.
+    for _,v in ipairs(dg:GetDescendants()) do
+        if (v:IsA("TextButton") or v:IsA("ImageButton")) and visibleGui(v) then
+            local txt = string.lower(tostring((v:IsA("TextButton") and v.Text) or ""))
+            local nm = string.lower(v.Name or "")
+            if txt:find("continue",1,true) or txt:find("close",1,true)
+                or txt == "ok" or txt == "okay" or txt:find("bye",1,true)
+                or txt:find("leave",1,true) or nm:find("close",1,true)
+                or nm:find("continue",1,true) then
+                pcall(function() fireButton(v) end)
+                task.wait(.08)
+                if not dialogueGui() or #dialogueOptions() == 0 then return true end
+            end
+        end
+    end
+
+    -- The normal in-game behavior in the supplied video: press Interact once more.
+    local ok, mode = PHX.fireDragonHunterWorldInteract()
+    logLine("DRAGON_HUNTER_DISMISS", "world interact="..tostring(mode).." ok="..tostring(ok))
+    task.wait(.16)
+
+    dg = dialogueGui()
+    if dg and visibleGui(dg) then
+        -- Final visual cleanup. Mark it so openDragonHunter can re-enable it next time.
+        if dg:IsA("ScreenGui") then
+            pcall(function() dg.Enabled = false end)
+            PHX.DialogueLocallyHidden = true
+        elseif dg:IsA("GuiObject") then
+            pcall(function() dg.Visible = false end)
+            PHX.DialogueLocallyHidden = true
+        end
+    end
+    return true
 end
 
 function PHX.closeDragonHunterDialogue()
@@ -3075,6 +3194,7 @@ local function receiveDragonHunterQuest(token)
                             setStatus(qt)
                             logLine("DRAGON_HUNTER_NPC", "accepted cycle="..cycle.." | "..qt)
                             noteProgress("QUEST_ACCEPTED_NPC:"..tostring(kind))
+                            PHX.dismissDragonHunterFinalBubble()
                             return true
                         end
                         task.wait(.05)
@@ -4629,7 +4749,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.9.2 NPC/TREE/ITEM FIX | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.9.3 NO-MOUSE DIALOG/INV PROBE | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -4708,6 +4828,7 @@ local function refreshCounters()
     if not COUNTER_LABEL or not COUNTER_LABEL.Parent then return end
     local scrap, scrapSource, scrapKnown = PHX.materialCountInfo("Scrap Metal")
     local ember, emberSource, emberKnown = PHX.materialCountInfo("Blaze Ember")
+    PHX.ensureInventoryProbeIfUnknown()
     local magnet = inventoryCount("Volcanic Magnet")
     local bones = inventoryCount("Dinosaur Bones")
     local dragons = PHX.findPhysicalDragonFruits()
