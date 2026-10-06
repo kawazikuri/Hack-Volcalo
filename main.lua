@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.4 NIGHT DEBUG (DYNAMIC SCAN + HARD LOCK + RIGID HOVER)
+    PREHISTORIC TEAM V2.5 (COUNTERS + DRAGON GUARD + SAVE CPU)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -21,6 +21,7 @@ local RunService = game:GetService("RunService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
+local Lighting = game:GetService("Lighting")
 
 local LP = Players.LocalPlayer
 local PG = LP:WaitForChild("PlayerGui")
@@ -53,7 +54,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.4 DYNAMIC FARM\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.5 SAFE FARM\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -68,7 +69,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.4 DYNAMIC FARM\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.5 SAFE FARM\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -111,6 +112,31 @@ local CONFIG = {
     PORTAL_CHAIN_DELAY = 2.5,
     RESPAWN_SETTLE_DELAY = 1.5,
     RESET_TO_TIKI_AFTER_EVENT = true,
+
+    ITEM_COUNTER = {
+        CACHE_SECONDS = 0.65,
+        OPTIMISTIC_GAIN_SECONDS = 180,
+    },
+
+    DRAGON_GUARD = {
+        STORE_RETRIES = 6,
+        RETRY_DELAY = 0.45,
+        POST_EGG_GUARD_SECONDS = 4.5,
+        PRE_RESET_GUARD_SECONDS = 8.0,
+    },
+
+    -- SAFE low-CPU mode: visual-only changes. It never destroys Workspace.Map,
+    -- Enemies, Boats, portal parts, or PrehistoricIsland logic objects.
+    SAVE_CPU = {
+        ENABLED = true,
+        FPS_CAP = 30,
+        HIDE_STATIC_MAP_VISUALS = true,
+        HIDE_TEXTURES_DECALS = true,
+        DISABLE_NONESSENTIAL_VFX = true,
+        REDUCE_TERRAIN = true,
+        LOW_GRAPHICS_QUALITY = true,
+        FULL_3D_RENDER_OFF = false, -- strongest saving; leave false so you can still see the game
+    },
 
     DEBUG = {
         ENABLED = true,
@@ -178,6 +204,13 @@ _G.TeamConfig.IsRunning = false
 
 local RUN_TOKEN = 0
 local STATUS_LABEL
+local COUNTER_LABEL
+
+local ITEM_TRACK = {}
+local INVENTORY_CACHE = {Raw=nil, At=-math.huge}
+local PICKUP_WATCHED = setmetatable({}, {__mode="k"})
+local DRAGON_GUARD_STATE = {Busy=false, LastStored=nil, Critical=false}
+local SAVE_CPU_APPLIED = false
 
 -- Forest Pirate runtime state. Weak-key tables automatically forget despawned models.
 local FOREST_GHOST_BLACKLIST = setmetatable({}, {__mode = "k"})
@@ -493,7 +526,7 @@ local function sendWebhook(title, description, fields)
         title = title,
         description = description,
         fields = fields or {},
-        footer = {text = "Prehistoric Team V1 | " .. LP.Name},
+        footer = {text = "Prehistoric Team V2.5 | " .. LP.Name},
         timestamp = DateTime.now():ToIsoDate(),
     }
 
@@ -514,34 +547,312 @@ local function sendWebhook(title, description, fields)
 end
 
 --==============================================================
--- INVENTORY
+-- INVENTORY / LIVE ITEM COUNTERS
 --==============================================================
 
-local function getInventory()
+local function normalizeItemName(v)
+    local x = string.lower(tostring(v or ""))
+    x = x:gsub("[%[%]{}<>]", "")
+    x = x:gsub("%s+", " ")
+    return x:match("^%s*(.-)%s*$") or x
+end
+
+local function getInventory(force)
+    local now = os.clock()
+    if not force and INVENTORY_CACHE.Raw and (now - INVENTORY_CACHE.At) < CONFIG.ITEM_COUNTER.CACHE_SECONDS then
+        return INVENTORY_CACHE.Raw
+    end
+
     local ok, inv = pcall(function()
         return CommF:InvokeServer("getInventory")
     end)
     if ok and type(inv) == "table" then
+        INVENTORY_CACHE.Raw = inv
+        INVENTORY_CACHE.At = now
         return inv
     end
-    return {}
+    return INVENTORY_CACHE.Raw or {}
 end
 
-local function inventoryCount(itemName)
-    local wanted = string.lower(itemName)
+local function entryCount(v)
+    if type(v) == "number" then return math.max(0, v) end
+    if type(v) ~= "table" then return nil end
+    local n = v.Count or v.count or v.Amount or v.amount or v.Quantity or v.quantity or v.Owned or v.owned
+    n = tonumber(n)
+    if n then return math.max(0, n) end
+    return nil
+end
+
+local function serverInventoryCount(itemName, force)
+    local wanted = normalizeItemName(itemName)
     local total = 0
-    for _,v in pairs(getInventory()) do
-        if type(v) == "table" and string.lower(tostring(v.Name or "")) == wanted then
-            local n = tonumber(v.Count or v.Amount or v.count or v.Quantity or 1) or 1
-            total = total + n
+    local matched = false
+    local seen = {}
+
+    local function walk(tbl, depth)
+        if type(tbl) ~= "table" or seen[tbl] or depth > 3 then return end
+        seen[tbl] = true
+        for k,v in pairs(tbl) do
+            local keyName = type(k) == "string" and normalizeItemName(k) or ""
+            if type(v) == "table" then
+                local name = normalizeItemName(v.Name or v.name or v.ItemName or v.itemName or v.Title or "")
+                if name == wanted or keyName == wanted then
+                    local n = entryCount(v)
+                    total = total + (n or 1)
+                    matched = true
+                else
+                    walk(v, depth + 1)
+                end
+            elseif keyName == wanted then
+                local n = tonumber(v)
+                if n then
+                    total = total + math.max(0, n)
+                    matched = true
+                end
+            end
         end
     end
-    return total
+
+    walk(getInventory(force), 0)
+    return matched and total or 0
 end
+
+local function trackerFor(itemName)
+    local key = normalizeItemName(itemName)
+    local t = ITEM_TRACK[key]
+    if not t then
+        local server = serverInventoryCount(itemName, true)
+        t = {Server=server, Optimistic=server, OptimisticUntil=0}
+        ITEM_TRACK[key] = t
+    end
+    return t, key
+end
+
+local function inventoryCount(itemName, force)
+    local t = trackerFor(itemName)
+    local server = serverInventoryCount(itemName, force)
+    t.Server = server
+
+    if server >= (t.Optimistic or 0) then
+        t.Optimistic = server
+        t.OptimisticUntil = 0
+        return server
+    end
+
+    if os.clock() <= (t.OptimisticUntil or 0) then
+        return math.max(server, t.Optimistic or 0)
+    end
+
+    -- Optimistic popup count expired: trust the authoritative inventory again.
+    t.Optimistic = server
+    return server
+end
+
+local function clearOptimisticCount(itemName)
+    local t = trackerFor(itemName)
+    local server = serverInventoryCount(itemName, true)
+    t.Server = server
+    t.Optimistic = server
+    t.OptimisticUntil = 0
+    return server
+end
+
+local function recordItemGain(itemName, amount, sourceText)
+    amount = math.max(1, tonumber(amount) or 1)
+    local t, key = trackerFor(itemName)
+    local beforeServer = t.Server or 0
+    local nowServer = serverInventoryCount(itemName, true)
+    t.Server = nowServer
+
+    if nowServer > beforeServer then
+        t.Optimistic = math.max(t.Optimistic or 0, nowServer)
+    else
+        t.Optimistic = math.max(t.Optimistic or 0, beforeServer, nowServer) + amount
+        t.OptimisticUntil = os.clock() + CONFIG.ITEM_COUNTER.OPTIMISTIC_GAIN_SECONDS
+    end
+
+    logLine("ITEM_GAIN", tostring(itemName).." +"..amount.." | live="..tostring(math.max(nowServer, t.Optimistic or 0)).." | source="..tostring(sourceText))
+end
+
+local TRACKED_PICKUPS = {
+    ["scrap metal"] = "Scrap Metal",
+    ["blaze ember"] = "Blaze Ember",
+    ["volcanic magnet"] = "Volcanic Magnet",
+    ["dinosaur bones"] = "Dinosaur Bones",
+    ["dinosaur bone"] = "Dinosaur Bones",
+}
+
+local function parsePickupText(text)
+    local raw = tostring(text or "")
+    local low = string.lower(raw)
+    local amount = tonumber(raw:match("%((%d+)%s*[xX]%)") or raw:match("(%d+)%s*[xX]")) or 1
+    local looksLikeGain = low:find("obtained",1,true) or low:find("received",1,true)
+        or low:find("acquired",1,true) or low:find("crafted",1,true)
+        or low:find("you got",1,true) or raw:match("%(%d+%s*[xX]%)")
+    if not looksLikeGain then return end
+    for needle,itemName in pairs(TRACKED_PICKUPS) do
+        if low:find(needle,1,true) then
+            recordItemGain(itemName, amount, raw)
+            return
+        end
+    end
+end
+
+local function watchPickupTextObject(obj)
+    if PICKUP_WATCHED[obj] then return end
+    if not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then return end
+    PICKUP_WATCHED[obj] = tostring(obj.Text or "")
+
+    local function inspect()
+        local text = tostring(obj.Text or "")
+        if text ~= PICKUP_WATCHED[obj] then
+            PICKUP_WATCHED[obj] = text
+            parsePickupText(text)
+        end
+    end
+
+    obj:GetPropertyChangedSignal("Text"):Connect(inspect)
+    parsePickupText(obj.Text)
+end
+
+for _,obj in ipairs(PG:GetDescendants()) do
+    pcall(watchPickupTextObject, obj)
+end
+PG.DescendantAdded:Connect(function(obj)
+    pcall(watchPickupTextObject, obj)
+end)
 
 local function hasVolcanicMagnet()
     return inventoryCount("Volcanic Magnet") > 0
 end
+
+--==============================================================
+-- SAVE CPU / LOW GRAPHICS (SAFE: visual-only, no gameplay objects destroyed)
+--==============================================================
+
+local function isDescendantOfNamed(obj, ancestorName)
+    local p = obj
+    while p and p ~= workspace do
+        if p.Name == ancestorName then return true end
+        p = p.Parent
+    end
+    return false
+end
+
+local function isPressureSensorVFX(obj)
+    local p = obj
+    local sawRocks = false
+    local sawPrehistoric = false
+    while p and p ~= workspace do
+        if p.Name == "VolcanoRocks" then sawRocks = true end
+        if p.Name == "PrehistoricIsland" then sawPrehistoric = true end
+        p = p.Parent
+    end
+    return sawRocks and sawPrehistoric
+end
+
+local function isDynamicGameplayPart(obj)
+    if not obj then return false end
+    local c = LP.Character
+    if c and obj:IsDescendantOf(c) then return true end
+    local enemies = workspace:FindFirstChild("Enemies")
+    if enemies and obj:IsDescendantOf(enemies) then return true end
+    local boats = workspace:FindFirstChild("Boats")
+    if boats and obj:IsDescendantOf(boats) then return true end
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p.Character and obj:IsDescendantOf(p.Character) then return true end
+    end
+    return false
+end
+
+local function optimizeVisualObject(obj)
+    if not SAVE_CPU_APPLIED or not obj or not obj.Parent then return end
+
+    if obj:IsA("BasePart") then
+        pcall(function() obj.CastShadow = false end)
+        pcall(function() obj.Reflectance = 0 end)
+        if CONFIG.SAVE_CPU.HIDE_STATIC_MAP_VISUALS then
+            local map = workspace:FindFirstChild("Map")
+            if map and obj:IsDescendantOf(map) and not isDynamicGameplayPart(obj) then
+                -- LocalTransparencyModifier is render-only. Collision/touch/query and the
+                -- instance tree stay intact, so portal/event logic can still use the map.
+                pcall(function() obj.LocalTransparencyModifier = 1 end)
+            end
+        end
+        return
+    end
+
+    if CONFIG.SAVE_CPU.HIDE_TEXTURES_DECALS and (obj:IsA("Texture") or obj:IsA("Decal")) then
+        pcall(function() obj.Transparency = 1 end)
+        return
+    end
+
+    if CONFIG.SAVE_CPU.DISABLE_NONESSENTIAL_VFX then
+        if isPressureSensorVFX(obj) then
+            -- Pressure detection reads Beam.Enabled / ParticleEmitter.Enabled. Never
+            -- disable these sensor VFX or pressure farming would lose its runtime signal.
+            return
+        end
+        if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
+            or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
+            pcall(function() obj.Enabled = false end)
+            return
+        end
+        if obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
+            pcall(function() obj.Enabled = false end)
+            return
+        end
+        if obj:IsA("Highlight") then
+            pcall(function() obj.Enabled = false end)
+            return
+        end
+    end
+end
+
+local function applySaveCpu()
+    if SAVE_CPU_APPLIED or not CONFIG.SAVE_CPU.ENABLED then return end
+    SAVE_CPU_APPLIED = true
+
+    pcall(function()
+        if type(setfpscap) == "function" then setfpscap(CONFIG.SAVE_CPU.FPS_CAP) end
+    end)
+    if CONFIG.SAVE_CPU.LOW_GRAPHICS_QUALITY then
+        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+    end
+
+    pcall(function() Lighting.GlobalShadows = false end)
+    pcall(function() Lighting.EnvironmentDiffuseScale = 0 end)
+    pcall(function() Lighting.EnvironmentSpecularScale = 0 end)
+
+    if CONFIG.SAVE_CPU.REDUCE_TERRAIN then
+        local terrain = workspace:FindFirstChildOfClass("Terrain")
+        if terrain then
+            pcall(function() terrain.Decoration = false end)
+            pcall(function() terrain.WaterWaveSize = 0 end)
+            pcall(function() terrain.WaterWaveSpeed = 0 end)
+            pcall(function() terrain.WaterReflectance = 0 end)
+            pcall(function() terrain.WaterTransparency = 1 end)
+        end
+    end
+
+    for _,obj in ipairs(workspace:GetDescendants()) do
+        optimizeVisualObject(obj)
+    end
+    workspace.DescendantAdded:Connect(function(obj)
+        task.defer(function() pcall(optimizeVisualObject, obj) end)
+    end)
+
+    if CONFIG.SAVE_CPU.FULL_3D_RENDER_OFF then
+        pcall(function() RunService:Set3dRenderingEnabled(false) end)
+    end
+
+    logLine("SAVE_CPU", "ON | fps="..tostring(CONFIG.SAVE_CPU.FPS_CAP).." hideMap="..tostring(CONFIG.SAVE_CPU.HIDE_STATIC_MAP_VISUALS).." preservePressureVFX=true")
+end
+
+task.spawn(function()
+    task.wait(1)
+    applySaveCpu()
+end)
 
 --==============================================================
 -- TEAM / MARINES
@@ -1608,76 +1919,192 @@ local function fruitOriginalName(tool)
     if not tool or not tool:IsA("Tool") then return nil end
     local orig = tool:GetAttribute("OriginalName")
     if orig and tostring(orig) ~= "" then return tostring(orig) end
-    if string.lower(tool.Name):find("fruit",1,true) then return tool.Name end
+    if string.lower(tool.Name):find("fruit",1,true) or string.lower(tool.Name):find("dragon",1,true) then
+        return tool.Name
+    end
 end
 
-local function findPhysicalDragonFruit()
+local function isDragonFruitTool(tool)
+    if not tool or not tool:IsA("Tool") then return false end
+    local orig = fruitOriginalName(tool)
+    local combined = string.lower(tostring(orig or "").." "..tostring(tool.Name or ""))
+    return combined:find("dragon",1,true) ~= nil
+end
+
+local function findPhysicalDragonFruits()
+    local result = {}
+    local seen = {}
     for _,container in ipairs({LP.Backpack, char()}) do
         if container then
             for _,v in ipairs(container:GetChildren()) do
-                if v:IsA("Tool") then
-                    local orig = fruitOriginalName(v)
-                    local combined = string.lower((orig or "").." "..v.Name)
-                    if orig and combined:find("dragon",1,true) then
-                        return v, orig
-                    end
+                if v:IsA("Tool") and isDragonFruitTool(v) and not seen[v] then
+                    seen[v] = true
+                    result[#result+1] = v
                 end
             end
         end
     end
+    return result
 end
 
-local function storedFruitExists(originalName)
+local function findPhysicalDragonFruit()
+    local list = findPhysicalDragonFruits()
+    local tool = list[1]
+    return tool, tool and fruitOriginalName(tool) or nil
+end
+
+local function storedDragonFruitCount(originalName)
     local ok, fruits = pcall(function()
         return CommF:InvokeServer("getInventoryFruits")
     end)
-    if not ok or type(fruits) ~= "table" then return false end
-    local wanted = string.lower(tostring(originalName))
-    for _,v in pairs(fruits) do
+    if not ok or type(fruits) ~= "table" then return nil end
+
+    local wanted = normalizeItemName(originalName)
+    local total = 0
+    for k,v in pairs(fruits) do
         if type(v) == "table" then
-            local n = string.lower(tostring(v.Name or v.OriginalName or ""))
-            if n == wanted or n:find("dragon",1,true) and wanted:find("dragon",1,true) then
-                return true
+            local n = normalizeItemName(v.Name or v.OriginalName or v.name or k)
+            if n == wanted or (n:find("dragon",1,true) and wanted:find("dragon",1,true)) then
+                total = total + (entryCount(v) or 1)
+            end
+        elseif type(k) == "string" then
+            local n = normalizeItemName(k)
+            if n == wanted or (n:find("dragon",1,true) and wanted:find("dragon",1,true)) then
+                total = total + (tonumber(v) or 1)
             end
         end
     end
+    return total
+end
+
+local function storeOneDragonFruit(tool)
+    if not tool or not tool.Parent or not isDragonFruitTool(tool) then return true end
+    local original = fruitOriginalName(tool) or tool.Name
+    local beforeStored = storedDragonFruitCount(original)
+
+    setStatus("!!! DRAGON FRUIT DETECTED: "..tostring(original).." -> STORE NOW")
+    sendWebhook("🐉 DRAGON FRUIT DETECTED", "Immediate storage guard activated", {
+        {name="Account", value=LP.Name, inline=true},
+        {name="Fruit", value=tostring(original), inline=true},
+    })
+    logLine("DRAGON", "detected physical tool="..tostring(tool.Name).." original="..tostring(original).." beforeStored="..tostring(beforeStored))
+
+    for attempt=1,CONFIG.DRAGON_GUARD.STORE_RETRIES do
+        if not tool.Parent then
+            DRAGON_GUARD_STATE.LastStored = original
+            return true
+        end
+
+        local ok, result = pcall(function()
+            return CommF:InvokeServer("StoreFruit", original, tool)
+        end)
+        task.wait(CONFIG.DRAGON_GUARD.RETRY_DELAY)
+
+        local afterStored = storedDragonFruitCount(original)
+        local disappeared = tool.Parent == nil
+        local countIncreased = beforeStored ~= nil and afterStored ~= nil and afterStored > beforeStored
+        logLine("DRAGON_STORE", "attempt="..attempt.." pcall="..tostring(ok).." result="..tostring(result).." disappeared="..tostring(disappeared).." storedBefore="..tostring(beforeStored).." storedAfter="..tostring(afterStored))
+
+        if disappeared or countIncreased then
+            DRAGON_GUARD_STATE.LastStored = original
+            sendWebhook("✅ DRAGON FRUIT STORED", "Physical Dragon fruit secured before reset/teleport.", {
+                {name="Account", value=LP.Name, inline=true},
+                {name="Fruit", value=tostring(original), inline=true},
+                {name="Attempt", value=tostring(attempt), inline=true},
+            })
+            setStatus("Dragon stored: "..tostring(original))
+            return true
+        end
+
+        -- Some executors/games refresh the Tool reference after a failed call. Re-scan
+        -- and continue with the newest physical Dragon tool if one exists.
+        local again = findPhysicalDragonFruits()
+        if #again == 0 then
+            DRAGON_GUARD_STATE.LastStored = original
+            return true
+        end
+        tool = again[1]
+        original = fruitOriginalName(tool) or tool.Name
+    end
+
+    DRAGON_GUARD_STATE.Critical = true
+    sendWebhook("🚨 CRITICAL: DRAGON STORE FAILED", "Automation STOPPED. Physical Dragon fruit is still loose; no reset/teleport will be attempted.", {
+        {name="Account", value=LP.Name, inline=true},
+        {name="Fruit", value=tostring(original), inline=true},
+    })
+    _G.TeamConfig.IsRunning = false
+    setStatus("CRITICAL: Dragon still physical -> STOPPED, DO NOT RESET")
+    logLine("DRAGON_STORE_FAIL", "physical Dragon remained after retries; automation stopped")
     return false
 end
 
 local function storeDragonFruitCritical()
-    local tool, original = findPhysicalDragonFruit()
-    if not tool then return true end
-
-    setStatus("!!! DRAGON FRUIT DETECTED: "..original.." -> STORE NOW")
-    sendWebhook("🐉 DRAGON FRUIT DETECTED", "Attempting immediate StoreFruit", {
-        {name="Account", value=LP.Name, inline=true},
-        {name="Fruit", value=original, inline=true},
-    })
-
-    local ok = pcall(function()
-        CommF:InvokeServer("StoreFruit", original, tool)
-    end)
-    task.wait(1)
-
-    local stillTool = tool.Parent ~= nil
-    local verified = storedFruitExists(original)
-    if ok and (verified or not stillTool) then
-        sendWebhook("✅ DRAGON FRUIT STORED", "Storage call completed and the physical tool is no longer loose.", {
-            {name="Account", value=LP.Name, inline=true},
-            {name="Fruit", value=original, inline=true},
-        })
-        setStatus("Dragon stored: "..original)
-        return true
+    if DRAGON_GUARD_STATE.Busy then
+        local deadline = os.clock() + 8
+        while DRAGON_GUARD_STATE.Busy and os.clock() < deadline do task.wait(.05) end
+        return #findPhysicalDragonFruits() == 0 and not DRAGON_GUARD_STATE.Critical
     end
 
-    sendWebhook("🚨 CRITICAL: DRAGON STORE FAILED", "Automation STOPPED on this account. Do not reset or leave.", {
-        {name="Account", value=LP.Name, inline=true},
-        {name="Fruit", value=original, inline=true},
-    })
-    _G.TeamConfig.IsRunning = false
-    setStatus("CRITICAL: StoreFruit failed -> STOPPED")
-    return false
+    DRAGON_GUARD_STATE.Busy = true
+    local okAll = true
+    local safety = 0
+    while safety < 4 do
+        safety = safety + 1
+        local fruits = findPhysicalDragonFruits()
+        if #fruits == 0 then break end
+        if not storeOneDragonFruit(fruits[1]) then
+            okAll = false
+            break
+        end
+        task.wait(.1)
+    end
+    DRAGON_GUARD_STATE.Busy = false
+    return okAll and #findPhysicalDragonFruits() == 0
 end
+
+local function secureDragonWindow(seconds, token)
+    local deadline = os.clock() + (seconds or 3)
+    while os.clock() < deadline do
+        if token and not isRunning(token) then return false end
+        local fruits = findPhysicalDragonFruits()
+        if #fruits > 0 then
+            if not storeDragonFruitCritical() then return false end
+        end
+        task.wait(.15)
+    end
+    if #findPhysicalDragonFruits() > 0 then
+        return storeDragonFruitCritical()
+    end
+    return not DRAGON_GUARD_STATE.Critical
+end
+
+-- Always-on emergency guard: if a Dragon fruit Tool appears in Backpack/Character,
+-- attempt storage immediately instead of waiting for the event routine to notice it.
+local function hookDragonContainer(container)
+    if not container then return end
+    container.ChildAdded:Connect(function(obj)
+        if obj:IsA("Tool") then
+            task.defer(function()
+                task.wait(.05)
+                if isDragonFruitTool(obj) then
+                    logLine("DRAGON_WATCH", "ChildAdded -> "..tostring(obj.Name))
+                    storeDragonFruitCritical()
+                end
+            end)
+        end
+    end)
+end
+
+hookDragonContainer(LP.Backpack)
+if char() then hookDragonContainer(char()) end
+LP.CharacterAdded:Connect(function(c)
+    hookDragonContainer(c)
+    task.defer(function()
+        task.wait(.25)
+        storeDragonFruitCritical()
+    end)
+end)
+task.defer(function() storeDragonFruitCritical() end)
 
 local function eggPosition(obj)
     local p = interactionPart(obj)
@@ -1687,7 +2114,7 @@ end
 local function collectAssignedEgg(island, token)
     local core = island:FindFirstChild("Core")
     local folder = core and core:FindFirstChild("SpawnedDragonEggs")
-    if not folder then return end
+    if not folder then return true end
 
     local deadline = os.clock()+20
     while isRunning(token) and os.clock()<deadline do
@@ -1707,18 +2134,19 @@ local function collectAssignedEgg(island, token)
             local rank = ((ti + rotate - 1) % #CONFIG.TEAM) + 1
 
             if rank <= #eggs then
-                setStatus("Egg assignment "..rank.."/"..#eggs)
+                setStatus("Egg assignment "..rank.."/"..#eggs.." | Dragon guard armed")
                 interactCollectible(eggs[rank], token)
-                task.wait(.7)
-                storeDragonFruitCritical()
-                return
+                -- Reward replication can lag behind the interaction. Guard this window
+                -- so a physical Dragon East/West cannot appear after we already reset.
+                return secureDragonWindow(CONFIG.DRAGON_GUARD.POST_EGG_GUARD_SECONDS, token)
             else
                 setStatus("No egg assigned this run (rotating slot)")
-                return
+                return true
             end
         end
         task.wait(.4)
     end
+    return true
 end
 
 --==============================================================
@@ -1895,7 +2323,7 @@ local function farmBlazeEmbers(token)
 end
 
 -- Forest Pirate/Scrap Metal farming is intentionally island-local.
--- V2.3 keeps the player hovering smoothly and hard-locks the mob cluster every Heartbeat.
+-- V2.5 keeps the player hovering smoothly and hard-locks the mob cluster every Heartbeat.
 local function isForestPirate(m)
     if not m or not m:IsA("Model") then return false end
     return string.find(string.lower(m.Name), "forest pirate", 1, true) ~= nil
@@ -2252,7 +2680,7 @@ local function farmScrap(token)
             and getRegion() == "TURTLE"
             and inventoryCount("Scrap Metal") < 10 do
 
-            -- Scan around the CURRENT player first. V2.3 scanned around the static
+            -- Scan around the CURRENT player first. Older builds scanned around the static
             -- camp coordinate only, so mobs could literally be hitting us while the UI
             -- still said "scanning Forest Pirates". Fall back to a wider camp scan.
             local rpNow = root()
@@ -2419,7 +2847,15 @@ local function craftVolcanicMagnet(token)
 
     fireButton(btn)
     task.wait(1)
-    return hasVolcanicMagnet()
+    local crafted = hasVolcanicMagnet()
+    if crafted then
+        -- Scrap/Ember were consumed by crafting; discard short-lived popup optimism
+        -- so every counter immediately returns to authoritative post-craft values.
+        clearOptimisticCount("Scrap Metal")
+        clearOptimisticCount("Blaze Ember")
+        clearOptimisticCount("Volcanic Magnet")
+    end
+    return crafted
 end
 
 local function recoverMagnet(token)
@@ -2508,9 +2944,15 @@ local function runPrehistoricEvent(island, token)
 
     collectBones(island, token)
     if not isRunning(token) then return end
-    collectAssignedEgg(island, token)
+    if not collectAssignedEgg(island, token) then return end
     if not isRunning(token) then return end
-    storeDragonFruitCritical()
+
+    -- Final hard gate before ANY reset/portal. Reward replication is sometimes late;
+    -- if a Dragon fruit appears here it must be stored first. On failure the account
+    -- stops in place and never resets/leaves.
+    setStatus("Reward safety check -> Dragon guard before reset")
+    if not secureDragonWindow(CONFIG.DRAGON_GUARD.PRE_RESET_GUARD_SECONDS, token) then return end
+    if not isRunning(token) then return end
 
     task.wait(.5)
 
@@ -2698,18 +3140,12 @@ end
 --==============================================================
 
 local function debugInventoryOnce()
-    local counts = {Scrap=0, Ember=0, Magnet=0}
-    local inv = getInventory()
-    for _,v in pairs(inv) do
-        if type(v) == "table" then
-            local name = string.lower(tostring(v.Name or ""))
-            local n = tonumber(v.Count or v.Amount or v.count or v.Quantity or 1) or 1
-            if name == "scrap metal" then counts.Scrap = counts.Scrap + n end
-            if name == "blaze ember" then counts.Ember = counts.Ember + n end
-            if name == "volcanic magnet" then counts.Magnet = counts.Magnet + n end
-        end
-    end
-    return counts
+    return {
+        Scrap = inventoryCount("Scrap Metal"),
+        Ember = inventoryCount("Blaze Ember"),
+        Magnet = inventoryCount("Volcanic Magnet"),
+        Bones = inventoryCount("Dinosaur Bones"),
+    }
 end
 
 local function equippedToolName()
@@ -2778,6 +3214,9 @@ local function debugRuntimeSnapshot()
         "scrap="..inv.Scrap,
         "ember="..inv.Ember,
         "magnet="..inv.Magnet,
+        "bones="..tostring(inv.Bones or 0),
+        "dragonLoose="..tostring(#findPhysicalDragonFruits()),
+        "dragonStored="..tostring(DRAGON_GUARD_STATE.LastStored or "none"),
         "island="..tostring(island ~= nil),
         "event="..tostring(active),
         "relic="..tostring(relicHp).."/"..tostring(relicMax),
@@ -2891,7 +3330,7 @@ SG.Parent = guiParent
 
 local F = Instance.new("Frame")
 F.Parent = SG
-F.Size = UDim2.fromOffset(385, 315)
+F.Size = UDim2.fromOffset(385, 360)
 F.Position = UDim2.new(0.5,-192,0.12,0)
 F.BackgroundColor3 = Color3.fromRGB(20,20,26)
 F.BorderSizePixel = 1
@@ -2906,7 +3345,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.4 DYNAMIC FARM | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.5 SAFE FARM | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -2936,10 +3375,21 @@ ROLE.TextColor3 = Color3.fromRGB(100,220,255)
 ROLE.Font = Enum.Font.SourceSansBold
 ROLE.TextWrapped = true
 
+COUNTER_LABEL = Instance.new("TextLabel")
+COUNTER_LABEL.Parent = F
+COUNTER_LABEL.Size = UDim2.new(1,-20,0,30)
+COUNTER_LABEL.Position = UDim2.fromOffset(10,148)
+COUNTER_LABEL.BackgroundTransparency = 1
+COUNTER_LABEL.TextColor3 = Color3.fromRGB(120,235,170)
+COUNTER_LABEL.Font = Enum.Font.SourceSansBold
+COUNTER_LABEL.TextSize = 13
+COUNTER_LABEL.TextWrapped = true
+COUNTER_LABEL.Text = "Scrap ?/10 | Ember ?/15 | Magnet ? | Bones ? | Dragon safe"
+
 STATUS_LABEL = Instance.new("TextLabel")
 STATUS_LABEL.Parent = F
 STATUS_LABEL.Size = UDim2.new(1,-20,0,78)
-STATUS_LABEL.Position = UDim2.fromOffset(10,150)
+STATUS_LABEL.Position = UDim2.fromOffset(10,180)
 STATUS_LABEL.BackgroundColor3 = Color3.fromRGB(14,14,19)
 STATUS_LABEL.TextColor3 = Color3.fromRGB(255,210,80)
 STATUS_LABEL.Font = Enum.Font.SourceSansSemibold
@@ -2949,7 +3399,7 @@ STATUS_LABEL.Text = "READY"
 local START = Instance.new("TextButton")
 START.Parent = F
 START.Size = UDim2.new(1,-20,0,42)
-START.Position = UDim2.fromOffset(10,238)
+START.Position = UDim2.fromOffset(10,268)
 START.BackgroundColor3 = Color3.fromRGB(45,150,70)
 START.TextColor3 = Color3.new(1,1,1)
 START.Font = Enum.Font.SourceSansBold
@@ -2958,16 +3408,36 @@ START.Text = "▶ START FULL AUTO"
 
 local NOTE = Instance.new("TextLabel")
 NOTE.Parent = F
-NOTE.Size = UDim2.new(1,-20,0,25)
-NOTE.Position = UDim2.fromOffset(10,284)
+NOTE.Size = UDim2.new(1,-20,0,38)
+NOTE.Position = UDim2.fromOffset(10,316)
 NOTE.BackgroundTransparency = 1
 NOTE.TextColor3 = Color3.fromRGB(180,180,190)
 NOTE.TextSize = 12
-NOTE.Text = "Night log: "..NIGHT.LogPath.." | file="..tostring(NIGHT.FileReady or type(appendfile)=="function")
+NOTE.Text = "Night log: "..NIGHT.LogPath.." | file="..tostring(NIGHT.FileReady or type(appendfile)=="function").." | SaveCPU="..tostring(CONFIG.SAVE_CPU.ENABLED)
 
 local function refreshRole()
     _G.TeamConfig.IsMaster = LP.Name == _G.TeamConfig.MasterName
     ROLE.Text = "LOCAL: "..LP.Name.."\nROLE: "..roleText().." | MASTER: ".._G.TeamConfig.MasterName
+end
+
+local function refreshCounters()
+    if not COUNTER_LABEL or not COUNTER_LABEL.Parent then return end
+    local scrap = inventoryCount("Scrap Metal")
+    local ember = inventoryCount("Blaze Ember")
+    local magnet = inventoryCount("Volcanic Magnet")
+    local bones = inventoryCount("Dinosaur Bones")
+    local dragonLoose = #findPhysicalDragonFruits()
+    local dragonText
+    if DRAGON_GUARD_STATE.Critical then
+        dragonText = "DRAGON CRITICAL"
+    elseif dragonLoose > 0 then
+        dragonText = "DRAGON LOOSE:"..dragonLoose
+    elseif DRAGON_GUARD_STATE.LastStored then
+        dragonText = "Dragon STORED"
+    else
+        dragonText = "Dragon safe"
+    end
+    COUNTER_LABEL.Text = string.format("Scrap %d/10 | Ember %d/15 | Magnet %s | Bones %d | %s", scrap, ember, magnet > 0 and "YES" or "NO", bones, dragonText)
 end
 
 APPLY.MouseButton1Click:Connect(function()
@@ -3032,6 +3502,15 @@ end
 setStatus("UI READY | "..roleText().." | press START FULL AUTO")
 logLine("UI", "READY | log="..NIGHT.LogPath)
 flushNightLog()
+
+-- Live counter panel: one cached inventory fetch feeds every displayed material,
+-- while pickup popups provide an immediate optimistic increment until the server catches up.
+task.spawn(function()
+    while SG.Parent do
+        pcall(refreshCounters)
+        task.wait(.5)
+    end
+end)
 
 -- Keep Marine team alive even before START so the initial team picker cannot leave
 -- one of the five clients on Pirates while the user is configuring MASTER.
