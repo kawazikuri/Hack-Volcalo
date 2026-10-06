@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.3 NIGHT DEBUG (STABLE MAGNET + SMART PREFLIGHT)
+    PREHISTORIC TEAM V2.4 NIGHT DEBUG (DYNAMIC SCAN + HARD LOCK + RIGID HOVER)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -53,7 +53,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.3 STABLE MAGNET\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.4 DYNAMIC FARM\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -68,7 +68,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.3 STABLE MAGNET\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.4 DYNAMIC FARM\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -98,12 +98,12 @@ local CONFIG = {
     BOAT_TWEEN_SPEED = 475,
     SAFE_ALTITUDE = 70,
     FOREST_FARM_HEIGHT = 32,
-    FOREST_HITBOX_SIZE = 140,
-    FOREST_MAGNET_RADIUS = 650,
-    FOREST_SCAN_RADIUS = 850,
-    FOREST_GHOST_TIMEOUT = 4.5,
-    FOREST_GHOST_MIN_ATTACKS = 35,
-    HOVER_SNAP_DISTANCE = 7,
+    FOREST_HITBOX_SIZE = 60,
+    FOREST_MAGNET_RADIUS = 900,
+    FOREST_SCAN_RADIUS = 1400,
+    FOREST_GHOST_TIMEOUT = 10,
+    FOREST_GHOST_MIN_ATTACKS = 100,
+    HOVER_SNAP_DISTANCE = 2.5,
     MELEE_HITBOX_MAGNITUDE = 120,
     MELEE_NET_DISTANCE = 120,
     MELEE_ATTACK_INTERVAL = 0.06,
@@ -183,7 +183,8 @@ local STATUS_LABEL
 local FOREST_GHOST_BLACKLIST = setmetatable({}, {__mode = "k"})
 local FOREST_DAMAGE_TRACK = setmetatable({}, {__mode = "k"})
 local ACTIVE_FOREST_MAGNET = {Enabled=false, Anchor=nil, Radius=0, Locked=setmetatable({}, {__mode="k"})}
-local ACTIVE_HOVER = {Root=nil, Humanoid=nil, Position=nil, Gyro=nil, Target=nil}
+local FOREST_DAMAGE_PROVEN = false
+local ACTIVE_HOVER = {Root=nil, Humanoid=nil, Attachment=nil, Position=nil, Gyro=nil, Target=nil}
 local lastIslandWebhookKey = nil
 local lavaConnection = nil
 local CHARACTER_EPOCH = 0
@@ -1936,13 +1937,19 @@ local function updateForestDamageTrack(m, countedAttack)
         t.lastHealth = h.Health
         t.lastDamageAt = now
         t.attacks = 0
+        FOREST_DAMAGE_PROVEN = true
         return false
     end
 
     if countedAttack then t.attacks = t.attacks + 1 end
     t.lastHealth = h.Health
 
-    if t.attacks >= CONFIG.FOREST_GHOST_MIN_ATTACKS
+    -- Never classify a mob as immortal until this farming session has already
+    -- observed real HP loss on at least one Forest Pirate. This prevents a
+    -- temporary attack/backend miss from blacklisting a perfectly valid mob.
+    if FOREST_DAMAGE_PROVEN
+        and ACTIVE_FOREST_MAGNET.Locked[m]
+        and t.attacks >= CONFIG.FOREST_GHOST_MIN_ATTACKS
         and (now - t.lastDamageAt) >= CONFIG.FOREST_GHOST_TIMEOUT then
         FOREST_GHOST_BLACKLIST[m] = true
         ACTIVE_FOREST_MAGNET.Locked[m] = nil
@@ -1993,15 +2000,21 @@ local function hardLockForestMob(m, anchorCF)
     if not h or not rr then return false end
 
     pcall(function()
+        -- Move the whole model, not only HumanoidRootPart. Moving only HRP lets
+        -- joints/server correction fling the visible body out of the stack.
+        m:PivotTo(anchorCF)
         rr.CFrame = anchorCF
         rr.Size = Vector3.new(CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE)
+        rr.Transparency = 1
         rr.CanCollide = false
+        rr.CanTouch = false
         rr.AssemblyLinearVelocity = Vector3.zero
         rr.AssemblyAngularVelocity = Vector3.zero
         h.WalkSpeed = 0
         h.JumpPower = 0
         h.JumpHeight = 0
         h.AutoRotate = false
+        pcall(function() h:ChangeState(Enum.HumanoidStateType.Physics) end)
         for _,bp in ipairs(m:GetDescendants()) do
             if bp:IsA("BasePart") then
                 bp.CanCollide = false
@@ -2034,9 +2047,9 @@ local function setForestMagnet(enabled, anchorCF, radius)
     ACTIVE_FOREST_MAGNET.Radius = radius or CONFIG.FOREST_MAGNET_RADIUS
 end
 
--- Once a Forest Pirate enters the stack it is CLAIMED. Even if physics tries to fling it
--- outside the original scan radius, Heartbeat keeps snapping that exact model back to anchor.
-RunService.Heartbeat:Connect(function()
+-- Once a Forest Pirate enters the stack it is CLAIMED. Keep the exact models
+-- pinned both before and after physics so knockback cannot visibly throw them out.
+local function maintainForestMagnet()
     if not ACTIVE_FOREST_MAGNET.Enabled or not ACTIVE_FOREST_MAGNET.Anchor then return end
     boostSimulationRadius()
     local enemies = workspace:FindFirstChild("Enemies")
@@ -2052,25 +2065,47 @@ RunService.Heartbeat:Connect(function()
         end
     end
 
+    local rp = root()
     for _,m in ipairs(enemies:GetChildren()) do
         if isForestPirate(m) and not isForestGhost(m) and not ACTIVE_FOREST_MAGNET.Locked[m] then
             local h, rr = forestHumRoot(m)
-            if h and rr and (rr.Position - anchorCF.Position).Magnitude <= radius then
-                ACTIVE_FOREST_MAGNET.Locked[m] = true
-                hardLockForestMob(m, anchorCF)
+            if h and rr then
+                local nearAnchor = (rr.Position - anchorCF.Position).Magnitude <= radius
+                local nearPlayer = rp and (rr.Position - rp.Position).Magnitude <= radius or false
+                if nearAnchor or nearPlayer then
+                    ACTIVE_FOREST_MAGNET.Locked[m] = true
+                    hardLockForestMob(m, anchorCF)
+                end
             end
         end
     end
-end)
+end
+
+RunService.Stepped:Connect(maintainForestMagnet)
+RunService.Heartbeat:Connect(maintainForestMagnet)
 
 local function stopStableHover()
     local h = ACTIVE_HOVER.Humanoid
-    if h and h.Parent then pcall(function() h.AutoRotate = true end) end
-    for _,obj in ipairs({ACTIVE_HOVER.Position, ACTIVE_HOVER.Gyro}) do
+    local rr = ACTIVE_HOVER.Root
+    if h and h.Parent then
+        pcall(function()
+            h.AutoRotate = true
+            h.PlatformStand = false
+            h:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end)
+    end
+    if rr and rr.Parent then
+        pcall(function()
+            rr.AssemblyLinearVelocity = Vector3.zero
+            rr.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+    for _,obj in ipairs({ACTIVE_HOVER.Position, ACTIVE_HOVER.Gyro, ACTIVE_HOVER.Attachment}) do
         if obj and obj.Parent then pcall(function() obj:Destroy() end) end
     end
     ACTIVE_HOVER.Root = nil
     ACTIVE_HOVER.Humanoid = nil
+    ACTIVE_HOVER.Attachment = nil
     ACTIVE_HOVER.Position = nil
     ACTIVE_HOVER.Gyro = nil
     ACTIVE_HOVER.Target = nil
@@ -2084,27 +2119,40 @@ local function startStableHover(targetCF)
     rr.AssemblyLinearVelocity = Vector3.zero
     rr.AssemblyAngularVelocity = Vector3.zero
     h.AutoRotate = false
+    h.PlatformStand = true
 
-    local bp = Instance.new("BodyPosition")
-    bp.Name = "PH_StableHoverPosition"
-    bp.MaxForce = Vector3.new(1e9,1e9,1e9)
-    bp.P = 50000
-    bp.D = 2200
-    bp.Position = targetCF.Position
-    bp.Parent = rr
+    local att = Instance.new("Attachment")
+    att.Name = "PH_RigidHoverAttachment"
+    att.Parent = rr
 
-    local bg = Instance.new("BodyGyro")
-    bg.Name = "PH_StableHoverGyro"
-    bg.MaxTorque = Vector3.new(1e9,1e9,1e9)
-    bg.P = 35000
-    bg.D = 1200
-    bg.CFrame = targetCF
-    bg.Parent = rr
+    local ap = Instance.new("AlignPosition")
+    ap.Name = "PH_RigidHoverPosition"
+    ap.Mode = Enum.PositionAlignmentMode.OneAttachment
+    ap.Attachment0 = att
+    ap.ApplyAtCenterOfMass = true
+    ap.Position = targetCF.Position
+    ap.MaxForce = 1e9
+    ap.MaxVelocity = 1e9
+    ap.Responsiveness = 200
+    ap.RigidityEnabled = true
+    ap.Parent = rr
+
+    local ao = Instance.new("AlignOrientation")
+    ao.Name = "PH_RigidHoverOrientation"
+    ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
+    ao.Attachment0 = att
+    ao.CFrame = targetCF
+    ao.MaxTorque = 1e9
+    ao.MaxAngularVelocity = 1e9
+    ao.Responsiveness = 200
+    ao.RigidityEnabled = true
+    ao.Parent = rr
 
     ACTIVE_HOVER.Root = rr
     ACTIVE_HOVER.Humanoid = h
-    ACTIVE_HOVER.Position = bp
-    ACTIVE_HOVER.Gyro = bg
+    ACTIVE_HOVER.Attachment = att
+    ACTIVE_HOVER.Position = ap
+    ACTIVE_HOVER.Gyro = ao
     ACTIVE_HOVER.Target = targetCF
     return true
 end
@@ -2204,7 +2252,15 @@ local function farmScrap(token)
             and getRegion() == "TURTLE"
             and inventoryCount("Scrap Metal") < 10 do
 
-            local mobs = aliveForestPirates(camp.Position, scanRadius)
+            -- Scan around the CURRENT player first. V2.3 scanned around the static
+            -- camp coordinate only, so mobs could literally be hitting us while the UI
+            -- still said "scanning Forest Pirates". Fall back to a wider camp scan.
+            local rpNow = root()
+            local scanCenter = rpNow and rpNow.Position or camp.Position
+            local mobs = aliveForestPirates(scanCenter, scanRadius)
+            if #mobs == 0 then
+                mobs = aliveForestPirates(camp.Position, scanRadius * 1.75)
+            end
 
             if #mobs == 0 then
                 noMobPasses = noMobPasses + 1
@@ -2220,7 +2276,9 @@ local function farmScrap(token)
 
                 -- Pull the local wave into one point, enlarge hitboxes, fly above it,
                 -- force-equip Melee, then spam Tool:Activate() M1.
-                local anchor = CFrame.new(camp.Position + Vector3.new(0,2,0))
+                local firstRoot = mobs[1] and mobs[1]:FindFirstChild("HumanoidRootPart")
+                local anchorPos = firstRoot and firstRoot.Position or (root() and root().Position) or camp.Position
+                local anchor = CFrame.new(anchorPos)
                 local farmCF = anchor * CFrame.new(0, CONFIG.FOREST_FARM_HEIGHT, 0)
                 local _,_,_,waveEpoch = waitAlive(token)
                 if not waveEpoch then break end
@@ -2230,6 +2288,10 @@ local function farmScrap(token)
                     -- route logic can re-confirm Turtle before farming again.
                     break
                 end
+
+                startStableHover(farmCF)
+                setForestMagnet(true, anchor, magnetRadius)
+                task.wait(.12)
 
                 local tool = equipTooltip("Melee")
                 local ac = buffMeleeHitbox()
@@ -2844,7 +2906,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.3 STABLE MAGNET | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.4 DYNAMIC FARM | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
