@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2 NIGHT DEBUG (WATCHDOG + FILE LOGGER)
+    PREHISTORIC TEAM V2.1 NIGHT DEBUG (NET ATTACK FIX)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -53,7 +53,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2 NIGHT DEBUG\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.1 NET ATTACK\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -68,7 +68,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2 NIGHT DEBUG\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.1 NET ATTACK\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -100,6 +100,9 @@ local CONFIG = {
     FOREST_FARM_HEIGHT = 30,
     FOREST_HITBOX_SIZE = 140,
     MELEE_HITBOX_MAGNITUDE = 120,
+    MELEE_NET_DISTANCE = 120,
+    MELEE_ATTACK_INTERVAL = 0.06,
+    MELEE_CLICK_DELAY = 0,
     PORTAL_CHAIN_DELAY = 2.5,
     RESPAWN_SETTLE_DELAY = 1.5,
     RESET_TO_TIKI_AFTER_EVENT = true,
@@ -625,10 +628,17 @@ local function useXCVF(targetPos)
     end
 end
 
--- Actual melee range in Blox Fruits is controlled by CombatFramework's active controller,
--- not by changing an enemy HumanoidRootPart.Size alone.  Keep a cached reference but
--- rediscover it when the character/controller is rebuilt after respawn.
+--==============================================================
+-- MELEE ATTACK BACKENDS
+--==============================================================
+-- V2 used Tool:Activate()/firesignal plus the legacy CombatFramework controller.
+-- Current Blox Fruits clients can register melee swings through Modules.Net:
+--   RE/RegisterAttack -> RE/RegisterHit
+-- Keep the legacy controller only as a cooldown/range fallback. No real mouse click is used.
+
 local CombatState = nil
+local NetAttackCache = { Net = nil, RegisterAttack = nil, RegisterHit = nil }
+local AttackBackendLogged = false
 
 local function resolveCombatState()
     if type(CombatState) == "table" and CombatState.activeController then
@@ -654,6 +664,12 @@ local function resolveCombatState()
     for _,getter in ipairs(candidates) do
         local ok2, ups = pcall(getter, framework)
         if ok2 and type(ups) == "table" then
+            -- Most old clients expose the combat state as upvalue #2.
+            local direct = ups[2]
+            if type(direct) == "table" and direct.activeController then
+                CombatState = direct
+                return CombatState
+            end
             for _,v in pairs(ups) do
                 if type(v) == "table" and v.activeController then
                     CombatState = v
@@ -666,6 +682,21 @@ local function resolveCombatState()
     return nil
 end
 
+local function resolveNetAttack()
+    if NetAttackCache.RegisterAttack and NetAttackCache.RegisterHit then
+        return NetAttackCache.RegisterAttack, NetAttackCache.RegisterHit
+    end
+
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    local net = modules and modules:FindFirstChild("Net")
+    if not net then return nil, nil end
+
+    NetAttackCache.Net = net
+    NetAttackCache.RegisterAttack = net:FindFirstChild("RE/RegisterAttack")
+    NetAttackCache.RegisterHit = net:FindFirstChild("RE/RegisterHit")
+    return NetAttackCache.RegisterAttack, NetAttackCache.RegisterHit
+end
+
 local function buffMeleeHitbox()
     local state = resolveCombatState()
     local ac = state and state.activeController
@@ -673,47 +704,138 @@ local function buffMeleeHitbox()
 
     pcall(function()
         ac.hitboxMagnitude = CONFIG.MELEE_HITBOX_MAGNITUDE
+        ac.timeToNextAttack = 0
+        ac.timeToNextBlock = 0
+        ac.focusStart = 0
+        ac.attacking = false
+        ac.blocking = false
+        ac.increment = 4
+        ac.currentAttackTrack = 0
+        if ac.humanoid then ac.humanoid.AutoRotate = true end
     end)
 
     return ac
 end
 
-local function virtualMeleeAttack(tool)
-    if not tool or not char() or tool.Parent ~= char() then return false end
+local function normalizeAttackModels(models)
+    if typeof(models) == "Instance" then
+        return {models}
+    end
+    if type(models) == "table" then
+        return models
+    end
+    return nil
+end
 
-    -- Refresh the REAL melee hitbox every attack because CombatFramework can overwrite it.
-    local ac = buffMeleeHitbox()
-    local fired = false
+local function collectNetHits(models, distance)
+    local rp = root()
+    if not rp then return nil, {} end
 
-    -- Direct controller attack: no physical/screen click involved.
-    if ac and type(ac.attack) == "function" then
-        local ok = pcall(function()
-            ac:attack()
-        end)
-        if ok then fired = true end
+    local list = normalizeAttackModels(models)
+    local hits, basePart, seen = {}, nil, {}
+
+    local function addEnemy(enemy)
+        if not enemy or seen[enemy] or not enemy.Parent then return end
+        local eh = enemy:FindFirstChildOfClass("Humanoid")
+        local part = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
+        if not eh or eh.Health <= 0 or not part then return end
+        if (part.Position - rp.Position).Magnitude > (distance or CONFIG.MELEE_NET_DISTANCE) then return end
+        seen[enemy] = true
+        basePart = basePart or part
+        hits[#hits+1] = {enemy, part}
     end
 
-    -- Normal Tool activation fallback, still not a screen click.
-    local ok = pcall(function()
-        tool:Activate()
+    if list then
+        for _,enemy in ipairs(list) do addEnemy(enemy) end
+    else
+        local enemies = workspace:FindFirstChild("Enemies")
+        if enemies then
+            for _,enemy in ipairs(enemies:GetChildren()) do addEnemy(enemy) end
+        end
+    end
+
+    return basePart, hits
+end
+
+local function attackViaNet(models)
+    local registerAttack, registerHit = resolveNetAttack()
+    if not registerAttack or not registerHit then return false, 0, "NET_MISSING" end
+
+    local basePart, hits = collectNetHits(models, CONFIG.MELEE_NET_DISTANCE)
+    if not basePart or #hits == 0 then return false, 0, "NO_HITS" end
+
+    local okA = pcall(function()
+        registerAttack:FireServer(CONFIG.MELEE_CLICK_DELAY)
     end)
-    if ok then fired = true end
+    local okH = pcall(function()
+        registerHit:FireServer(basePart, hits)
+    end)
 
-    if firesignal then
-        pcall(function()
-            firesignal(tool.Activated)
-        end)
+    return okA and okH, #hits, (okA and okH) and "NET" or "NET_ERROR"
+end
+
+local function attackViaLeftClickRemote(tool, models)
+    if not tool then return false, 0 end
+    local remote = tool:FindFirstChild("LeftClickRemote")
+    if not remote or not remote.FireServer then return false, 0 end
+
+    local rp = root()
+    if not rp then return false, 0 end
+    local list = normalizeAttackModels(models) or {}
+    local fired = 0
+
+    for _,enemy in ipairs(list) do
+        local eh = enemy and enemy:FindFirstChildOfClass("Humanoid")
+        local erp = enemy and (enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChild("Head"))
+        if eh and eh.Health > 0 and erp then
+            local delta = erp.Position - rp.Position
+            if delta.Magnitude <= CONFIG.MELEE_NET_DISTANCE and delta.Magnitude > 0 then
+                local ok = pcall(function() remote:FireServer(delta.Unit, 1) end)
+                if ok then fired = fired + 1 end
+            end
+        end
     end
 
-    return fired
+    return fired > 0, fired
 end
 
-local function virtualToolClick(tool)
-    return virtualMeleeAttack(tool)
+local function virtualMeleeAttack(tool, models)
+    if not tool or not char() or tool.Parent ~= char() then return false, "NO_TOOL" end
+
+    local ac = buffMeleeHitbox()
+    local registerAttack, registerHit = resolveNetAttack()
+    if not AttackBackendLogged then
+        AttackBackendLogged = true
+        logLine("ATTACK_BACKEND", "RegisterAttack="..tostring(registerAttack ~= nil).." RegisterHit="..tostring(registerHit ~= nil).." CombatFramework="..tostring(ac ~= nil).." LeftClickRemote="..tostring(tool:FindFirstChild("LeftClickRemote") ~= nil))
+    end
+
+    -- Modern backend first. This is what actually tells the server that a melee swing hit.
+    local okNet, hitCount, backend = attackViaNet(models)
+    if okNet then return true, backend, hitCount end
+
+    -- Some equipped tools expose a dedicated left-click remote. Still no screen/real click.
+    local okLeft, leftCount = attackViaLeftClickRemote(tool, models)
+    if okLeft then return true, "LEFT_CLICK_REMOTE", leftCount end
+
+    -- Legacy controller fallback for older client layouts.
+    if ac and type(ac.attack) == "function" then
+        local ok = pcall(function() ac:attack() end)
+        if ok then return true, "COMBAT_FRAMEWORK", 0 end
+    end
+
+    -- Final Roblox Tool fallback. This is activation of the Tool object, not a screen click.
+    local ok = pcall(function() tool:Activate() end)
+    if ok then return true, "TOOL_ACTIVATE", 0 end
+
+    return false, backend or "NO_BACKEND", hitCount or 0
 end
 
--- Pin the internal melee hitbox while automation is active.
--- CombatFramework may recreate/reset activeController after equips and respawns.
+local function virtualToolClick(tool, models)
+    return virtualMeleeAttack(tool, models)
+end
+
+-- Pin legacy controller values while automation is active. Modern Net attack does not
+-- depend on hitboxMagnitude, but keeping this helps on old servers/client layouts.
 task.spawn(function()
     while task.wait(0.05) do
         if _G.TeamConfig and _G.TeamConfig.IsRunning then
@@ -748,8 +870,8 @@ local function meleeM1(targetModel, token)
         aimAt(rr.Position)
         tool = equipTooltip("Melee") or tool
         buffMeleeHitbox()
-        if tool and tool.Parent == char() then virtualToolClick(tool) end
-        task.wait(.07)
+        if tool and tool.Parent == char() then virtualToolClick(tool, {targetModel}) end
+        task.wait(CONFIG.MELEE_ATTACK_INTERVAL)
     end
     return h.Health <= 0
 end
@@ -1905,9 +2027,12 @@ local function farmScrap(token)
                     tool = equipTooltip("Melee") or tool
                     buffMeleeHitbox()
                     if tool and tool.Parent == char() then
-                        virtualToolClick(tool)
+                        local okAttack, backend, hitCount = virtualToolClick(tool, mobs)
+                        if not okAttack then
+                            logLine("ATTACK_FAIL", "backend="..tostring(backend).." hits="..tostring(hitCount))
+                        end
                     end
-                    task.wait(.055)
+                    task.wait(CONFIG.MELEE_ATTACK_INTERVAL)
                 end
 
                 task.wait(.35)
@@ -2412,7 +2537,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2 NIGHT DEBUG | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.1 NET ATTACK | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
