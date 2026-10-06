@@ -55,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.7 VIDEO-TRAINED FARM\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.7.1 MATERIAL-PHASE FIX\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -70,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.7 VIDEO-TRAINED FARM\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.7.1 MATERIAL-PHASE FIX\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -527,7 +527,7 @@ local function sendWebhook(title, description, fields)
         title = title,
         description = description,
         fields = fields or {},
-        footer = {text = "Prehistoric Team V2.7 | " .. LP.Name},
+        footer = {text = "Prehistoric Team V2.7.1 | " .. LP.Name},
         timestamp = DateTime.now():ToIsoDate(),
     }
 
@@ -3164,48 +3164,76 @@ local function craftVolcanicMagnet(token)
 end
 
 local function recoverMagnet(token)
-    -- Smart preflight: establish a trustworthy material source before choosing a portal.
-    -- Never interpret a failed/unavailable inventory read as "0 Scrap" and fly away blindly.
-    local inventoryReady = PHX.warmMaterialInventory(3.2)
-    if not inventoryReady then
-        local scrap, scrapSource = PHX.materialCountInfo("Scrap Metal", true)
-        setStatus("Inventory preflight unavailable | Scrap="..tostring(scrap).." source="..tostring(scrapSource).." -> retry")
-        logLine("PREFLIGHT_WAIT", "material inventory unavailable; refusing blind portal route")
-        task.wait(1.0)
-        return false
-    end
+    -- V2.7.1: never require three unrelated material counters to be readable before progressing.
+    -- Decide phase-by-phase: Scrap -> craft probe -> Blaze Ember -> craft.
+    PHX.warmMaterialInventory(1.0)
 
     if hasVolcanicMagnet() then return true end
 
     local masterOnline = Players:FindFirstChild(_G.TeamConfig.MasterName) ~= nil
-    local scrap = inventoryCount("Scrap Metal")
-    local ember = inventoryCount("Blaze Ember")
-    setStatus("RECOVERY scan | MASTER="..(masterOnline and "ONLINE" or "OFFLINE").." | Magnet=NO | Scrap="..scrap.."/10 | Ember="..ember.."/15")
-    logLine("PREFLIGHT", "recover magnet | masterOnline="..tostring(masterOnline).." region="..tostring(getRegion()).." scrap="..scrap.." ember="..ember)
+    local scrap, scrapSource = PHX.materialCountInfo("Scrap Metal", true)
+    local ember, emberSource = PHX.materialCountInfo("Blaze Ember", true)
+    local scrapKnown = scrapSource ~= "UNAVAILABLE" and scrapSource ~= "INIT"
+    local emberKnown = emberSource ~= "UNAVAILABLE" and emberSource ~= "INIT"
 
-    -- Do not bounce to Tiki first. Route directly to whichever material is missing.
-    -- This avoids Tiki -> Castle -> Turtle/Hydra chains when the account is already useful elsewhere.
-    if scrap < 10 then
+    setStatus("RECOVERY scan | MASTER="..(masterOnline and "ONLINE" or "OFFLINE").." | Scrap="..tostring(scrap).."/10["..tostring(scrapSource).."] | Ember="..tostring(ember).."/15["..tostring(emberSource).."]")
+    logLine("PREFLIGHT", "recover magnet | masterOnline="..tostring(masterOnline).." region="..tostring(getRegion()).." scrap="..tostring(scrap).." src="..tostring(scrapSource).." ember="..tostring(ember).." emberSrc="..tostring(emberSource))
+
+    -- Only farm Scrap when we positively know it is below 10.
+    -- If Scrap is unknown, first probe the Dragon Hunter craft menu instead of blindly teleporting Turtle.
+    if scrapKnown and scrap < 10 then
         if not farmScrap(token) then return false end
+        if not isRunning(token) then return false end
+        scrap, scrapSource = PHX.materialCountInfo("Scrap Metal", true)
+        scrapKnown = scrapSource ~= "UNAVAILABLE" and scrapSource ~= "INIT"
+    end
+
+    -- If Scrap is ready (or unknown), Hydra is the smartest next stop: a visible Craft button proves
+    -- both ingredients are already sufficient. This fixes the old 38 Scrap -> PREFLIGHT_WAIT loop.
+    setStatus("Material phase -> Hydra craft probe")
+    if craftVolcanicMagnet(token) then
+        setStatus("Volcanic Magnet crafted")
+        logLine("MAGNET", "crafted on pre-Blaze probe")
+        return true
     end
     if not isRunning(token) then return false end
 
-    if inventoryCount("Blaze Ember") < 15 then
+    -- Craft failed. If Scrap was unknown, re-check it now; only go Turtle if we can positively
+    -- establish that Scrap is actually below 10. Otherwise continue to Blaze Ember farming.
+    scrap, scrapSource = PHX.materialCountInfo("Scrap Metal", true)
+    scrapKnown = scrapSource ~= "UNAVAILABLE" and scrapSource ~= "INIT"
+    if scrapKnown and scrap < 10 then
+        setStatus("Craft probe failed | Scrap "..scrap.."/10 -> Floating Turtle")
+        if not farmScrap(token) then return false end
+        if not isRunning(token) then return false end
+    end
+
+    ember, emberSource = PHX.materialCountInfo("Blaze Ember", true)
+    emberKnown = emberSource ~= "UNAVAILABLE" and emberSource ~= "INIT"
+
+    -- Unknown Ember is treated as "needs verification/farm", not as a reason to stop the state machine.
+    -- If Ember is already sufficient but unreadable, the craft probe above would have succeeded.
+    if (not emberKnown) or ember < 15 then
+        setStatus("Scrap ready -> Blaze Ember phase | Ember="..tostring(ember).."/15["..tostring(emberSource).."]")
         if not farmBlazeEmbers(token) then return false end
     end
     if not isRunning(token) then return false end
 
-    -- Crafting is at Dragon Hunter on Hydra, so go directly there. Tiki is only needed later
-    -- if this client is the MASTER and actually needs to buy a new boat.
     for attempt=1,4 do
         if craftVolcanicMagnet(token) then
             setStatus("Volcanic Magnet crafted")
-            logLine("MAGNET", "crafted successfully without forced Tiki pre-route")
+            logLine("MAGNET", "crafted after Blaze phase")
             return true
         end
-        setStatus("Craft retry "..attempt.."/4")
-        if inventoryCount("Scrap Metal") < 10 then farmScrap(token) end
-        if inventoryCount("Blaze Ember") < 15 then farmBlazeEmbers(token) end
+        if not isRunning(token) then return false end
+        local s, ss = PHX.materialCountInfo("Scrap Metal", true)
+        local e, es = PHX.materialCountInfo("Blaze Ember", true)
+        setStatus("Craft retry "..attempt.."/4 | Scrap="..tostring(s).."["..tostring(ss).."] Ember="..tostring(e).."["..tostring(es).."]")
+        if ss ~= "UNAVAILABLE" and ss ~= "INIT" and s < 10 then
+            farmScrap(token)
+        else
+            farmBlazeEmbers(token)
+        end
     end
 
     setStatus("RECOVERY FAILED: no Volcanic Magnet")
@@ -3662,7 +3690,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.7 VIDEO-TRAINED | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.7.1 MATERIAL-PHASE | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -3740,7 +3768,7 @@ end
 local function refreshCounters()
     if not COUNTER_LABEL or not COUNTER_LABEL.Parent then return end
     local scrap, scrapSource = PHX.materialCountInfo("Scrap Metal")
-    local ember = inventoryCount("Blaze Ember")
+    local ember, emberSource = PHX.materialCountInfo("Blaze Ember")
     local magnet = inventoryCount("Volcanic Magnet")
     local bones = inventoryCount("Dinosaur Bones")
     local dragons = PHX.findPhysicalDragonFruits()
@@ -3752,7 +3780,8 @@ local function refreshCounters()
         dragonText = "DRAGON STORE CRITICAL"
     end
     local srcTag = scrapSource == "REMOTE_EXACT" and "R" or (scrapSource == "STASH_GUI" and "G" or (scrapSource == "REMOTE_DEEP" and "D" or "?"))
-    COUNTER_LABEL.Text = string.format("Scrap %d/10[%s] | Ember %d/15 | Magnet %s | Bones %d | %s", scrap, srcTag, ember, magnet > 0 and "YES" or "NO", bones, dragonText)
+    local emberTag = emberSource == "REMOTE_EXACT" and "R" or (emberSource == "STASH_GUI" and "G" or (emberSource == "REMOTE_DEEP" and "D" or "?"))
+    COUNTER_LABEL.Text = string.format("Scrap %d/10[%s] | Ember %d/15[%s] | Magnet %s | Bones %d | %s", scrap, srcTag, ember, emberTag, magnet > 0 and "YES" or "NO", bones, dragonText)
 end
 
 APPLY.MouseButton1Click:Connect(function()
