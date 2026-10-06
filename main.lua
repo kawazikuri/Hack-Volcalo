@@ -1,5 +1,5 @@
 --[[
-    PREHISTORIC TEAM V2.6.1 (EXACT DRAGON EAST/WEST + DELTA SAFE)
+    PREHISTORIC TEAM V2.9 (REMOTE HUNT + DYNAMIC HYDRA TREES)
     5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
 
     IMPORTANT:
@@ -55,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.7.3 DRAGON-HUNTER FIX\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.9 REMOTE HUNT + TREES\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -70,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.7.3 DRAGON-HUNTER FIX\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.9 REMOTE HUNT + TREES\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -120,10 +120,39 @@ local CONFIG = {
     },
 
     DRAGON_GUARD = {
-        STORE_RETRIES = 6,
-        RETRY_DELAY = 0.45,
-        POST_EGG_GUARD_SECONDS = 4.5,
-        PRE_RESET_GUARD_SECONDS = 8.0,
+        STORE_RETRIES = 8,
+        RETRY_DELAY = 0.35,
+        POST_EGG_GUARD_SECONDS = 10.0,
+        PRE_RESET_GUARD_SECONDS = 10.0,
+    },
+
+    -- V2.8: the full-video event logic is feedback driven. Master always fixes
+    -- active pressure rocks; slaves delete Lava Golems first, then help pressure.
+    PRESSURE = {
+        SKILL_HOLD = 0.02,
+        SKILL_GAP = 0.08,
+        ROCK_HOVER_Y = 10,
+        ASSIST_AT = 8,          -- when no golem, slaves help almost immediately
+        EMERGENCY_AT = 42,
+        RELIC_ASSIST_AT = 98,
+        RELIC_EMERGENCY_AT = 92,
+        MAX_BURST_SECONDS = 2.2,
+    },
+
+    GOLEM_AURA = {
+        APPROACH_DISTANCE = 48,
+        HOVER_Y = 14,
+        ATTACK_INTERVAL = 0.035,
+        BURST_SECONDS = 1.5,
+        HITBOX_SIZE = 85,
+    },
+
+    EGG = {
+        HOLD_E_SECONDS = 1.10,  -- PC prompt in the supplied full-run video
+        RETRIES = 3,
+        RETRY_GAP = 0.28,
+        SPAWN_WAIT_SECONDS = 10,
+        APPROACH_DISTANCE = 4.0,
     },
 
     -- SAFE low-CPU mode: visual-only changes. It never destroys Workspace.Map,
@@ -528,7 +557,7 @@ local function sendWebhook(title, description, fields)
         title = title,
         description = description,
         fields = fields or {},
-        footer = {text = "Prehistoric Team V2.7.2 | " .. LP.Name},
+        footer = {text = "Prehistoric Team V2.9 | " .. LP.Name},
         timestamp = DateTime.now():ToIsoDate(),
     }
 
@@ -1501,7 +1530,7 @@ local function usePortal(cf, expectedRegion, token)
         logLine("PORTAL", "attempt="..attempt.." from="..tostring(beforeRegion).." to="..tostring(expectedRegion).." pos="..tostring(beforeRoot and beforeRoot.Position or "nil"))
         setStatus("PORTAL -> "..tostring(expectedRegion).." ["..attempt.."/5]")
 
-        -- Critical V2.7.3 fix: Castle portals sit close together. A straight tween
+        -- Critical V2.8 fix: Castle portals sit close together. A straight tween
         -- to Hydra can physically cross the Turtle/Tiki trigger first. Always approach
         -- from ABOVE the selected gate, then descend to its own entry side.
         local approach = cf * CFrame.new(0,0,-12)
@@ -1987,29 +2016,124 @@ local function activePressureRocks(island)
     return list
 end
 
+-- V2.9 keeps the V2.8 pressure worker learned from the supplied full-run video:
+-- react immediately instead of waiting for pressure/relic damage to accumulate.
+function PHX.pressureRockBurst(target, token)
+    if not target or not target.model or not target.part then return false end
+    if not target.model.Parent or not rockActive(target.model) then return true end
+
+    local deadline = os.clock() + CONFIG.PRESSURE.MAX_BURST_SECONDS
+    while isRunning(token) and target.model.Parent and rockActive(target.model) and os.clock() < deadline do
+        local p = target.part.Position
+        local rp = root()
+        if not rp then return false end
+
+        local hover = CFrame.new(p + Vector3.new(0, CONFIG.PRESSURE.ROCK_HOVER_Y, 0))
+        if (rp.Position - hover.Position).Magnitude > 14 then
+            if not safeTween(hover, CONFIG.PRESSURE_TWEEN_SPEED, token) then return false end
+        else
+            rp.CFrame = CFrame.lookAt(rp.Position, Vector3.new(p.X, rp.Position.Y, p.Z))
+        end
+        aimAt(p)
+
+        local function castSet(tooltip)
+            local tool = equipTooltip(tooltip)
+            if not tool then return end
+            for _,k in ipairs(SKILL_KEYS) do
+                if not isRunning(token) or not target.model.Parent or not rockActive(target.model) then break end
+                aimAt(p)
+                pressKey(k, CONFIG.PRESSURE.SKILL_HOLD)
+                task.wait(CONFIG.PRESSURE.SKILL_GAP)
+            end
+        end
+
+        -- User-locked pressure combo: Melee X/C/V/F, then Fruit X/C/V/F. No M1.
+        castSet("Melee")
+        if target.model.Parent and rockActive(target.model) then castSet("Blox Fruit") end
+
+        if target.model.Parent and rockActive(target.model) then
+            task.wait(.03)
+        end
+    end
+
+    if not target.model.Parent or not rockActive(target.model) then
+        noteProgress("PRESSURE_ROCK_FIXED")
+        return true
+    end
+    return false
+end
+
+function PHX.pickPressureRock(island, offset)
+    local rocks = activePressureRocks(island)
+    if #rocks == 0 then return nil, 0 end
+    local idx = ((tonumber(offset) or 1) - 1) % #rocks + 1
+    return rocks[idx], #rocks
+end
+
+function PHX.golemKillAura(golem, token)
+    if not golem or not golem.Parent then return true end
+    local gh = golem:FindFirstChildOfClass("Humanoid")
+    if not gh or gh.Health <= 0 then return true end
+
+    local deadline = os.clock() + CONFIG.GOLEM_AURA.BURST_SECONDS
+    local tool = equipTooltip("Melee")
+
+    while isRunning(token) and golem.Parent and gh.Parent and gh.Health > 0 and os.clock() < deadline do
+        local gp = golem:FindFirstChild("HumanoidRootPart") or golem:FindFirstChild("Head")
+        local rp = root()
+        if not gp or not rp then break end
+
+        pcall(function()
+            gp.CanCollide = false
+            if gp:IsA("BasePart") then
+                gp.Size = Vector3.new(CONFIG.GOLEM_AURA.HITBOX_SIZE, CONFIG.GOLEM_AURA.HITBOX_SIZE, CONFIG.GOLEM_AURA.HITBOX_SIZE)
+            end
+        end)
+
+        if (rp.Position - gp.Position).Magnitude > CONFIG.GOLEM_AURA.APPROACH_DISTANCE then
+            if not safeTween(CFrame.new(gp.Position + Vector3.new(0, CONFIG.GOLEM_AURA.HOVER_Y, 0)), 420, token) then
+                return false
+            end
+        end
+
+        aimAt(gp.Position)
+        tool = equipTooltip("Melee") or tool
+        if tool and tool.Parent == char() then
+            virtualToolClick(tool, {golem})
+        end
+        task.wait(CONFIG.GOLEM_AURA.ATTACK_INTERVAL)
+    end
+
+    if gh.Health <= 0 or not golem.Parent then
+        noteProgress("LAVA_GOLEM_DELETED")
+        return true
+    end
+    return false
+end
+
 local function masterPressureLoop(island, token)
     enableLavaProtection(island)
-    setStatus("MASTER: pressure mode")
+    setStatus("MASTER: pressure controller armed")
 
     while isRunning(token) and island.Parent and island:GetAttribute("IsMinigameActive") == true do
         local pressure = getPressure()
         local hpPct = getRelicHealthPercent(island)
-        setStatus("MASTER Pressure="..tostring(pressure or "?").."% | Relic="..string.format("%.1f", hpPct or 0).."%")
+        local target, rockCount = PHX.pickPressureRock(island, teamIndex(LP.Name) or 1)
 
-        local rocks = activePressureRocks(island)
-        if #rocks == 0 then
-            task.wait(.15)
+        local emergency = (pressure and pressure >= CONFIG.PRESSURE.EMERGENCY_AT)
+            or (hpPct and hpPct <= CONFIG.PRESSURE.RELIC_EMERGENCY_AT)
+
+        setStatus(
+            "MASTER | Pressure="..tostring(pressure or "?")..
+            "% | Relic="..string.format("%.1f", hpPct or 0)..
+            "% | Rocks="..tostring(rockCount)..
+            (emergency and " | EMERGENCY" or "")
+        )
+
+        if target then
+            PHX.pressureRockBurst(target, token)
         else
-            local target = rocks[1]
-            local p = target.part.Position
-            highTween(CFrame.new(p + Vector3.new(0,12,0)), CONFIG.PRESSURE_TWEEN_SPEED, token)
-
-            for _=1,2 do
-                if not isRunning(token) or island:GetAttribute("IsMinigameActive") ~= true then break end
-                if not target.model.Parent or not rockActive(target.model) then break end
-                useXCVF(p)
-                task.wait(.15)
-            end
+            task.wait(.05)
         end
     end
 
@@ -2023,20 +2147,59 @@ local function slaveGolemLoop(island, token)
     local rp = relicPart(relic)
 
     while isRunning(token) and island.Parent and island:GetAttribute("IsMinigameActive") == true do
-        local golem = enemies and enemies:FindFirstChild("Lava Golem")
-        local gh = golem and golem:FindFirstChildOfClass("Humanoid")
-        if golem and gh and gh.Health > 0 then
-            setStatus("SLAVE: Lava Golem "..math.floor(gh.Health).."/"..math.floor(gh.MaxHealth))
-            meleeM1(golem, token)
-        else
-            if rp then
-                local idx = slaveIndex() or 1
-                local off = Vector3.new(idx*4, 14, idx%2==0 and 8 or -8)
-                safeTween(CFrame.new(rp.Position+off), 280, token)
+        local golem = nil
+        if enemies then
+            for _,m in ipairs(enemies:GetChildren()) do
+                if m.Name == "Lava Golem" then
+                    local h = m:FindFirstChildOfClass("Humanoid")
+                    if h and h.Health > 0 then
+                        golem = m
+                        break
+                    end
+                end
             end
-            task.wait(.25)
+        end
+
+        -- Golems directly threaten Relic HP. All four slaves prioritize the same
+        -- server-visible target and use the proven Net attack backend as a kill aura.
+        if golem then
+            local gh = golem:FindFirstChildOfClass("Humanoid")
+            setStatus("SLAVE KILL AURA | Lava Golem "..tostring(gh and math.floor(gh.Health) or "?"))
+            PHX.golemKillAura(golem, token)
+        else
+            local pressure = getPressure()
+            local hpPct = getRelicHealthPercent(island)
+            local needAssist = (pressure and pressure >= CONFIG.PRESSURE.ASSIST_AT)
+                or (hpPct and hpPct <= CONFIG.PRESSURE.RELIC_ASSIST_AT)
+
+            if needAssist then
+                local idx = (slaveIndex() or 1) + 1
+                local target, rockCount = PHX.pickPressureRock(island, idx)
+                setStatus(
+                    "SLAVE PRESSURE ASSIST | P="..tostring(pressure or "?")..
+                    "% Relic="..string.format("%.1f", hpPct or 0)..
+                    "% Rocks="..tostring(rockCount)
+                )
+                if target then
+                    PHX.pressureRockBurst(target, token)
+                else
+                    task.wait(.05)
+                end
+            else
+                if rp then
+                    local idx = slaveIndex() or 1
+                    local off = Vector3.new((idx-2.5)*5, 14, idx%2==0 and 8 or -8)
+                    local rr = root()
+                    local pos = rp.Position + off
+                    if rr and (rr.Position-pos).Magnitude > 12 then
+                        safeTween(CFrame.new(pos), 320, token)
+                    end
+                end
+                task.wait(.08)
+            end
         end
     end
+
     disableLavaProtection()
 end
 
@@ -2088,9 +2251,12 @@ local function interactCollectible(obj, token)
 end
 
 local function collectBones(island, token)
-    setStatus("Collecting Dinosaur Bones")
-    local deadline = os.clock()+18
+    -- In the supplied full-run video Dinosaur Bones are granted automatically
+    -- as the event ends. Do only a short physical sweep so eggs are never delayed.
+    setStatus("Rewards -> quick Dinosaur Bones sweep")
+    local deadline = os.clock()+2.5
     local tried = {}
+    local quietSince = os.clock()
 
     while isRunning(token) and island.Parent and os.clock()<deadline do
         local found = false
@@ -2102,13 +2268,18 @@ local function collectBones(island, token)
                 if hasInteract then
                     tried[v] = true
                     found = true
+                    quietSince = os.clock()
                     interactCollectible(v, token)
                 end
             end
         end
-        if not found then task.wait(.4) end
+        if not found then
+            if os.clock()-quietSince > .55 then break end
+            task.wait(.08)
+        end
     end
 end
+
 
 function PHX.dragonVariantFromText(value)
     local s = string.lower(tostring(value or ""))
@@ -2329,10 +2500,23 @@ end
 local function collectAssignedEgg(island, token)
     local core = island:FindFirstChild("Core")
     local folder = core and core:FindFirstChild("SpawnedDragonEggs")
-    if not folder then return true end
+    if not folder then
+        setStatus("Waiting Dragon Egg folder")
+        local waitUntil = os.clock() + CONFIG.EGG.SPAWN_WAIT_SECONDS
+        while isRunning(token) and os.clock() < waitUntil do
+            core = island:FindFirstChild("Core")
+            folder = core and core:FindFirstChild("SpawnedDragonEggs")
+            if folder then break end
+            task.wait(.10)
+        end
+        if not folder then
+            logLine("EGG_NONE", "SpawnedDragonEggs folder not found")
+            return true
+        end
+    end
 
-    local deadline = os.clock()+20
-    while isRunning(token) and os.clock()<deadline do
+    local deadline = os.clock() + CONFIG.EGG.SPAWN_WAIT_SECONDS
+    while isRunning(token) and os.clock() < deadline do
         local eggs = folder:GetChildren()
         if #eggs > 0 then
             table.sort(eggs, function(a,b)
@@ -2348,26 +2532,81 @@ local function collectAssignedEgg(island, token)
             local rotate = math.abs(math.floor(islandPos.X)) % #CONFIG.TEAM
             local rank = ((ti + rotate - 1) % #CONFIG.TEAM) + 1
 
-            if rank <= #eggs then
-                setStatus("Egg assignment "..rank.."/"..#eggs.." | Dragon guard armed")
-                interactCollectible(eggs[rank], token)
-                -- Public volcano hubs confirm the game exposes RE/CollectedDragonEgg.
-                -- Fire it only after this client is physically at its assigned egg so the
-                -- five clients do not blindly spam the reward remote from across the island.
-                for _=1,4 do
-                    PHX.collectDragonEggRemote()
-                    task.wait(.12)
-                end
-                -- Reward replication can lag behind the interaction. Guard this window
-                -- so a physical Dragon Fruit cannot appear after we already reset.
-                return PHX.secureDragonWindow(CONFIG.DRAGON_GUARD.POST_EGG_GUARD_SECONDS, token)
-            else
-                setStatus("No egg assigned this run (rotating slot)")
+            if rank > #eggs then
+                setStatus("No Dragon Egg assigned this run")
+                logLine("EGG", "rank="..rank.." eggs="..#eggs.." no assignment")
                 return true
             end
+
+            local egg = eggs[rank]
+            local part = interactionPart(egg)
+            if not part then
+                logLine("EGG_FAIL", "assigned egg has no BasePart")
+                return false
+            end
+
+            setStatus("Dragon Egg "..rank.."/"..#eggs.." -> PC HOLD E")
+            highTween(part.CFrame * CFrame.new(0, 2.5, -CONFIG.EGG.APPROACH_DISTANCE), 380, token)
+            aimAt(part.Position)
+
+            local prompt = egg:FindFirstChildWhichIsA("ProximityPrompt", true)
+            local holdTime = CONFIG.EGG.HOLD_E_SECONDS
+            if prompt then
+                holdTime = math.max(holdTime, (tonumber(prompt.HoldDuration) or 0) + .12)
+            end
+
+            local picked = false
+            for attempt=1,CONFIG.EGG.RETRIES do
+                if not isRunning(token) then return false end
+                if not egg.Parent or not egg:IsDescendantOf(folder) then
+                    picked = true
+                    break
+                end
+
+                local ep = interactionPart(egg)
+                if ep then
+                    local rr = root()
+                    if rr and (rr.Position-ep.Position).Magnitude > 7 then
+                        highTween(ep.CFrame * CFrame.new(0, 2.5, -CONFIG.EGG.APPROACH_DISTANCE), 380, token)
+                    end
+                    aimAt(ep.Position)
+                end
+
+                setStatus("Dragon Egg HOLD E "..attempt.."/"..CONFIG.EGG.RETRIES.." | "..string.format("%.2fs", holdTime))
+                holdE(holdTime)
+                task.wait(CONFIG.EGG.RETRY_GAP)
+
+                if not egg.Parent or not egg:IsDescendantOf(folder) then
+                    picked = true
+                    break
+                end
+            end
+
+            -- Fallback only after physical PC-style Hold-E attempts. Never spam the
+            -- reward remote from range.
+            if not picked and egg.Parent and egg:IsDescendantOf(folder) then
+                logLine("EGG", "Hold-E not confirmed -> one remote fallback")
+                PHX.collectDragonEggRemote()
+                task.wait(.35)
+                picked = not egg.Parent or not egg:IsDescendantOf(folder)
+            end
+
+            if not picked then
+                setStatus("Dragon Egg pickup NOT confirmed -> staying on island")
+                logLine("EGG_FAIL", "rank="..rank.." holdE attempts exhausted")
+                return false
+            end
+
+            noteProgress("DRAGON_EGG_PICKED")
+            setStatus("Dragon Egg picked -> Dragon fruit guard 10s")
+            return PHX.secureDragonWindow(CONFIG.DRAGON_GUARD.POST_EGG_GUARD_SECONDS, token)
         end
-        task.wait(.4)
+        task.wait(.10)
     end
+
+    -- No egg can legitimately happen on a low-quality relic run. Do not freeze forever.
+    logLine("EGG_NONE", "no eggs spawned within wait window")
+    setStatus("No Dragon Egg spawned this run")
     return true
 end
 
@@ -2615,85 +2854,310 @@ local function receiveDragonHunterQuest(token)
         return true
     end
 
-    -- Proven GUI path FIRST. RF RequestQuest is only a fallback now.
-    for cycle=1,3 do
+    -- V2.9: Dragon Hunter Hunt does NOT need a physical NPC click.
+    -- Ask RF/DragonHunter directly first and verify with Context="Check".
+    -- This mirrors the remote path used by working Blaze-Ember hubs and avoids
+    -- pointless tweening back to the Dojo between every repeatable Hunt.
+    local rf = PHX.dragonHunterRemote()
+    if rf then
+        for attempt=1,6 do
+            if not isRunning(token) then return false end
+            setStatus("Dragon Hunter REMOTE HUNT ["..attempt.."/6]")
+
+            local ok, response = pcall(function()
+                return rf:InvokeServer({Context="RequestQuest"})
+            end)
+            logLine("DRAGON_HUNTER_RF", "RequestQuest attempt="..attempt.." ok="..tostring(ok).." responseType="..typeof(response))
+
+            -- Check aggressively; the server often accepts immediately but the
+            -- replicated quest text can trail the invoke by a few frames.
+            local deadline = os.clock() + .85
+            while os.clock() < deadline and isRunning(token) do
+                local kind = questKind()
+                if kind ~= "NONE" then
+                    local qt = PHX.questStatusText()
+                    setStatus(qt)
+                    logLine("DRAGON_HUNTER_RF", "accepted | "..qt)
+                    noteProgress("QUEST_ACCEPTED_REMOTE:"..kind)
+                    return true
+                end
+                task.wait(.04)
+            end
+            task.wait(.07)
+        end
+    else
+        logLine("DRAGON_HUNTER_RF", "RF/DragonHunter missing")
+    end
+
+    -- Safety fallback only. Normally this path should never be needed.
+    -- If a future game update adds a distance/GUI requirement again, the bot can
+    -- still recover instead of permanently stalling.
+    setStatus("Remote Hunt failed -> NPC fallback")
+    for cycle=1,2 do
         if not isRunning(token) then return false end
-        setStatus("Dragon Hunter -> opening Hunt menu ["..cycle.."/3]")
         if openDragonHunter(token) then
             local opts = dialogueOptions()
             if #opts >= 3 then
-                fireButton(opts[1]) -- Hunt is the top option on the known 4-option menu.
-                logLine("DRAGON_HUNTER", "Hunt option fired | options="..#opts)
-
-                local deadline = os.clock() + 1.5
+                fireButton(opts[1]) -- Hunt
+                local deadline = os.clock() + 1.2
                 while os.clock() < deadline and isRunning(token) do
                     local kind = questKind()
                     if kind ~= "NONE" then
                         local qt = PHX.questStatusText()
                         setStatus(qt)
-                        logLine("DRAGON_HUNTER", "quest accepted without confirm | "..qt)
+                        logLine("DRAGON_HUNTER_GUI_FALLBACK", "accepted without confirm | "..qt)
                         return true
                     end
                     opts = dialogueOptions()
                     if #opts >= 1 and #opts <= 2 then
-                        fireButton(opts[1]) -- Sure / Yes is top option.
-                        logLine("DRAGON_HUNTER", "Sure option fired | options="..#opts)
+                        fireButton(opts[1]) -- Sure / Yes
                         break
                     end
                     task.wait(.04)
                 end
 
-                deadline = os.clock() + 2.2
+                deadline = os.clock() + 1.6
                 while os.clock() < deadline and isRunning(token) do
                     if questKind() ~= "NONE" then
                         local qt = PHX.questStatusText()
                         setStatus(qt)
-                        logLine("DRAGON_HUNTER", "quest accepted through GUI | "..qt)
-                        noteProgress("QUEST_ACCEPTED:"..questKind())
+                        logLine("DRAGON_HUNTER_GUI_FALLBACK", "accepted | "..qt)
                         return true
                     end
                     task.wait(.05)
                 end
             end
         end
-        task.wait(.12)
+        task.wait(.1)
     end
 
-    -- Fallback only: direct RF. Do not spam it continuously.
-    local rf = PHX.dragonHunterRemote()
-    if rf then
-        for attempt=1,3 do
-            if not isRunning(token) then return false end
-            pcall(function() rf:InvokeServer({Context="RequestQuest"}) end)
-            local deadline = os.clock() + .45
-            while os.clock() < deadline do
-                if questKind() ~= "NONE" then
-                    local qt = PHX.questStatusText()
-                    setStatus(qt)
-                    logLine("DRAGON_HUNTER", "quest accepted through RF fallback | "..qt)
-                    noteProgress("QUEST_ACCEPTED_RF:"..questKind())
-                    return true
+    logLine("DRAGON_HUNTER", "quest request FAILED after REMOTE + GUI fallback")
+    return false
+end
+
+--==============================================================
+-- DYNAMIC HYDRA TREE DETECTOR
+--==============================================================
+-- Hydra has several different tree/bamboo assets. We discover them at runtime,
+-- dedupe their models, and prefer candidates around the known Hydra tree field.
+-- CONFIG.TREES remains only as a last-resort fallback if the map changes names.
+PHX._HydraTreeCache = PHX._HydraTreeCache or {At=-math.huge, List={}}
+PHX._HydraTreeLastHit = PHX._HydraTreeLastHit or setmetatable({}, {__mode="k"})
+
+function PHX.hydraTreePart(obj)
+    if not obj or not obj.Parent then return nil end
+    if obj:IsA("BasePart") then return obj end
+    if obj:IsA("Model") then
+        return obj.PrimaryPart or obj:FindFirstChild("Trunk", true) or obj:FindFirstChildWhichIsA("BasePart", true)
+    end
+    return nil
+end
+
+function PHX.hydraTreeCanonical(obj)
+    if not obj then return nil end
+    local cur = obj
+    local best = obj:IsA("Model") and obj or nil
+    for _=1,6 do
+        if not cur then break end
+        local l = string.lower(cur.Name)
+        if cur:IsA("Model") and (l:find("tree",1,true) or l:find("bamboo",1,true)) then
+            best = cur
+        end
+        cur = cur.Parent
+    end
+    return best or obj
+end
+
+function PHX.hydraTreeHealthSignal(obj)
+    if not obj then return false end
+    local function healthish(x)
+        local n = string.lower(x.Name)
+        if n == "health" or n == "hp" or n == "hitpoints" or n == "hitpoint" then
+            if x:IsA("IntValue") or x:IsA("NumberValue") then return true end
+        end
+        return false
+    end
+    if healthish(obj) then return true end
+    if obj:IsA("Model") then
+        for _,d in ipairs(obj:GetDescendants()) do
+            if healthish(d) then return true end
+        end
+    end
+    for _,name in ipairs({"Health","HP","Hitpoints","HitPoints"}) do
+        if obj:GetAttribute(name) ~= nil then return true end
+    end
+    return false
+end
+
+function PHX.hydraTreeCandidate(obj)
+    if not obj or not obj.Parent then return false end
+    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
+
+    local l = string.lower(obj.Name)
+    local named = l:find("tree",1,true) or l:find("bamboo",1,true) or l:find("trunk",1,true) or l:find("stem",1,true)
+    local healthSignal = PHX.hydraTreeHealthSignal(obj)
+    if not named and not healthSignal then return false end
+    if l:find("leaf",1,true) or l:find("leaves",1,true) or l:find("foliage",1,true) or l:find("canopy",1,true) then
+        return false
+    end
+
+    local canon = PHX.hydraTreeCanonical(obj)
+    local p = PHX.hydraTreePart(canon)
+    if not p then return false end
+    local pos = p.Position
+
+    -- Broad Hydra tree zone. The nearest-reference gate prevents unrelated map
+    -- vegetation from being mistaken for quest trees.
+    if pos.X < 4850 or pos.X > 5950 or pos.Y < 930 or pos.Y > 1325 or pos.Z < -100 or pos.Z > 1250 then
+        return false
+    end
+
+    local nearest = math.huge
+    for _,cf in ipairs(CONFIG.TREES) do
+        local d = (pos - cf.Position).Magnitude
+        if d < nearest then nearest = d end
+    end
+    return nearest <= 720
+end
+
+function PHX.scanHydraTrees(force)
+    local cache = PHX._HydraTreeCache
+    if not force and os.clock() - cache.At < .65 and #cache.List > 0 then
+        return cache.List
+    end
+
+    local out, seen = {}, {}
+
+    -- Spatial query instead of workspace.Map:GetDescendants() every cycle.
+    -- This is much cheaper for multi-account/SaveCPU setups and only inspects
+    -- objects physically inside the Hydra tree field.
+    local params = OverlapParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {LP.Character}
+    params.MaxParts = 1200
+
+    local zoneCF = CFrame.new(5400, 1125, 560)
+    local zoneSize = Vector3.new(1250, 430, 1400)
+    local ok, parts = pcall(function()
+        return workspace:GetPartBoundsInBox(zoneCF, zoneSize, params)
+    end)
+    if not ok then parts = {} end
+
+    for _,part in ipairs(parts) do
+        local probes = {part}
+        local cur = part.Parent
+        for _=1,5 do
+            if not cur then break end
+            probes[#probes+1] = cur
+            cur = cur.Parent
+        end
+
+        for _,obj in ipairs(probes) do
+            if PHX.hydraTreeCandidate(obj) then
+                local canon = PHX.hydraTreeCanonical(obj)
+                local p = PHX.hydraTreePart(canon)
+                if canon and p and not seen[canon] then
+                    seen[canon] = true
+                    out[#out+1] = canon
                 end
-                task.wait(.05)
+                break
             end
         end
     end
 
-    logLine("DRAGON_HUNTER", "quest request FAILED after GUI + RF fallback")
-    return false
+    local rr = root()
+    table.sort(out, function(a,b)
+        local ap = PHX.hydraTreePart(a)
+        local bp = PHX.hydraTreePart(b)
+        if not ap then return false end
+        if not bp then return true end
+
+        local ah = PHX._HydraTreeLastHit[a] or -math.huge
+        local bh = PHX._HydraTreeLastHit[b] or -math.huge
+        local aFresh = os.clock() - ah > .8
+        local bFresh = os.clock() - bh > .8
+        if aFresh ~= bFresh then return aFresh end
+        if rr then
+            return (ap.Position-rr.Position).Magnitude < (bp.Position-rr.Position).Magnitude
+        end
+        return ah < bh
+    end)
+
+    cache.At = os.clock()
+    cache.List = out
+
+    local sigParts = {}
+    for i=1,math.min(#out,8) do
+        local t = out[i]
+        local p = PHX.hydraTreePart(t)
+        sigParts[#sigParts+1] = t.Name..(p and string.format("@%.0f,%.0f,%.0f", p.Position.X,p.Position.Y,p.Position.Z) or "")
+    end
+    local sig = table.concat(sigParts, " | ")
+    if cache.LastSig ~= sig then
+        cache.LastSig = sig
+        logLine("TREE_SCAN", "detected="..#out.." | "..sig)
+    end
+
+    return out
+end
+
+function PHX.pickHydraTree()
+    local trees = PHX.scanHydraTrees(false)
+    local now = os.clock()
+    for _,tree in ipairs(trees) do
+        local p = PHX.hydraTreePart(tree)
+        local last = PHX._HydraTreeLastHit[tree] or -math.huge
+        if p and p.Parent and now - last > .55 then
+            return tree, p, #trees
+        end
+    end
+    if #trees > 0 then
+        local tree = trees[1]
+        return tree, PHX.hydraTreePart(tree), #trees
+    end
+    return nil, nil, 0
 end
 
 local function farmTreeQuest(token)
-    local i = 1
+    local fallbackIndex = 1
+    local lastRescan = -math.huge
+
     while isRunning(token) and questKind() == "TREE" and not PHX.questCompleteVisible() do
-        local cf = CONFIG.TREES[i]
-        setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
-        highTween(cf * CFrame.new(0,10,0), 300, token)
-        useXCVF(cf.Position)
-        PHX.pulseBlazeCollectRemote()
-        i = i + 1
-        if i > #CONFIG.TREES then i = 1 end
-        task.wait(.05)
+        local tree, part, detected = PHX.pickHydraTree()
+
+        if tree and part then
+            PHX._HydraTreeLastHit[tree] = os.clock()
+            local targetPos = part.Position
+            local label = tree.Name
+            setStatus(PHX.questStatusText().." | TREE SCAN="..detected.." | "..label.." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
+
+            -- Stay above the trunk and aim every X/C/V/F at the detected tree.
+            highTween(CFrame.new(targetPos + Vector3.new(0,10,0)), 340, token)
+            useXCVF(targetPos)
+            PHX.pulseBlazeCollectRemote()
+            PHX.touchVisibleBlaze(token, false)
+
+            -- Force a fresh discovery after a hit. Destroyed trees often disappear or
+            -- swap model state, so stale cached instances should not be hammered forever.
+            PHX._HydraTreeCache.At = -math.huge
+            lastRescan = os.clock()
+        else
+            -- Last-resort known Hydra points. This keeps TREE quest functional even if
+            -- a future map build renames every tree asset.
+            local cf = CONFIG.TREES[fallbackIndex]
+            setStatus(PHX.questStatusText().." | TREE dynamic=0 -> fallback "..fallbackIndex.."/"..#CONFIG.TREES)
+            highTween(cf * CFrame.new(0,10,0), 330, token)
+            useXCVF(cf.Position)
+            PHX.pulseBlazeCollectRemote()
+            PHX.touchVisibleBlaze(token, false)
+            fallbackIndex = fallbackIndex + 1
+            if fallbackIndex > #CONFIG.TREES then fallbackIndex = 1 end
+            task.wait(.04)
+        end
+
+        -- Quest Check is the authority. Do not wait for a slow UI notification.
+        if questKind() ~= "TREE" or PHX.questCompleteVisible() then break end
+        task.wait(.03)
     end
 end
 
@@ -2847,22 +3311,13 @@ local function farmBlazeEmbers(token)
         else
             local kind = questKind()
             if kind == "NONE" then
-                -- Re-anchor at Dragon Hunter before every request. Do not let a wrong Castle portal
-                -- destination leave the quest loop running from Turtle/Mansion.
-                local rr = root()
-                if not rr then
-                    waitAlive(token)
-                    rr = root()
-                end
-                if rr and (rr.Position - CONFIG.DRAGON_HUNTER.STAND.Position).Magnitude > 120 then
-                    safeTween(CONFIG.DRAGON_HUNTER.STAND, 300, token)
-                    task.wait(.12)
-                end
-                setStatus("Dragon Hunter -> requesting Hunt quest")
+                -- V2.9 remote Hunt: stay wherever we are on Hydra and request the next
+                -- repeatable quest directly. No Dojo tween is needed for Hunt.
+                setStatus("Dragon Hunter REMOTE -> requesting next Hunt")
                 if not receiveDragonHunterQuest(token) then
-                    setStatus("Dragon Hunter quest request failed -> retry at NPC")
-                    logLine("DRAGON_HUNTER", "quest request failed | virtual NPC click path used")
-                    task.wait(.12)
+                    setStatus("Dragon Hunter remote request failed -> fallback handled")
+                    logLine("DRAGON_HUNTER", "quest request failed after remote+fallback")
+                    task.wait(.10)
                 end
                 kind = questKind()
             end
@@ -3559,12 +4014,14 @@ local function runPrehistoricEvent(island, token)
 
     if not isRunning(token) then return end
 
-    setStatus("Event ended -> rewards")
-    task.wait(1.2)
+    setStatus("Event ended -> Dragon Egg priority")
+    task.wait(.35)
 
-    collectBones(island, token)
-    if not isRunning(token) then return end
+    -- Egg first: it is the time-sensitive/high-value reward and may create a
+    -- physical Dragon Fruit that must be stored before any reset or portal.
     if not collectAssignedEgg(island, token) then return end
+    if not isRunning(token) then return end
+    collectBones(island, token)
     if not isRunning(token) then return end
 
     -- Final hard gate before ANY reset/portal. Reward replication is sometimes late;
@@ -3967,7 +4424,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.7.3 QUEST/PORTAL HOTFIX | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.9 REMOTE HUNT + DYNAMIC TREES | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
