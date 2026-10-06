@@ -55,7 +55,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.6.1 EXACT DRAGON EAST/WEST\nLoading automation..."
+BOOT_LABEL.Text = "PREHISTORIC V2.7 VIDEO-TRAINED FARM\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -70,7 +70,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "PREHISTORIC V2.6.1 EXACT DRAGON EAST/WEST\nLoaded core, building UI..."
+BOOT_LABEL.Text = "PREHISTORIC V2.7 VIDEO-TRAINED FARM\nLoaded core, building UI..."
 
 --==============================================================
 -- CONFIG
@@ -527,7 +527,7 @@ local function sendWebhook(title, description, fields)
         title = title,
         description = description,
         fields = fields or {},
-        footer = {text = "Prehistoric Team V2.6.1 | " .. LP.Name},
+        footer = {text = "Prehistoric Team V2.7 | " .. LP.Name},
         timestamp = DateTime.now():ToIsoDate(),
     }
 
@@ -549,6 +549,8 @@ end
 
 --==============================================================
 -- INVENTORY / LIVE ITEM COUNTERS
+-- V2.7: one serialized inventory poller + exact Material schema + GUI fallback.
+-- Do NOT treat an absent/unreadable server entry as authoritative zero.
 --==============================================================
 
 function PHX.normalizeItemName(v)
@@ -558,29 +560,50 @@ function PHX.normalizeItemName(v)
     return x:match("^%s*(.-)%s*$") or x
 end
 
+PHX.InventoryBusy = false
+PHX.InventoryLastError = nil
+PHX.InventorySchemaLogged = false
+
 local function getInventory(force)
     local now = os.clock()
     if not force and INVENTORY_CACHE.Raw and (now - INVENTORY_CACHE.At) < CONFIG.ITEM_COUNTER.CACHE_SECONDS then
         return INVENTORY_CACHE.Raw
     end
 
+    local deadline = now + 2.5
+    while PHX.InventoryBusy and os.clock() < deadline do task.wait(.03) end
+    if PHX.InventoryBusy then
+        return INVENTORY_CACHE.Raw or {}
+    end
+
+    PHX.InventoryBusy = true
     local ok, inv = pcall(function()
         return CommF:InvokeServer("getInventory")
     end)
+    PHX.InventoryBusy = false
+
     PHX.LastInventoryReadOK = ok and type(inv) == "table"
     if PHX.LastInventoryReadOK then
         INVENTORY_CACHE.Raw = inv
-        INVENTORY_CACHE.At = now
+        INVENTORY_CACHE.At = os.clock()
+        PHX.InventoryLastError = nil
+        if not PHX.InventorySchemaLogged then
+            PHX.InventorySchemaLogged = true
+            local n = 0
+            for _ in pairs(inv) do n = n + 1 end
+            logLine("INVENTORY", "getInventory OK | entries="..tostring(n))
+        end
         return inv
     end
+
+    PHX.InventoryLastError = tostring(inv)
+    logLine("INVENTORY_FAIL", "getInventory failed | "..tostring(inv))
     return INVENTORY_CACHE.Raw or {}
 end
 
 function PHX.entryCount(v)
     if type(v) == "number" then return math.max(0, v) end
     if type(v) ~= "table" then return nil end
-
-    -- Newer inventory schemas sometimes bury the amount one level down.
     local preferred = {
         "Count","count","Amount","amount","Quantity","quantity","Qty","qty",
         "Owned","owned","Number","number","Num","num","Stack","stack","Value","value"
@@ -589,106 +612,132 @@ function PHX.entryCount(v)
         local n = tonumber(v[key])
         if n then return math.max(0, n) end
     end
+    return nil
+end
 
-    for k,x in pairs(v) do
-        if type(k) == "string" then
-            local nk = string.lower(k)
-            if nk:find("count",1,true) or nk:find("amount",1,true) or nk:find("quantity",1,true)
-                or nk == "qty" or nk:find("owned",1,true) or nk == "stack" then
-                local n = tonumber(x)
-                if n then return math.max(0, n) end
+function PHX.exactMaterialCount(inv, itemName)
+    if type(inv) ~= "table" then return nil end
+    local wanted = PHX.normalizeItemName(itemName)
+    for _,entry in pairs(inv) do
+        if type(entry) == "table" then
+            local nm = PHX.normalizeItemName(entry.Name or entry.name or entry.ItemName or entry.itemName or "")
+            local tp = PHX.normalizeItemName(entry.Type or entry.type or "")
+            if nm == wanted and (tp == "" or tp == "material") then
+                local n = PHX.entryCount(entry)
+                if n ~= nil then return n end
             end
         end
     end
     return nil
 end
 
-function PHX.itemNameMatches(raw, wanted)
-    local n = PHX.normalizeItemName(raw)
-    if n == wanted then return true end
-    -- Tolerate wrappers/new schema labels such as "Material: Scrap Metal".
-    if #wanted >= 4 and n:find(wanted, 1, true) then return true end
-    return false
-end
-
 function PHX.smartTableCount(root, itemName)
     local wanted = PHX.normalizeItemName(itemName)
     local best = nil
     local seen = {}
-
     local function scan(tbl, depth)
-        if type(tbl) ~= "table" or seen[tbl] or depth > 10 then return end
+        if type(tbl) ~= "table" or seen[tbl] or depth > 8 then return end
         seen[tbl] = true
-
-        -- Case 1: dictionary schema: ["Scrap Metal"] = 16 / {Count=16}
+        local matched = false
         for k,v in pairs(tbl) do
-            if type(k) == "string" and PHX.itemNameMatches(k, wanted) then
+            if type(k) == "string" and PHX.normalizeItemName(k) == wanted then
                 local n = PHX.entryCount(v)
-                if n == nil and type(v) == "number" then n = tonumber(v) end
                 if n ~= nil then best = math.max(best or 0, n) end
             end
-        end
-
-        -- Case 2: list entry schema: {Name="Scrap Metal", Count=16, ...}
-        local matchedHere = false
-        for k,v in pairs(tbl) do
             if type(v) == "string" then
                 local key = type(k) == "string" and string.lower(k) or ""
-                if key == "name" or key == "itemname" or key == "originalname" or key == "displayname"
-                    or key == "title" or key == "item" or key == "material" or key == "type" or key == "id" then
-                    if PHX.itemNameMatches(v, wanted) then matchedHere = true break end
-                elseif PHX.itemNameMatches(v, wanted) then
-                    -- Some builds use unnamed string fields in material records.
-                    matchedHere = true
+                if key == "name" or key == "itemname" or key == "displayname" or key == "material" then
+                    if PHX.normalizeItemName(v) == wanted then matched = true end
                 end
             end
         end
-        if matchedHere then
+        if matched then
             local n = PHX.entryCount(tbl)
             if n ~= nil then best = math.max(best or 0, n) end
-
-            -- Count can be nested in a detail/value subtable.
-            for _,v in pairs(tbl) do
-                if type(v) == "table" then
-                    local nested = PHX.entryCount(v)
-                    if nested ~= nil then best = math.max(best or 0, nested) end
-                end
-            end
         end
-
         for _,v in pairs(tbl) do
             if type(v) == "table" then scan(v, depth + 1) end
         end
     end
-
     scan(root, 0)
     return best
 end
 
-function PHX.serverInventoryCount(itemName, force)
-    local inv = getInventory(force)
+-- Fallback for the new Stash UI. If the card is instantiated client-side, read the
+-- count text nearest the exact material name. This is only used when getInventory
+-- does not expose the Material entry; it never overrides a valid server count.
+function PHX.guiMaterialCount(itemName)
     local wanted = PHX.normalizeItemName(itemName)
-
-    -- Fast path used by Blox Fruits material inventories:
-    -- getInventory() -> array entries like {Name="Scrap Metal", Count=16, Type="Material"}.
-    for _,entry in pairs(inv) do
-        if type(entry) == "table" and PHX.itemNameMatches(entry.Name or entry.name or entry.ItemName or entry.itemName or "", wanted) then
-            local n = PHX.entryCount(entry)
-            if n ~= nil then return n end
+    local best, bestDist = nil, math.huge
+    for _,obj in ipairs(PG:GetDescendants()) do
+        if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and PHX.normalizeItemName(obj.Text) == wanted then
+            local okPos, center = pcall(function()
+                return obj.AbsolutePosition + obj.AbsoluteSize/2
+            end)
+            local ancestor = obj.Parent
+            local hops = 0
+            while ancestor and ancestor ~= PG and hops < 7 do
+                if ancestor:IsA("GuiObject") then
+                    for _,x in ipairs(ancestor:GetDescendants()) do
+                        if x ~= obj and (x:IsA("TextLabel") or x:IsA("TextButton")) then
+                            local raw = tostring(x.Text or ""):gsub(",",""):match("^%s*(%d+)%s*$")
+                            local n = tonumber(raw)
+                            if n and n >= 0 and n <= 999 then
+                                local dist = 999999
+                                if okPos then
+                                    local ok2, p2 = pcall(function() return x.AbsolutePosition + x.AbsoluteSize/2 end)
+                                    if ok2 then dist = (p2-center).Magnitude end
+                                end
+                                if dist < bestDist then best, bestDist = n, dist end
+                            end
+                        end
+                    end
+                end
+                ancestor = ancestor.Parent
+                hops = hops + 1
+            end
         end
     end
+    if best ~= nil and bestDist <= 520 then return best end
+    return nil
+end
 
-    local n = PHX.smartTableCount(inv, itemName)
-    if n ~= nil then return n end
-    return 0
+function PHX.inventoryHasMaterialSchema(inv)
+    if type(inv) ~= "table" then return false end
+    for _,entry in pairs(inv) do
+        if type(entry) == "table" then
+            local tp = PHX.normalizeItemName(entry.Type or entry.type or "")
+            if tp == "material" then return true end
+        end
+    end
+    return false
+end
+
+function PHX.serverInventoryCount(itemName, force)
+    local inv = getInventory(force)
+    local exact = PHX.exactMaterialCount(inv, itemName)
+    if exact ~= nil then return exact, "REMOTE_EXACT" end
+    local deep = PHX.smartTableCount(inv, itemName)
+    if deep ~= nil then return deep, "REMOTE_DEEP" end
+    local gui = PHX.guiMaterialCount(itemName)
+    if gui ~= nil then return gui, "STASH_GUI" end
+
+    -- Only call a missing entry ZERO when the returned table demonstrably contains
+    -- Material records. If the current game build returns weapons/other inventory only,
+    -- "not found" is UNKNOWN, not zero. This was the V2.6.1 2/10-vs-27 bug.
+    if PHX.LastInventoryReadOK and PHX.inventoryHasMaterialSchema(inv) then
+        return 0, "REMOTE_ABSENT"
+    end
+    return nil, "UNAVAILABLE"
 end
 
 function PHX.trackerFor(itemName)
     local key = PHX.normalizeItemName(itemName)
     local t = ITEM_TRACK[key]
     if not t then
-        local server = PHX.serverInventoryCount(itemName, true)
-        t = {Server=server, Optimistic=server, OptimisticUntil=0}
+        local server, source = PHX.serverInventoryCount(itemName, true)
+        server = server or 0
+        t = {Server=server, Optimistic=server, OptimisticUntil=0, Source=source or "INIT"}
         ITEM_TRACK[key] = t
     end
     return t, key
@@ -696,48 +745,74 @@ end
 
 local function inventoryCount(itemName, force)
     local t = PHX.trackerFor(itemName)
-    local server = PHX.serverInventoryCount(itemName, force)
-    t.Server = server
+    local server, source = PHX.serverInventoryCount(itemName, force)
 
-    if server >= (t.Optimistic or 0) then
-        t.Optimistic = server
-        t.OptimisticUntil = 0
-        return server
+    -- Critical V2.7 rule: an unreadable/missing inventory record is NOT zero.
+    -- Preserve the last known / popup count instead of resetting it and farming forever.
+    if server ~= nil then
+        t.Server = server
+        t.Source = source
+        if server >= (t.Optimistic or 0) or os.clock() > (t.OptimisticUntil or 0) then
+            t.Optimistic = server
+            t.OptimisticUntil = 0
+        end
     end
 
     if os.clock() <= (t.OptimisticUntil or 0) then
-        return math.max(server, t.Optimistic or 0)
+        return math.max(t.Server or 0, t.Optimistic or 0)
     end
+    return math.max(t.Server or 0, t.Optimistic or 0)
+end
 
-    -- Optimistic popup count expired: trust the authoritative inventory again.
-    t.Optimistic = server
-    return server
+function PHX.materialCountInfo(itemName, force)
+    local count = inventoryCount(itemName, force)
+    local t = PHX.trackerFor(itemName)
+    return count, tostring(t.Source or "UNAVAILABLE")
+end
+
+function PHX.warmMaterialInventory(seconds)
+    local deadline = os.clock() + (seconds or 3.0)
+    local names = {"Scrap Metal","Blaze Ember","Volcanic Magnet","Dinosaur Bones"}
+    repeat
+        local known = 0
+        for _,name in ipairs(names) do
+            local _,source = PHX.materialCountInfo(name, true)
+            if source ~= "UNAVAILABLE" and source ~= "INIT" then known = known + 1 end
+        end
+        if known >= 3 then return true end
+        task.wait(.18)
+    until os.clock() >= deadline
+    return false
 end
 
 function PHX.clearOptimisticCount(itemName)
     local t = PHX.trackerFor(itemName)
-    local server = PHX.serverInventoryCount(itemName, true)
-    t.Server = server
-    t.Optimistic = server
-    t.OptimisticUntil = 0
-    return server
+    local server, source = PHX.serverInventoryCount(itemName, true)
+    if server ~= nil then
+        t.Server = server
+        t.Optimistic = server
+        t.OptimisticUntil = 0
+        t.Source = source
+    end
+    return math.max(t.Server or 0, t.Optimistic or 0)
 end
 
 function PHX.recordItemGain(itemName, amount, sourceText)
     amount = math.max(1, tonumber(amount) or 1)
-    local t, key = PHX.trackerFor(itemName)
-    local beforeServer = t.Server or 0
-    local nowServer = PHX.serverInventoryCount(itemName, true)
-    t.Server = nowServer
-
-    if nowServer > beforeServer then
-        t.Optimistic = math.max(t.Optimistic or 0, nowServer)
+    local t = PHX.trackerFor(itemName)
+    local before = math.max(t.Server or 0, t.Optimistic or 0)
+    local server, source = PHX.serverInventoryCount(itemName, true)
+    if server ~= nil and server > before then
+        t.Server = server
+        t.Optimistic = server
+        t.OptimisticUntil = 0
+        t.Source = source
     else
-        t.Optimistic = math.max(t.Optimistic or 0, beforeServer, nowServer) + amount
+        t.Optimistic = before + amount
         t.OptimisticUntil = os.clock() + CONFIG.ITEM_COUNTER.OPTIMISTIC_GAIN_SECONDS
+        if server ~= nil then t.Server = server t.Source = source end
     end
-
-    logLine("ITEM_GAIN", tostring(itemName).." +"..amount.." | live="..tostring(math.max(nowServer, t.Optimistic or 0)).." | source="..tostring(sourceText))
+    logLine("ITEM_GAIN", tostring(itemName).." +"..amount.." | live="..tostring(math.max(t.Server or 0,t.Optimistic or 0)).." | source="..tostring(sourceText))
 end
 
 local TRACKED_PICKUPS = {
@@ -768,7 +843,6 @@ function PHX.watchPickupTextObject(obj)
     if PICKUP_WATCHED[obj] then return end
     if not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then return end
     PICKUP_WATCHED[obj] = tostring(obj.Text or "")
-
     local function inspect()
         local text = tostring(obj.Text or "")
         if text ~= PICKUP_WATCHED[obj] then
@@ -776,20 +850,28 @@ function PHX.watchPickupTextObject(obj)
             PHX.parsePickupText(text)
         end
     end
-
     obj:GetPropertyChangedSignal("Text"):Connect(inspect)
     PHX.parsePickupText(obj.Text)
 end
 
-for _,obj in ipairs(PG:GetDescendants()) do
-    pcall(PHX.watchPickupTextObject, obj)
-end
-PG.DescendantAdded:Connect(function(obj)
-    pcall(PHX.watchPickupTextObject, obj)
+for _,obj in ipairs(PG:GetDescendants()) do pcall(PHX.watchPickupTextObject, obj) end
+PG.DescendantAdded:Connect(function(obj) pcall(PHX.watchPickupTextObject, obj) end)
+
+-- One inventory RemoteFunction poller instead of several independent loops racing it.
+task.spawn(function()
+    while true do
+        task.wait(1.35)
+        pcall(function()
+            getInventory(true)
+            for _,name in ipairs({"Scrap Metal","Blaze Ember","Volcanic Magnet","Dinosaur Bones"}) do
+                inventoryCount(name, false)
+            end
+        end)
+    end
 end)
 
 local function hasVolcanicMagnet()
-    return inventoryCount("Volcanic Magnet") > 0
+    return inventoryCount("Volcanic Magnet", true) > 0
 end
 
 --==============================================================
@@ -1671,9 +1753,17 @@ local function boatNoclip(boat)
     end
 end
 
+function PHX.prehistoricMarker()
+    local origin = workspace:FindFirstChild("_WorldOrigin")
+    local locations = origin and origin:FindFirstChild("Locations")
+    return locations and (locations:FindFirstChild("Prehistoric Island") or locations:FindFirstChild("PrehistoricIsland"))
+end
+
 local function findPrehistoric()
     local map = workspace:FindFirstChild("Map")
-    return map and map:FindFirstChild("PrehistoricIsland")
+    local island = map and map:FindFirstChild("PrehistoricIsland")
+    if island then return island end
+    return nil
 end
 
 local function boatFlyTo(boat, targetPos, token)
@@ -1685,7 +1775,7 @@ local function boatFlyTo(boat, targetPos, token)
     local startTime = os.clock()
 
     while isRunning(token) and boat.Parent do
-        if findPrehistoric() then return true end
+        if findPrehistoric() or PHX.prehistoricMarker() then return true end
         local a = math.clamp((os.clock()-startTime)/duration, 0, 1)
         local pos = startPos:Lerp(targetPos, a)
         local dir = targetPos-pos
@@ -1700,7 +1790,7 @@ local function boatFlyTo(boat, targetPos, token)
         if a >= 1 then break end
         RunService.Heartbeat:Wait()
     end
-    return findPrehistoric() ~= nil
+    return findPrehistoric() ~= nil or PHX.prehistoricMarker() ~= nil
 end
 
 local function searchSeaUntilIsland(boat, token)
@@ -1721,6 +1811,15 @@ local function searchSeaUntilIsland(boat, token)
     while isRunning(token) and boat and boat.Parent do
         local island = findPrehistoric()
         if island then return island end
+        if PHX.prehistoricMarker() then
+            setStatus("MASTER: Prehistoric marker detected -> STOP boat, waiting map")
+            local deadline = os.clock() + 12
+            while isRunning(token) and os.clock() < deadline do
+                island = findPrehistoric()
+                if island then return island end
+                task.wait(.15)
+            end
+        end
         setStatus("MASTER: sea search point "..i.." | aboard "..countTeamAboard(boat).."/5")
         boatFlyTo(boat, patrol[i], token)
         island = findPrehistoric()
@@ -1885,6 +1984,7 @@ local function masterPressureLoop(island, token)
 end
 
 local function slaveGolemLoop(island, token)
+    enableLavaProtection(island)
     local enemies = workspace:FindFirstChild("Enemies")
     local relic = getRelic(island)
     local rp = relicPart(relic)
@@ -1904,6 +2004,7 @@ local function slaveGolemLoop(island, token)
             task.wait(.25)
         end
     end
+    disableLavaProtection()
 end
 
 --==============================================================
@@ -1978,64 +2079,50 @@ end
 
 function PHX.dragonVariantFromText(value)
     local s = string.lower(tostring(value or ""))
-    s = s:gsub("[^%w]+", "")
-    if s == "dragonfruiteast" or s == "dragoneast" or s == "eastdragonfruit" or s == "eastdragon" or s == "dragondragoneast" then return "East" end
-    if s == "dragonfruitwest" or s == "dragonwest" or s == "westdragonfruit" or s == "westdragon" or s == "dragondragonwest" then return "West" end
+    if s:find("east",1,true) then return "East" end
+    if s:find("west",1,true) then return "West" end
     return nil
 end
 
-function PHX.isBaseDragonFruitText(value)
-    local s = string.lower(tostring(value or ""))
-    s = s:gsub("[^%w]+", "")
-    return s == "dragonfruit" or s == "dragondragon" or s == "bloxfruitdragon" or s == "bloxfruitsdragon"
+-- Physical reward identity is strict: an actual Tool named Dragon Fruit (the normal
+-- physical-fruit runtime name used by auto-store scripts), or an explicitly East/West
+-- Blox Fruit label. Dragon Talon / Dragon Scale / Dragon Hunter never pass this check.
+function PHX.isDragonFruitTool(tool)
+    if not tool or not tool:IsA("Tool") then return false end
+    local name = string.lower(tostring(tool.Name or "")):gsub("%s+"," ")
+    if name == "dragon fruit" or name == "blox fruit dragon (east)" or name == "blox fruit dragon (west)"
+        or name == "dragon (east)" or name == "dragon (west)" then
+        return true
+    end
+
+    local original = string.lower(tostring(tool:GetAttribute("OriginalName") or ""))
+    local fruitName = string.lower(tostring(tool:GetAttribute("FruitName") or ""))
+    local itemName = string.lower(tostring(tool:GetAttribute("ItemName") or ""))
+    local dragonId = original == "dragon-dragon" or fruitName == "dragon-dragon" or itemName == "dragon-dragon"
+    if not dragonId then return false end
+
+    -- Metadata-only Dragon-Dragon must still look like a fruit tool.
+    if tool:FindFirstChild("EatRemote", true) then return true end
+    local tip = string.lower(tostring(tool.ToolTip or ""))
+    return tip:find("fruit",1,true) ~= nil
 end
 
 function PHX.dragonVariantFromTool(tool)
-    if not tool or not tool:IsA("Tool") then return nil end
-    local direct = PHX.dragonVariantFromText(tool.Name)
-        or PHX.dragonVariantFromText(tool.ToolTip)
-        or PHX.dragonVariantFromText(tool:GetAttribute("OriginalName"))
+    if not PHX.isDragonFruitTool(tool) then return nil end
+    local variant = PHX.dragonVariantFromText(tool.Name)
+        or PHX.dragonVariantFromText(tool:GetAttribute("Variant"))
+        or PHX.dragonVariantFromText(tool:GetAttribute("Form"))
+        or PHX.dragonVariantFromText(tool:GetAttribute("Side"))
         or PHX.dragonVariantFromText(tool:GetAttribute("FruitName"))
         or PHX.dragonVariantFromText(tool:GetAttribute("ItemName"))
-    if direct then return direct end
-
-    local baseDragon = PHX.isBaseDragonFruitText(tool.Name)
-        or PHX.isBaseDragonFruitText(tool:GetAttribute("OriginalName"))
-        or PHX.isBaseDragonFruitText(tool:GetAttribute("FruitName"))
-        or PHX.isBaseDragonFruitText(tool:GetAttribute("ItemName"))
-    if not baseDragon then return nil end
-
-    for k,v in pairs(tool:GetAttributes()) do
-        local key = string.lower(tostring(k))
-        if key:find("variant",1,true) or key:find("form",1,true) or key:find("type",1,true) or key:find("side",1,true) then
-            local vv = string.lower(tostring(v or ""))
-            if vv == "east" or vv == "eastern" then return "East" end
-            if vv == "west" or vv == "western" then return "West" end
-        end
-    end
+    if variant then return variant end
     for _,v in ipairs(tool:GetDescendants()) do
         if v:IsA("StringValue") then
-            local key = string.lower(v.Name)
-            if key:find("variant",1,true) or key:find("form",1,true) or key:find("type",1,true) or key:find("side",1,true) then
-                local vv = string.lower(tostring(v.Value or ""))
-                if vv == "east" or vv == "eastern" then return "East" end
-                if vv == "west" or vv == "western" then return "West" end
-            end
+            local x = PHX.dragonVariantFromText(v.Value)
+            if x then return x end
         end
     end
     return nil
-end
-
-function PHX.isDragonFruitTool(tool)
-    return PHX.dragonVariantFromTool(tool) ~= nil
-end
-
-function PHX.isUnknownDragonFruitTool(tool)
-    if not tool or not tool:IsA("Tool") or PHX.dragonVariantFromTool(tool) then return false end
-    return PHX.isBaseDragonFruitText(tool.Name)
-        or PHX.isBaseDragonFruitText(tool:GetAttribute("OriginalName"))
-        or PHX.isBaseDragonFruitText(tool:GetAttribute("FruitName"))
-        or PHX.isBaseDragonFruitText(tool:GetAttribute("ItemName"))
 end
 
 function PHX.findPhysicalDragonFruits()
@@ -2053,187 +2140,87 @@ function PHX.findPhysicalDragonFruits()
     return result
 end
 
+-- Kept for older call-sites. V2.7 intentionally has no fuzzy "unknown Dragon" alarm.
 function PHX.findUnknownDragonFruitTools()
-    local result, seen = {}, {}
-    for _,container in ipairs({LP.Backpack, char()}) do
-        if container then
-            for _,v in ipairs(container:GetDescendants()) do
-                if v:IsA("Tool") and PHX.isUnknownDragonFruitTool(v) and not seen[v] then
-                    seen[v] = true
-                    result[#result+1] = v
-                end
+    return {}
+end
+
+function PHX.storedDragonTotal()
+    local ok, inv = pcall(function() return CommF:InvokeServer("getInventoryFruits") end)
+    if not ok or type(inv) ~= "table" then return nil end
+    local total = 0
+    for _,v in pairs(inv) do
+        if type(v) == "table" then
+            local nm = string.lower(tostring(v.Name or v.name or v.OriginalName or ""))
+            if nm == "dragon-dragon" or nm == "dragon" or nm == "dragon fruit"
+                or nm:find("dragon (east)",1,true) or nm:find("dragon (west)",1,true) then
+                total = total + (tonumber(v.Count or v.count or v.Amount or v.amount) or 1)
             end
         end
     end
-    return result
-end
-
-local function findPhysicalDragonFruit()
-    local list = PHX.findPhysicalDragonFruits()
-    local tool = list[1]
-    return tool, tool and PHX.dragonVariantFromTool(tool) or nil
-end
-
-function PHX.dragonStoreCandidates(tool)
-    local result, seen = {}, {}
-    local function add(v)
-        v = tostring(v or "")
-        if v ~= "" and not seen[v] then seen[v] = true result[#result+1] = v end
-    end
-    add(tool:GetAttribute("OriginalName"))
-    add(tool:GetAttribute("FruitName"))
-    add(tool:GetAttribute("ItemName"))
-    add(tool:GetAttribute("StoreName"))
-    for _,v in ipairs(tool:GetDescendants()) do
-        if v:IsA("StringValue") then
-            local key = string.lower(v.Name)
-            if key == "originalname" or key == "fruitname" or key == "itemname" or key == "storename" then add(v.Value) end
-        end
-    end
-    add(tool.Name)
-    return result
-end
-
-function PHX.dragonVariantFromEntry(tbl)
-    if type(tbl) ~= "table" then return nil end
-    local direct, baseDragon, separateVariant = nil, false, nil
-    for k,v in pairs(tbl) do
-        if type(k) == "string" then
-            direct = direct or PHX.dragonVariantFromText(k)
-            if PHX.isBaseDragonFruitText(k) then baseDragon = true end
-        end
-        if type(v) == "string" then
-            direct = direct or PHX.dragonVariantFromText(v)
-            if PHX.isBaseDragonFruitText(v) then baseDragon = true end
-            local key, vv = string.lower(tostring(k)), string.lower(v)
-            if key:find("variant",1,true) or key:find("form",1,true) or key:find("type",1,true) or key:find("side",1,true) then
-                if vv == "east" or vv == "eastern" then separateVariant = "East" end
-                if vv == "west" or vv == "western" then separateVariant = "West" end
-            end
-        end
-    end
-    if direct then return direct end
-    if baseDragon then return separateVariant end
-    return nil
-end
-
-function PHX.storedDragonVariants(force)
-    PHX.DragonVariantCache = PHX.DragonVariantCache or {At=-math.huge, East=nil, West=nil, OK=false}
-    if not force and (os.clock() - (PHX.DragonVariantCache.At or -math.huge)) < 2.0 then
-        return PHX.DragonVariantCache.East, PHX.DragonVariantCache.West, PHX.DragonVariantCache.OK
-    end
-    local ok, fruits = pcall(function() return CommF:InvokeServer("getInventoryFruits") end)
-    PHX.LastFruitInventoryReadOK = ok and type(fruits) == "table"
-    if not PHX.LastFruitInventoryReadOK then return PHX.DragonVariantCache.East, PHX.DragonVariantCache.West, false end
-
-    local east, west, seen = 0, 0, {}
-    local function walk(tbl, depth)
-        if type(tbl) ~= "table" or seen[tbl] or depth > 10 then return end
-        seen[tbl] = true
-        local variant = PHX.dragonVariantFromEntry(tbl)
-        if variant then
-            local n = PHX.entryCount(tbl) or 1
-            if variant == "East" then east = east + n else west = west + n end
-            return
-        end
-        for k,v in pairs(tbl) do
-            local keyVariant = type(k) == "string" and PHX.dragonVariantFromText(k) or nil
-            if keyVariant then
-                local n = PHX.entryCount(v) or tonumber(v) or 1
-                if keyVariant == "East" then east = east + n else west = west + n end
-            elseif type(v) == "table" then walk(v, depth + 1) end
-        end
-    end
-    walk(fruits, 0)
-    PHX.DragonVariantCache = {At=os.clock(), East=east, West=west, OK=true}
-    return east, west, true
-end
-
-function PHX.storedDragonFruitCount(originalName)
-    local e,w,ok = PHX.storedDragonVariants(true)
-    if not ok then return nil end
-    local variant = PHX.dragonVariantFromText(originalName)
-    if variant == "East" then return e end
-    if variant == "West" then return w end
-    return (e or 0) + (w or 0)
-end
-
-function PHX.totalStoredDragonFruitCount(force)
-    local e,w,ok = PHX.storedDragonVariants(force)
-    if not ok then return nil end
-    return (e or 0) + (w or 0)
-end
-
-function PHX.markUnknownDragonCritical(tool)
-    DRAGON_GUARD_STATE.Critical = true
-    _G.TeamConfig.IsRunning = false
-    local name = tool and tool.Name or "unknown"
-    setStatus("CRITICAL: Dragon fruit-like Tool has NO East/West variant -> STOPPED")
-    logLine("DRAGON_UNKNOWN", "base Dragon fruit detected but East/West unresolved | tool="..tostring(name))
-    sendWebhook("🚨 DRAGON VARIANT UNKNOWN", "Dragon fruit-like physical Tool found but East/West was not exposed. Automation stopped instead of guessing/resetting.", {
-        {name="Account", value=LP.Name, inline=true}, {name="Tool", value=tostring(name), inline=true},
-    })
-    return false
+    return total
 end
 
 function PHX.storeOneDragonFruit(tool)
-    if not tool or not tool.Parent then return true end
+    if not PHX.isDragonFruitTool(tool) then return true end
     local variant = PHX.dragonVariantFromTool(tool)
-    if not variant then
-        if PHX.isUnknownDragonFruitTool(tool) then return PHX.markUnknownDragonCritical(tool) end
-        return true
-    end
-    local beforeEast, beforeWest = PHX.storedDragonVariants(true)
-    local beforeVariant = variant == "East" and beforeEast or beforeWest
-    local candidates = PHX.dragonStoreCandidates(tool)
-    if #candidates == 0 then return PHX.markUnknownDragonCritical(tool) end
+    local label = variant and ("Dragon ("..variant..")") or "Dragon Fruit"
+    local before = PHX.storedDragonTotal()
 
-    setStatus("!!! DRAGON ("..variant..") PHYSICAL -> STORE NOW")
-    sendWebhook("🐉 DRAGON FRUIT ("..string.upper(variant)..") DETECTED", "Immediate storage guard activated", {
-        {name="Account", value=LP.Name, inline=true}, {name="Variant", value=variant, inline=true}, {name="Tool", value=tostring(tool.Name), inline=true},
+    setStatus("!!! PHYSICAL "..label.." -> STORE NOW")
+    logLine("DRAGON", "physical Blox Fruit detected | tool="..tostring(tool.Name).." variant="..tostring(variant))
+    sendWebhook("🐉 PHYSICAL DRAGON FRUIT DETECTED", "Immediate StoreFruit guard activated.", {
+        {name="Account", value=LP.Name, inline=true},
+        {name="Tool", value=tostring(tool.Name), inline=true},
+        {name="Variant", value=tostring(variant or "server/tool metadata"), inline=true},
     })
-    logLine("DRAGON", "exact physical Dragon variant="..variant.." tool="..tostring(tool.Name).." candidates="..table.concat(candidates, " | "))
 
     for attempt=1,CONFIG.DRAGON_GUARD.STORE_RETRIES do
-        if not tool.Parent then DRAGON_GUARD_STATE.LastStored = "Dragon ("..variant..")" return true end
-        local storeId = candidates[((attempt - 1) % #candidates) + 1]
-        local ok, result = pcall(function() return CommF:InvokeServer("StoreFruit", storeId, tool) end)
-        task.wait(CONFIG.DRAGON_GUARD.RETRY_DELAY)
-        local afterEast, afterWest = PHX.storedDragonVariants(true)
-        local afterVariant = variant == "East" and afterEast or afterWest
-        local disappeared = tool.Parent == nil
-        local countIncreased = beforeVariant ~= nil and afterVariant ~= nil and afterVariant > beforeVariant
-        logLine("DRAGON_STORE", "variant="..variant.." attempt="..attempt.." id="..tostring(storeId).." pcall="..tostring(ok).." result="..tostring(result).." disappeared="..tostring(disappeared).." before="..tostring(beforeVariant).." after="..tostring(afterVariant))
-        if disappeared or countIncreased then
-            DRAGON_GUARD_STATE.LastStored = "Dragon ("..variant..")"
-            sendWebhook("✅ DRAGON ("..string.upper(variant)..") STORED", "Exact East/West physical Dragon secured before reset/teleport.", {
-                {name="Account", value=LP.Name, inline=true}, {name="Variant", value=variant, inline=true}, {name="StoreId", value=tostring(storeId), inline=false},
-            })
-            setStatus("Dragon ("..variant..") stored")
+        if not tool.Parent then
+            DRAGON_GUARD_STATE.LastStored = label
             return true
         end
-        local again = PHX.findPhysicalDragonFruits()
-        if #again == 0 then DRAGON_GUARD_STATE.LastStored = "Dragon ("..variant..")" return true end
-        tool = again[1]
-        variant = PHX.dragonVariantFromTool(tool) or variant
-        candidates = PHX.dragonStoreCandidates(tool)
-        if #candidates == 0 then return PHX.markUnknownDragonCritical(tool) end
+
+        local storeId = tostring(tool:GetAttribute("OriginalName") or "")
+        if storeId == "" or not string.lower(storeId):find("dragon",1,true) then storeId = "Dragon-Dragon" end
+        local ok, result = pcall(function()
+            return CommF:InvokeServer("StoreFruit", storeId, tool)
+        end)
+        task.wait(CONFIG.DRAGON_GUARD.RETRY_DELAY)
+
+        local after = PHX.storedDragonTotal()
+        local disappeared = tool.Parent == nil
+        local countIncreased = before ~= nil and after ~= nil and after > before
+        logLine("DRAGON_STORE", "attempt="..attempt.." id="..tostring(storeId).." pcall="..tostring(ok).." result="..tostring(result).." disappeared="..tostring(disappeared).." storedBefore="..tostring(before).." storedAfter="..tostring(after))
+
+        if disappeared or countIncreased then
+            DRAGON_GUARD_STATE.LastStored = label
+            setStatus(label.." STORED safely")
+            sendWebhook("✅ DRAGON FRUIT STORED", label.." secured before reset/teleport.", {
+                {name="Account", value=LP.Name, inline=true}, {name="Tool", value=tostring(tool.Name), inline=true},
+            })
+            return true
+        end
+
+        local remaining = PHX.findPhysicalDragonFruits()
+        if #remaining == 0 then
+            DRAGON_GUARD_STATE.LastStored = label
+            return true
+        end
+        tool = remaining[1]
     end
 
     DRAGON_GUARD_STATE.Critical = true
     _G.TeamConfig.IsRunning = false
-    sendWebhook("🚨 CRITICAL: DRAGON STORE FAILED", "Exact Dragon East/West remains physical; reset/teleport blocked.", {
-        {name="Account", value=LP.Name, inline=true}, {name="Variant", value=tostring(variant), inline=true},
+    setStatus("CRITICAL: PHYSICAL DRAGON still present -> STOPPED")
+    logLine("DRAGON_STORE_FAIL", "physical Dragon Fruit remained after retries")
+    sendWebhook("🚨 CRITICAL: DRAGON STORE FAILED", "Physical Dragon Fruit remains; reset/portal blocked.", {
+        {name="Account", value=LP.Name, inline=true},
     })
-    setStatus("CRITICAL: Dragon ("..tostring(variant)..") still physical -> STOPPED")
-    logLine("DRAGON_STORE_FAIL", "exact Dragon variant remained after retries | "..tostring(variant))
     return false
 end
 
 local function storeDragonFruitCritical()
-    local unknown = PHX.findUnknownDragonFruitTools()
-    if #unknown > 0 then return PHX.markUnknownDragonCritical(unknown[1]) end
-
     if DRAGON_GUARD_STATE.Busy then
         local deadline = os.clock() + 8
         while DRAGON_GUARD_STATE.Busy and os.clock() < deadline do task.wait(.05) end
@@ -2247,10 +2234,7 @@ local function storeDragonFruitCritical()
         safety = safety + 1
         local fruits = PHX.findPhysicalDragonFruits()
         if #fruits == 0 then break end
-        if not PHX.storeOneDragonFruit(fruits[1]) then
-            okAll = false
-            break
-        end
+        if not PHX.storeOneDragonFruit(fruits[1]) then okAll = false break end
         task.wait(.1)
     end
     DRAGON_GUARD_STATE.Busy = false
@@ -2258,39 +2242,28 @@ local function storeDragonFruitCritical()
 end
 
 function PHX.secureDragonWindow(seconds, token)
-    local deadline = os.clock() + (seconds or 3)
-    while os.clock() < deadline do
+    local untilAt = os.clock() + (tonumber(seconds) or 0)
+    while os.clock() < untilAt do
         if token and not isRunning(token) then return false end
-        local unknown = PHX.findUnknownDragonFruitTools()
-        if #unknown > 0 then return PHX.markUnknownDragonCritical(unknown[1]) end
-        local fruits = PHX.findPhysicalDragonFruits()
-        if #fruits > 0 then
+        if #PHX.findPhysicalDragonFruits() > 0 then
             if not storeDragonFruitCritical() then return false end
         end
-        task.wait(.15)
+        task.wait(.08)
     end
-    if #PHX.findPhysicalDragonFruits() > 0 then
-        return storeDragonFruitCritical()
-    end
+    if #PHX.findPhysicalDragonFruits() > 0 then return storeDragonFruitCritical() end
     return not DRAGON_GUARD_STATE.Critical
 end
 
--- Always-on emergency guard: if a Dragon fruit Tool appears in Backpack/Character,
--- attempt storage immediately instead of waiting for the event routine to notice it.
 function PHX.hookDragonContainer(container)
     if not container then return end
     container.ChildAdded:Connect(function(obj)
-        if obj:IsA("Tool") then
-            task.defer(function()
-                task.wait(.05)
-                if PHX.isDragonFruitTool(obj) then
-                    logLine("DRAGON_WATCH", "Exact Dragon East/West ChildAdded -> "..tostring(obj.Name))
-                    storeDragonFruitCritical()
-                elseif PHX.isUnknownDragonFruitTool(obj) then
-                    PHX.markUnknownDragonCritical(obj)
-                end
-            end)
-        end
+        task.defer(function()
+            task.wait(.05)
+            if PHX.isDragonFruitTool(obj) then
+                logLine("DRAGON_WATCH", "physical Blox Fruit ChildAdded -> "..tostring(obj.Name))
+                storeDragonFruitCritical()
+            end
+        end)
     end)
 end
 
@@ -2299,7 +2272,7 @@ if char() then PHX.hookDragonContainer(char()) end
 LP.CharacterAdded:Connect(function(c)
     PHX.hookDragonContainer(c)
     task.defer(function()
-        task.wait(.25)
+        task.wait(.5)
         storeDragonFruitCritical()
     end)
 end)
@@ -2308,6 +2281,15 @@ task.defer(function() storeDragonFruitCritical() end)
 local function eggPosition(obj)
     local p = interactionPart(obj)
     return p and p.Position
+end
+
+function PHX.collectDragonEggRemote()
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    local net = modules and modules:FindFirstChild("Net")
+    local re = net and net:FindFirstChild("RE/CollectedDragonEgg")
+    if not re then return false end
+    local ok = pcall(function() re:FireServer() end)
+    return ok
 end
 
 local function collectAssignedEgg(island, token)
@@ -2335,8 +2317,15 @@ local function collectAssignedEgg(island, token)
             if rank <= #eggs then
                 setStatus("Egg assignment "..rank.."/"..#eggs.." | Dragon guard armed")
                 interactCollectible(eggs[rank], token)
+                -- Public volcano hubs confirm the game exposes RE/CollectedDragonEgg.
+                -- Fire it only after this client is physically at its assigned egg so the
+                -- five clients do not blindly spam the reward remote from across the island.
+                for _=1,4 do
+                    PHX.collectDragonEggRemote()
+                    task.wait(.12)
+                end
                 -- Reward replication can lag behind the interaction. Guard this window
-                -- so a physical Dragon East/West cannot appear after we already reset.
+                -- so a physical Dragon Fruit cannot appear after we already reset.
                 return PHX.secureDragonWindow(CONFIG.DRAGON_GUARD.POST_EGG_GUARD_SECONDS, token)
             else
                 setStatus("No egg assigned this run (rotating slot)")
@@ -2426,7 +2415,40 @@ local function openDragonHunter(token)
     return #dialogueOptions() >= 3
 end
 
+function PHX.dragonHunterRemote()
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    local net = modules and modules:FindFirstChild("Net")
+    return net and net:FindFirstChild("RF/DragonHunter")
+end
+
+function PHX.dragonHunterCheckText()
+    local rf = PHX.dragonHunterRemote()
+    if not rf then return "" end
+    local ok, response = pcall(function()
+        return rf:InvokeServer({Context="Check"})
+    end)
+    if not ok then return "" end
+    local found = ""
+    local seen = {}
+    local function walk(v, depth)
+        if found ~= "" or depth > 6 then return end
+        if type(v) == "string" then
+            local l = string.lower(v)
+            if l:find("hydra enforcer",1,true) or l:find("venomous assailant",1,true) or l:find("destroy 10 trees",1,true) then
+                found = v
+            end
+        elseif type(v) == "table" and not seen[v] then
+            seen[v] = true
+            for k,x in pairs(v) do walk(k, depth+1) walk(x, depth+1) end
+        end
+    end
+    walk(response, 0)
+    return found
+end
+
 local function questText()
+    local direct = PHX.dragonHunterCheckText()
+    if direct ~= "" then return direct end
     local dg = dialogueGui()
     if not dg then return "" end
     for _,v in ipairs(dg:GetDescendants()) do
@@ -2453,12 +2475,29 @@ end
 
 local function receiveDragonHunterQuest(token)
     if questKind() ~= "NONE" then return true end
-    if not openDragonHunter(token) then return false end
 
+    -- Current hubs request the Hunt directly through RF/DragonHunter. Use it first;
+    -- the old DialogueGui path remains as a fallback for clients where the RF is hidden.
+    local rf = PHX.dragonHunterRemote()
+    if rf then
+        local ok = pcall(function() rf:InvokeServer({Context="RequestQuest"}) end)
+        if ok then
+            local deadline = os.clock() + 4
+            while os.clock() < deadline do
+                if not isRunning(token) then return false end
+                if questKind() ~= "NONE" then
+                    logLine("DRAGON_HUNTER", "quest accepted through RF/DragonHunter | "..questText())
+                    return true
+                end
+                task.wait(.18)
+            end
+        end
+    end
+
+    if not openDragonHunter(token) then return false end
     local opts = dialogueOptions()
     if #opts < 3 then return false end
-    fireButton(opts[1]) -- Hunt
-
+    fireButton(opts[1])
     local deadline = os.clock()+2
     repeat
         task.wait(.12)
@@ -2466,10 +2505,8 @@ local function receiveDragonHunterQuest(token)
         opts = dialogueOptions()
         if #opts >= 1 and #opts <= 2 then break end
     until os.clock()>deadline
-
     opts = dialogueOptions()
-    if #opts >= 1 then fireButton(opts[1]) end -- Sure
-
+    if #opts >= 1 then fireButton(opts[1]) end
     deadline = os.clock()+4
     repeat
         task.wait(.15)
@@ -2490,6 +2527,12 @@ local function farmTreeQuest(token)
     end
 end
 
+function PHX.pulseBlazeCollectRemote()
+    local re = PHX.blazeCollectRemote and PHX.blazeCollectRemote() or nil
+    if re and re.FireServer then pcall(function() re:FireServer() end) return true end
+    return false
+end
+
 local function farmHunterQuest(token)
     local kind = questKind()
     if kind == "TREE" then
@@ -2505,18 +2548,76 @@ local function farmHunterQuest(token)
     end
 end
 
+function PHX.blazeCollectRemote()
+    local modules = ReplicatedStorage:FindFirstChild("Modules")
+    local net = modules and modules:FindFirstChild("Net")
+    return net and net:FindFirstChild("RE/DragonDojoEmber")
+end
+
+function PHX.collectBlazeEmberDrops(token, seconds)
+    local before = inventoryCount("Blaze Ember", true)
+    local untilAt = os.clock() + (seconds or 5.5)
+    setStatus("Dragon Hunter complete -> collecting spawned Blaze Embers")
+    while isRunning(token) and os.clock() < untilAt and inventoryCount("Blaze Ember") < 15 do
+        local re = PHX.blazeCollectRemote()
+        if re and re.FireServer then pcall(function() re:FireServer() end) end
+
+        local touched = false
+        for _,folderName in ipairs({"FireFlowers","EmberTemplate"}) do
+            local folder = workspace:FindFirstChild(folderName)
+            if folder then
+                for _,obj in ipairs(folder:GetChildren()) do
+                    local p = interactionPart(obj)
+                    if p and root() and (p.Position-root().Position).Magnitude < 2600 then
+                        touched = true
+                        highTween(p.CFrame * CFrame.new(0,2,0), 360, token)
+                        if firetouchinterest and root() then
+                            pcall(function()
+                                firetouchinterest(root(), p, 0)
+                                task.wait(.05)
+                                firetouchinterest(root(), p, 1)
+                            end)
+                        end
+                        task.wait(.08)
+                    end
+                end
+            end
+        end
+
+        if inventoryCount("Blaze Ember") >= before + 3 then break end
+        if not touched then task.wait(.15) end
+    end
+    local after = inventoryCount("Blaze Ember", true)
+    logLine("BLAZE_COLLECT", "before="..tostring(before).." after="..tostring(after).." expectedQuestDrops=3")
+    return after > before
+end
+
 local function farmBlazeEmbers(token)
-    while isRunning(token) and inventoryCount("Blaze Ember") < 15 do
+    while isRunning(token) and inventoryCount("Blaze Ember", true) < 15 do
         setStatus("Blaze Ember "..inventoryCount("Blaze Ember").."/15")
         if not goHydra(token) then
             setStatus("Hydra portal failed - NOT flying across sea")
             task.wait(1)
         else
             if questKind() == "NONE" then
-                receiveDragonHunterQuest(token)
+                if not receiveDragonHunterQuest(token) then
+                    setStatus("Dragon Hunter quest request failed -> retry")
+                    task.wait(.8)
+                end
             end
-            farmHunterQuest(token)
-            task.wait(.4)
+
+            if questKind() ~= "NONE" then
+                local before = inventoryCount("Blaze Ember", true)
+                PHX.pulseBlazeCollectRemote()
+                farmHunterQuest(token)
+                PHX.pulseBlazeCollectRemote()
+                if isRunning(token) and questKind() == "NONE" then
+                    -- Both supplied hub videos show the important missing phase: after
+                    -- Task completed, three Blaze Ember pickups are collected before the next Hunt.
+                    PHX.collectBlazeEmberDrops(token, 6.5)
+                    if inventoryCount("Blaze Ember") <= before then task.wait(.5) end
+                end
+            end
         end
     end
 end
@@ -3063,6 +3164,17 @@ local function craftVolcanicMagnet(token)
 end
 
 local function recoverMagnet(token)
+    -- Smart preflight: establish a trustworthy material source before choosing a portal.
+    -- Never interpret a failed/unavailable inventory read as "0 Scrap" and fly away blindly.
+    local inventoryReady = PHX.warmMaterialInventory(3.2)
+    if not inventoryReady then
+        local scrap, scrapSource = PHX.materialCountInfo("Scrap Metal", true)
+        setStatus("Inventory preflight unavailable | Scrap="..tostring(scrap).." source="..tostring(scrapSource).." -> retry")
+        logLine("PREFLIGHT_WAIT", "material inventory unavailable; refusing blind portal route")
+        task.wait(1.0)
+        return false
+    end
+
     if hasVolcanicMagnet() then return true end
 
     local masterOnline = Players:FindFirstChild(_G.TeamConfig.MasterName) ~= nil
@@ -3419,6 +3531,7 @@ local function debugRuntimeSnapshot()
         "ember="..inv.Ember,
         "magnet="..inv.Magnet,
         "bones="..tostring(inv.Bones or 0),
+        "invScrapSource="..tostring((ITEM_TRACK[PHX.normalizeItemName("Scrap Metal")] or {}).Source or "?"),
         "dragonLoose="..tostring(#PHX.findPhysicalDragonFruits()),
         "dragonStored="..tostring(DRAGON_GUARD_STATE.LastStored or "none"),
         "island="..tostring(island ~= nil),
@@ -3549,7 +3662,7 @@ TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
 TITLE.TextColor3 = Color3.new(1,1,1)
 TITLE.Font = Enum.Font.SourceSansBold
 TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.6.1 EXACT DRAGON E/W | DELTA"
+TITLE.Text = "🌋 PREHISTORIC TEAM V2.7 VIDEO-TRAINED | DELTA"
 
 local MASTER_BOX = Instance.new("TextBox")
 MASTER_BOX.Parent = F
@@ -3588,7 +3701,7 @@ COUNTER_LABEL.TextColor3 = Color3.fromRGB(120,235,170)
 COUNTER_LABEL.Font = Enum.Font.SourceSansBold
 COUNTER_LABEL.TextSize = 13
 COUNTER_LABEL.TextWrapped = true
-COUNTER_LABEL.Text = "Scrap ?/10 | Ember ?/15 | Magnet ? | Bones ? | Dragon(E/W) checking..."
+COUNTER_LABEL.Text = "Scrap ?/10 | Ember ?/15 | Magnet ? | Bones ? | DragonGuard ARMED"
 
 STATUS_LABEL = Instance.new("TextLabel")
 STATUS_LABEL.Parent = F
@@ -3626,30 +3739,20 @@ end
 
 local function refreshCounters()
     if not COUNTER_LABEL or not COUNTER_LABEL.Parent then return end
-    local scrap = inventoryCount("Scrap Metal")
+    local scrap, scrapSource = PHX.materialCountInfo("Scrap Metal")
     local ember = inventoryCount("Blaze Ember")
     local magnet = inventoryCount("Volcanic Magnet")
     local bones = inventoryCount("Dinosaur Bones")
     local dragons = PHX.findPhysicalDragonFruits()
-    local unknownDragons = PHX.findUnknownDragonFruitTools()
-    local eastStored, westStored, dragonInventoryOK = PHX.storedDragonVariants(false)
-    local physicalEast, physicalWest = 0, 0
-    for _,tool in ipairs(dragons) do
-        local variant = PHX.dragonVariantFromTool(tool)
-        if variant == "East" then physicalEast = physicalEast + 1 end
-        if variant == "West" then physicalWest = physicalWest + 1 end
+    local dragonText = "DragonGuard ARMED | physical:"..tostring(#dragons)
+    if #dragons > 0 then
+        local variant = PHX.dragonVariantFromTool(dragons[1])
+        dragonText = "DRAGON PHYSICAL"..(variant and (" "..variant) or "").." -> STORE"
+    elseif DRAGON_GUARD_STATE.Critical then
+        dragonText = "DRAGON STORE CRITICAL"
     end
-    local dragonText
-    if DRAGON_GUARD_STATE.Critical or #unknownDragons > 0 then
-        dragonText = "DRAGON CRITICAL"
-    elseif physicalEast > 0 or physicalWest > 0 then
-        dragonText = string.format("Dragon PHYSICAL E:%d W:%d -> STORE", physicalEast, physicalWest)
-    elseif not dragonInventoryOK then
-        dragonText = "Dragon(E/W) inventory ?"
-    else
-        dragonText = string.format("Dragon E:%d W:%d | physical:0", eastStored or 0, westStored or 0)
-    end
-    COUNTER_LABEL.Text = string.format("Scrap %d/10 | Ember %d/15 | Magnet %s | Bones %d | %s", scrap, ember, magnet > 0 and "YES" or "NO", bones, dragonText)
+    local srcTag = scrapSource == "REMOTE_EXACT" and "R" or (scrapSource == "STASH_GUI" and "G" or (scrapSource == "REMOTE_DEEP" and "D" or "?"))
+    COUNTER_LABEL.Text = string.format("Scrap %d/10[%s] | Ember %d/15 | Magnet %s | Bones %d | %s", scrap, srcTag, ember, magnet > 0 and "YES" or "NO", bones, dragonText)
 end
 
 APPLY.MouseButton1Click:Connect(function()
