@@ -1,422 +1,539 @@
---[[
-    PREHISTORIC TEAM V2.10.1 (TREE7 + STASH EXACT FIX)
-    5-account Blox Fruits automation scaffold built from the runtime dumps supplied in chat.
-
-    IMPORTANT:
-    - All 5 clients must run this same file and use the same MASTER_NAME.
-    - MASTER = buys/drives MarineGrandBrigade + handles Volcano pressure.
-    - SLAVES = passenger seats + Lava Golem combat.
-    - WEBHOOK_URL is intentionally blank. Paste your Discord webhook in CONFIG.WEBHOOK_URL.
-    - This V1 validates important actions from visible game state instead of assuming success.
-]]
-
---==============================================================
--- SERVICES
---==============================================================
+-- PH_PREHISTORIC_TEAM_AUTO_V1_KAWAII.lua
+-- TEAM BUILD V1:
+--   MASTER  : Magnet check + Grand Brigade driver + Fossil start + Golem controller
+--   SLAVE 1 : Pressure A
+--   SLAVE 2 : Pressure B
+--   SLAVE 3 : Golem DPS support
+--   SLAVE 4 : Pressure C
+--
+-- Coordination intentionally uses visible Roblox state (players, seats, boat,
+-- island, raid HUD, enemies) rather than _G/shared between clients, because
+-- executor globals are per-client.
+--
+-- Movement rule:
+--   PLAYER = SAFE TWEEN ONLY. No long-distance player teleport / fast tween.
+--   BOAT   = straight Sea 6 travel.
+--   SEATED = JUMP OUT FIRST before any player tween.
+--
+-- Kawaii UI:
+--   Set getgenv().PH_KAWAII_IMAGE to a Roblox asset id / rbxassetid:// URI.
+--   HTTP image URLs are also supported when the executor exposes request +
+--   writefile + getcustomasset.
+--
+-- V2.9 MULTI-GOLEM CLUSTER:
+-- Supports 1, 2, 3+ Lava Golems at the same time.
+-- All living Golems are pulled into ONE tight cluster ~145 studs away from
+-- Fossil Relic, with a tiny ~3-stud spread only to reduce physics overlap.
+-- RegisterHit receives the whole clustered target list in one attack.
+-- Newly spawned Golems are detected and added to the same cluster mid-fight.
+-- Bring remains throttled (0.25s + 12-stud drift) to avoid V2.7-style freezes.
+-- Player movement remains SAFE tween only.
+--
+-- V2.8 GOLEM STABILITY FIX:
+-- VIDEO DIAGNOSIS:
+--   V2.7 was not truly dead; it repeatedly sat on GOLEM FIRST with HP unchanged
+--   for long stretches, then eventually damaged the Golem again.
+-- Main cause was the Golem loop being far too aggressive:
+--   * PivotTo + full descendant velocity/collision writes every ~0.035s
+--   * setsimulationradius(math.huge) repeatedly
+--   * RegisterAttack/RegisterHit roughly 25-30 times/sec
+-- This can choke client physics/replication and make the automation look frozen.
+-- V2.8 prepares the Golem once, throttles re-bring to 0.25s only when it drifts,
+-- attacks at 0.09s, uses RegisterAttack(.05), and adds a physical Melee fallback.
+--
+-- V2.7 EVENT DETECTION FIX:
+-- VIDEO DIAGNOSIS:
+--   * The running UI in the clip still showed V2.4, not V2.6.
+--   * During a clearly active raid (Time Left / Pressure / Relic Health visible),
+--     the old controller was not entering GOLEM/PRESSURE states.
+-- ROOT BUG:
+--   * old code depended on PrehistoricIsland:GetAttribute("IsMinigameActive"),
+--     but that attribute has been observed as nil.
+-- FIX:
+--   * raid-active state now comes from the visible TopHUDList raid UI.
+--   * Pressure and Relic Health are parsed from HUD text first.
+--   * Golem-first/hard-bring logic from V2.6 is preserved.
+--   * V2.7+ instances use a generation token so executing another V2.7+
+--     automatically invalidates the previous compatible instance.
+--
+-- V2.6 GOLEM-FIRST / HARD BRING:
+-- Lava Golem now has priority over pressure rocks while alive.
+-- It is hard-brought roughly 135 studs away from Fossil Relic, frozen there,
+-- enlarged for net hits, and attacked continuously in short bursts.
+-- Player travel to the attack point still uses SAFE tween (175), not teleport.
+-- Once Golem is dead, normal pressure-rock handling resumes.
+--
+-- V2.5 EXACT FOSSIL CAPTURE:
+-- Uses the manually captured PLAYER_RELATIVE_TO_RELIC CFrame:
+--   CFrame.new(-2.257812,-49.921875,27.808289,...)
+-- Capture also proved PROMPT_COUNT = 0, so Fossil is NOT a ProximityPrompt.
+-- V2.5 safe-tweens to that exact relative pose, then sends ONE virtual E hold
+-- for 3.0 seconds. If the event does not confirm, Auto Volcano pauses instead
+-- of spamming E/Observation.
+--
+-- V2.4 AUTO VOLCANO TOGGLE:
+-- Adds a draggable-UI ON/OFF button.
+-- OFF pauses automation without killing the script/state, so Fossil Relic can
+-- be inspected manually. Active player tween cancels its current segment and
+-- resumes safely from the current position when ON again. Boat movement stops
+-- while paused. Fossil prompt hold is released immediately on pause.
+--
+-- V2.3 FOSSIL PROMPT HOLD FIX:
+-- Fossil interaction now targets the actual ProximityPrompt near the relic
+-- and stops ~2.8 studs in front of that prompt (nose/mouth area), not on top.
+-- NO global VirtualInputManager E is sent for Fossil interaction.
+-- Global E can toggle Observation/Instinct, so V2.3 uses prompt-level
+-- InputHoldBegin/InputHoldEnd for ~3 seconds, with fireproximityprompt fallback.
+--
+-- V2.2 FOSSIL TWEEN / HOLD-E FIX:
+-- Fossil approach no longer does the exaggerated +95Y lift/cross/descend path.
+-- After JUMP-unseating, it uses one normal SAFE chunked tween at 135 studs/s
+-- to an absolute point 3.2 studs above the Fossil.
+-- Fossil interaction now uses VirtualInputManager E key-down for 3.0 seconds,
+-- then E key-up, with up to 3 attempts.
+--
+-- V2.1 PORTAL ROUTE:
+-- Adds Tiki/Castle/Turtle/Hydra game-portal routing.
+-- Cross-island recovery uses SAFE tween to the portal, lets the GAME portal
+-- perform the teleport, then safe-tweens locally to the Boat Dealer.
+-- No long-distance CFrame teleport / fast player tween.
+-- Sea 6 boat search stays one straight heading.
+--
+-- V2 JUMP-SEAT REBUILD:
+-- Rebuilt around the user's required seat rule:
+-- WHEN THE BOAT FINDS PREHISTORIC, THE PLAYER MUST JUMP OUT OF VehicleSeat
+-- BEFORE ANY PLAYER TWEEN STARTS.
+--
+-- Preserved:
+--   * Magnet check once at startup, no spam on death/boat loss
+--   * death -> respawn -> rebuy/reboard -> continue hunt
+--   * destroyed boat -> rebuy -> continue hunt
+--   * Sea 6 boat search = one straight heading, no square patrol
+--   * UI always visible/status-only/draggable
+--   * pressure -> Golem net burst -> Dragon Egg -> optional Bones
+--
+-- V1.3 TWEEN / DISEMBARK FIX:
+-- Video diagnosis: player tween started while still welded to MarineGrandBrigade's
+-- VehicleSeat. That caused the boat weld/server physics to fight the HRP tween,
+-- producing water dives, wall snaps and apparent teleport-backs.
+-- Fix: stop boat -> force unseat -> confirm SeatPart=nil -> chunked player tween.
+-- Sea 6 BOAT hunt remains one straight heading.
+-- Island landing uses lift -> cross above terrain -> descend to avoid tunneling
+-- through the island at sea level.
+--
+-- V1.2 RECOVERY LOOP:
+-- Fixes repeated Stash/Magnet checks.
+-- Magnet is checked once at startup, then only after a COMPLETED event.
+-- Player death / boat destruction stays inside a recovery loop:
+-- respawn -> rebuy boat -> board -> continue straight Sea 6 hunt.
+-- UI remains visible during Magnet checks.
+--
+-- V1.1 STRAIGHT SEA SEARCH:
+-- Sea 6 search no longer uses a square patrol.
+-- Boat chooses one heading toward the Sea 6 center and keeps driving straight.
+--
+-- Standalone solo Prehistoric / Volcano automation.
+--
+-- Intended flow:
+--   1) auto-join Marines
+--   2) open Stash once and verify Volcanic Magnet
+--   3) buy/board MarineGrandBrigade
+--   4) search for Prehistoric Island
+--   5) start Fossil Relic event
+--   6) solo pressure rocks + Lava Golem "kill-aura style" net attacks
+--   7) collect nearest Dragon Egg
+--   8) quick Dinosaur Bones sweep
+--   9) reset to Tiki, re-check Magnet, repeat
+--
+-- Notes:
+--   * "Kill aura" here means rapid validated RE/RegisterAttack + RE/RegisterHit bursts
+--     while close to the Lava Golem. It is NOT an unverified instant-delete remote.
+--   * Stash is authoritative for Magnet.
+--   * UI is status-only and draggable. No start/stop buttons.
+--
+-- Auto Magnet baseline kept separately:
+--   PH_VOLCANIC_MAGNET_FULL_AUTO_V1_7_POSTCRAFT_VERIFY.lua
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
-local HttpService = game:GetService("HttpService")
-local CoreGui = game:GetService("CoreGui")
-local Lighting = game:GetService("Lighting")
+local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
 
 local LP = Players.LocalPlayer
 local PG = LP:WaitForChild("PlayerGui")
-local PHX = {} -- helper namespace; keeps Delta/Luau main-chunk local count below compiler limit
 
---==============================================================
--- DELTA-SAFE BOOT UI
--- Created BEFORE remote waits / automation init so Delta users
--- can immediately see whether the chunk actually started.
---==============================================================
+-- TEAM singleton + backwards-compatible solo invalidation.
+local ENV = (getgenv and getgenv()) or _G
 
-local BOOT_GUI_NAME = "PrehistoricTeamBoot"
-local oldBoot = PG:FindFirstChild(BOOT_GUI_NAME)
-if oldBoot then oldBoot:Destroy() end
+-- Kill currently running V2.7+ solo build on this client.
+ENV.PH_VOLCANO_GENERATION =
+    (tonumber(ENV.PH_VOLCANO_GENERATION) or 0) + 1
 
-local BOOT_GUI = Instance.new("ScreenGui")
-BOOT_GUI.Name = BOOT_GUI_NAME
-BOOT_GUI.ResetOnSpawn = false
-BOOT_GUI.IgnoreGuiInset = false
-BOOT_GUI.DisplayOrder = 999999
-BOOT_GUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-BOOT_GUI.Parent = PG
+-- Kill an older compatible TEAM build on this client.
+ENV.PH_TEAM_VOLCANO_GENERATION =
+    (tonumber(ENV.PH_TEAM_VOLCANO_GENERATION) or 0) + 1
 
-local BOOT_LABEL = Instance.new("TextLabel")
-BOOT_LABEL.Parent = BOOT_GUI
-BOOT_LABEL.Size = UDim2.fromOffset(330, 54)
-BOOT_LABEL.Position = UDim2.new(0.5, -165, 0.04, 0)
-BOOT_LABEL.BackgroundColor3 = Color3.fromRGB(20,20,26)
-BOOT_LABEL.BorderColor3 = Color3.fromRGB(0,150,255)
-BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
-BOOT_LABEL.Font = Enum.Font.SourceSansBold
-BOOT_LABEL.TextSize = 14
-BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "PREHISTORIC V2.10.1 TREE7/STASH FIX\nLoading automation..."
-BOOT_LABEL.ZIndex = 999999
+local SCRIPT_GENERATION = ENV.PH_TEAM_VOLCANO_GENERATION
 
-local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
-if not remotes then
-    BOOT_LABEL.Text = "PREHISTORIC V2 ERROR\nReplicatedStorage.Remotes not found"
-    return
-end
-
-local CommF = remotes:WaitForChild("CommF_", 20)
-if not CommF then
-    BOOT_LABEL.Text = "PREHISTORIC V2 ERROR\nCommF_ not found"
-    return
-end
-
-BOOT_LABEL.Text = "PREHISTORIC V2.10.1 TREE7/STASH FIX\nLoaded core, building UI..."
+ENV.PH_VOLCANO_KILL = false
+ENV.PH_TEAM_VOLCANO_KILL = false
 
 --==============================================================
 -- CONFIG
 --==============================================================
 
 local CONFIG = {
-    -- Default is the boat owner observed in your dump. Change here if needed.
-    MASTER_NAME = "Hunter_Gerald16",
+    PLAYER_SPEED = 200,
+    PRESSURE_SPEED = 220,
 
     TEAM = {
-        "Hunter_Gerald16",
-        "AshleyChelseaFrances",
-        "ElaineClara24",
-        "McDowellHuangk6",
-        "Yoderep7",
+        -- Optional runtime overrides:
+        -- getgenv().PH_MASTER_NAME = "username"
+        -- getgenv().PH_TEAM_NAMES  = {"master","slave1","slave2","slave3","slave4"}
+        -- getgenv().PH_TEAM_SLOT   = 0..4   (0=MASTER)
+        MASTER_NAME = tostring(ENV.PH_MASTER_NAME or "AshleyChelseaFrances"),
+
+        NAMES = type(ENV.PH_TEAM_NAMES) == "table"
+            and ENV.PH_TEAM_NAMES
+            or {
+                "AshleyChelseaFrances", -- MASTER
+                "", -- SLAVE 1
+                "", -- SLAVE 2
+                "", -- SLAVE 3
+                "", -- SLAVE 4
+            },
+
+        EXPECTED_SIZE = 5,
+        REQUIRED_SLAVES = 4,
+        WAIT_FOR_TEAM_SECONDS = 35,
+
+        -- If not all alts have joined yet, MASTER may still depart after timeout.
+        ALLOW_PARTIAL_AFTER_TIMEOUT = true,
+        MIN_SLAVES_AFTER_TIMEOUT = 0,
+
+        -- SLAVES wait for the MASTER's Grand Brigade and occupy passenger seats.
+        PASSENGER_BOARD_RETRY = 1.0,
     },
 
-    WEBHOOK_URL = "", -- <<<<<<<<<< PASTE WEBHOOK HERE
+    UI = {
+        -- Example:
+        -- getgenv().PH_KAWAII_IMAGE = "rbxassetid://123456789"
+        -- or "123456789"
+        -- or supported HTTP image URL on executors with custom-asset APIs.
+        ANIME_IMAGE = tostring(ENV.PH_KAWAII_IMAGE or ""),
+    },
 
     BOAT_NAME = "MarineGrandBrigade",
     BOAT_BUY_NAME = "MarineGrandBrigade",
-    MIN_TEAM_NEAR_RELIC = 4,
-    RELIC_RADIUS = 40,
+    BOAT_SPEED = 360,
 
-    PLAYER_TWEEN_SPEED = 220,
-    PRESSURE_TWEEN_SPEED = 300,
-    BOAT_TWEEN_SPEED = 475,
-    SAFE_ALTITUDE = 70,
-    FOREST_FARM_HEIGHT = 32,
-    FOREST_HITBOX_SIZE = 60,
-    FOREST_MAGNET_RADIUS = 900,
-    FOREST_SCAN_RADIUS = 1400,
-    FOREST_GHOST_TIMEOUT = 10,
-    FOREST_GHOST_MIN_ATTACKS = 100,
-    HOVER_SNAP_DISTANCE = 2.5,
-    MELEE_HITBOX_MAGNITUDE = 120,
-    MELEE_NET_DISTANCE = 120,
-    MELEE_ATTACK_INTERVAL = 0.06,
-    MELEE_CLICK_DELAY = 0,
-    PORTAL_CHAIN_DELAY = 2.5,
-    RESPAWN_SETTLE_DELAY = 1.5,
-    RESET_TO_TIKI_AFTER_EVENT = true,
-
-    ITEM_COUNTER = {
-        CACHE_SECONDS = 0.65,
-        OPTIMISTIC_GAIN_SECONDS = 180,
-    },
-
-    DRAGON_GUARD = {
-        STORE_RETRIES = 8,
-        RETRY_DELAY = 0.35,
-        POST_EGG_GUARD_SECONDS = 10.0,
-        PRE_RESET_GUARD_SECONDS = 10.0,
-    },
-
-    -- V2.8: the full-video event logic is feedback driven. Master always fixes
-    -- active pressure rocks; slaves delete Lava Golems first, then help pressure.
-    PRESSURE = {
-        SKILL_HOLD = 0.02,
-        SKILL_GAP = 0.08,
-        ROCK_HOVER_Y = 10,
-        ASSIST_AT = 8,          -- when no golem, slaves help almost immediately
-        EMERGENCY_AT = 42,
-        RELIC_ASSIST_AT = 98,
-        RELIC_EMERGENCY_AT = 92,
-        MAX_BURST_SECONDS = 2.2,
-    },
-
-    GOLEM_AURA = {
-        APPROACH_DISTANCE = 48,
-        HOVER_Y = 14,
-        ATTACK_INTERVAL = 0.035,
-        BURST_SECONDS = 1.5,
-        HITBOX_SIZE = 85,
-    },
-
-    EGG = {
-        HOLD_E_SECONDS = 1.10,  -- PC prompt in the supplied full-run video
-        RETRIES = 3,
-        RETRY_GAP = 0.28,
-        SPAWN_WAIT_SECONDS = 10,
-        APPROACH_DISTANCE = 4.0,
-    },
-
-    -- SAFE low-CPU mode: visual-only changes. It never destroys Workspace.Map,
-    -- Enemies, Boats, portal parts, or PrehistoricIsland logic objects.
-    SAVE_CPU = {
-        ENABLED = true,
-        FPS_CAP = 30,
-        HIDE_STATIC_MAP_VISUALS = true,
-        HIDE_TEXTURES_DECALS = true,
-        DISABLE_NONESSENTIAL_VFX = true,
-        REDUCE_TERRAIN = true,
-        LOW_GRAPHICS_QUALITY = true,
-        FULL_3D_RENDER_OFF = false, -- strongest saving; leave false so you can still see the game
-    },
-
-    DEBUG = {
-        ENABLED = true,
-        LOG_TO_FILE = true,
-        SNAPSHOT_INTERVAL = 15,
-        WATCHDOG_SECONDS = 120,
-        WATCHDOG_RESTART = true,
-        WEBHOOK_ERRORS = true,
-        MAX_MEMORY_LOG_LINES = 6000,
-    },
-
-    -- Public scripts use this offshore point as a Third Sea / high-danger travel target.
-    SEA6_CENTER = Vector3.new(-37813.6953, 65, 6105.16895),
-
+    -- Runtime point supplied earlier.
     BOAT_DEALER_CFRAME = CFrame.new(
-        -16928.9277, 10, 434.619995,
-        -0.434707522, 0, -0.900571883,
-        0, 1, 0,
-        0.900571883, 0, -0.434707522
+        -16928.9277,10,434.619995,
+        -0.434707522,0,-0.900571883,
+        0,1,0,
+        0.900571883,0,-0.434707522
     ),
 
     PORTALS = {
-        Tiki_To_Castle = CFrame.new(-16799.9473, 59.9832191, 290.861969, 0.792721033, 6.48934986e-08, -0.60958457, -1.1125271e-07, 1, -3.82208896e-08, 0.60958457, 9.81164376e-08, 0.792721033),
-        Castle_To_Tiki = CFrame.new(-5096.34131, 316.511047, -3174.32227, 0.999937356, 4.29376179e-08, -0.0111938119, -4.30900293e-08, 1, -1.33745131e-08, 0.0111938119, 1.38560168e-08, 0.999937356),
-        Turtle_To_Castle = CFrame.new(-12463.6025, 376.335999, -7566.08301, 1, -2.37242093e-09, -3.80343628e-15, 2.37242093e-09, 1, 4.0985646e-09, 3.79371276e-15, -4.0985646e-09, 1),
-        Castle_To_Turtle = CFrame.new(-5060.06006, 316.511047, -3194.63062, 0.992432296, 2.75590928e-08, -0.12279328, -2.76739218e-08, 1, 7.70395803e-10, 0.12279328, 2.63360578e-09, 0.992432296),
-        Castle_To_Hydra = CFrame.new(-5027.03027, 316.511047, -3206.70361, 1, -4.02126652e-08, -1.21312694e-14, 4.02126652e-08, 1, 5.87755622e-08, 9.76774678e-15, -5.87755622e-08, 1),
-        Hydra_To_Castle = CFrame.new(5650.94775, 1015.28326, -350.379181, 1, 5.02064275e-08, -1.44387506e-14, -5.02064275e-08, 1, -4.3968754e-08, 1.22312362e-14, 4.3968754e-08, 1),
+        Tiki_To_Castle = CFrame.new(
+            -16799.9473,59.9832191,290.861969,
+            0.792721033,6.48934986e-08,-0.60958457,
+            -1.1125271e-07,1,-3.82208896e-08,
+            0.60958457,9.81164376e-08,0.792721033
+        ),
+
+        Castle_To_Tiki = CFrame.new(
+            -5096.34131,316.511047,-3174.32227,
+            0.999937356,4.29376179e-08,-0.0111938119,
+            -4.30900293e-08,1,-1.33745131e-08,
+            0.0111938119,1.38560168e-08,0.999937356
+        ),
+
+        Turtle_To_Castle = CFrame.new(
+            -12463.6025,376.335999,-7566.08301,
+            1,-2.37242093e-09,-3.80343628e-15,
+            2.37242093e-09,1,4.0985646e-09,
+            3.79371276e-15,-4.0985646e-09,1
+        ),
+
+        Castle_To_Turtle = CFrame.new(
+            -5060.06006,316.511047,-3194.63062,
+            0.992432296,2.75590928e-08,-0.12279328,
+            -2.76739218e-08,1,7.70395803e-10,
+            0.12279328,2.63360578e-09,0.992432296
+        ),
+
+        Castle_To_Hydra = CFrame.new(
+            -5027.03027,316.511047,-3206.70361,
+            1,-4.02126652e-08,-1.21312694e-14,
+            4.02126652e-08,1,5.87755622e-08,
+            9.76774678e-15,-5.87755622e-08,1
+        ),
+
+        Hydra_To_Castle = CFrame.new(
+            5650.94775,1015.28326,-350.379181,
+            1,5.02064275e-08,-1.44387506e-14,
+            -5.02064275e-08,1,-4.3968754e-08,
+            1.22312362e-14,4.3968754e-08,1
+        ),
     },
 
-    DRAGON_HUNTER = {
-        NPC = CFrame.new(5862.44092, 1208.89709, 807.572998, -0.400542974, 0, 0.916278243, 0, 1, 0, -0.916278243, 0, -0.400542974),
-        STAND = CFrame.new(5863.4677734375, 1210.2822265625, 801.98779296875),
+    -- Search fallback carried from the previous prehistoric script.
+    -- It is treated only as a patrol center, not as a guaranteed island position.
+    SEA_PATROL_CENTER = Vector3.new(-37813.6953,65,6105.16895),
+    SEA_PATROL_RADIUS = 5500,
+
+    PRESSURE = {
+        ROCK_HOVER_Y = 10,
+        SKILL_HOLD = 0.03,
+        SKILL_GAP = 0.11,
+        BURST_SECONDS = 1.65,
+
+        -- Solo priority:
+        -- pressure/relic emergency always overrides Golem.
+        EMERGENCY_PRESSURE = 25,
+        EMERGENCY_RELIC = 94,
     },
 
-    MOB_CAMPS = {
-        HydraEnforcer = CFrame.new(4481.20752, 1004.28436, 538.046082),
-        VenomousAssailant = CFrame.new(4622.26514, 1078.49329, 894.30603),
-        -- User-captured safe point beside the Forest Pirate farming area on Floating Turtle.
-        ForestPirate = CFrame.new(
-            -13384.9883, 332.408264, -7814.93359,
-            -0.840017498, 4.56535894e-08, 0.542559266,
-            1.13496391e-07, 0.99999994, 5.30326076e-08,
-            -0.542559206, 7.65943753e-08, -0.840017498
-        ),
+    GOLEM = {
+        APPROACH_DISTANCE = 48,
+        HOVER_Y = 14,
+        HITBOX = 85,
+        NET_DISTANCE = 135,
+        ATTACK_INTERVAL = 0.09,
+        BURST_SECONDS = 1.00,
+
+        -- V2.6: Lava Golem has absolute combat priority while alive.
+        PRIORITY_FIRST = true,
+
+        -- Keep the Golem well away from Fossil Relic while attacking.
+        BRING_DISTANCE_FROM_RELIC = 145,
+        BRING_HEIGHT_OFFSET = 0,
+        BRING_HITBOX = 72,
+
+        -- Multi-Golem cluster bring.
+        CLUSTER_RADIUS = 3.0,
+        BRING_INTERVAL = 0.25,
+        REBRING_DRIFT = 12,
+        STALL_SECONDS = 4.0,
     },
 
-    TREES = {
-        CFrame.new(
-            5431.108398, 1253.348877, 965.289429,
-            0.295610, -0.000000, 0.955309,
-            -0.000000, 1.000000, 0.000000,
-            -0.955309, -0.000000, 0.295610
+    EGG = {
+        HOLD_E = 1.10,
+        RETRIES = 3,
+        RETRY_GAP = 0.30,
+        WAIT_SECONDS = 12,
+        APPROACH_DISTANCE = 4.0,
+    },
+
+    BONES = {
+        ENABLED = true,
+        SWEEP_SECONDS = 2.5,
+    },
+
+    -- Captured manually at a position where HOLD E works.
+    -- This is RELATIVE TO PrehistoricRelic:GetPivot(), so it should follow
+    -- the relic even when the island spawns at another world position/rotation.
+    FOSSIL = {
+        PLAYER_RELATIVE_TO_RELIC = CFrame.new(
+            -2.257812, -49.921875, 27.808289,
+            -0.235301, -0.001449, 0.971921,
+            -0.971886, -0.008328, -0.235305,
+            0.008435, -0.999964, 0.000552
         ),
-        CFrame.new(
-            4976.212891, 1144.915039, 623.489624,
-            -0.078839, 0.000000, -0.996887,
-            0.000000, 1.000000, 0.000000,
-            0.996887, 0.000000, -0.078839
-        ),
-        CFrame.new(
-            5569.339355, 1264.950562, 702.382935,
-            -0.431751, 0.000000, -0.901993,
-            0.000000, 1.000000, 0.000000,
-            0.901993, 0.000000, -0.431751
-        ),
-        CFrame.new(
-            5312.936523, 1159.892822, 0.588688,
-            -0.862379, 0.000000, -0.506264,
-            0.000000, 1.000000, 0.000000,
-            0.506264, 0.000000, -0.862379
-        ),
-        CFrame.new(
-            5043.579590, 1149.748535, 180.001953,
-            -0.936677, -0.000000, -0.350194,
-            -0.000000, 1.000000, -0.000000,
-            0.350194, -0.000000, -0.936677
-        ),
-        CFrame.new(
-            4477.374023, 1356.148926, 26.291494,
-            0.614400, 0.000000, 0.788995,
-            -0.000000, 1.000000, -0.000000,
-            -0.788995, 0.000000, 0.614400
-        ),
-        CFrame.new(
-            4410.110840, 1384.577026, 306.693695,
-            0.503457, 0.000000, 0.864020,
-            -0.000000, 1.000000, -0.000000,
-            -0.864020, 0.000000, 0.503457
-        ),
+        HOLD_SECONDS = 3.0,
+        SAFE_SPEED = 125,
+        SETTLE_TIME = 0.35,
+    },
+
+    LOOP_AFTER_EVENT = true,
+
+    MAGNET_CHECK = {
+        STARTUP_RETRIES = 3,
+        RETRY_GAP = 2.0,
+        -- Re-check only after a completed event before starting a NEW hunt.
+        -- Death / boat destruction never triggers another Stash check.
+        RECHECK_AFTER_EVENT = true,
+    },
+
+    RECOVERY = {
+        RESPAWN_WAIT = 20,
+        BOAT_REBUY_GAP = 1.2,
     },
 }
-}
 
 --==============================================================
--- STATE
+-- TEAM ROLE RESOLUTION
 --==============================================================
 
-_G.TeamConfig = _G.TeamConfig or {}
-_G.TeamConfig.MasterName = CONFIG.MASTER_NAME
-_G.TeamConfig.IsMaster = LP.Name == CONFIG.MASTER_NAME
-_G.TeamConfig.IsRunning = false
-_G.TeamConfig.StopReason = nil
+local function nonEmptyConfiguredNames()
+    local out = {}
 
-local RUN_TOKEN = 0
-local STATUS_LABEL
-local COUNTER_LABEL
-
-local ITEM_TRACK = {}
-local INVENTORY_CACHE = {Raw=nil, At=-math.huge}
-local PICKUP_WATCHED = setmetatable({}, {__mode="k"})
-local DRAGON_GUARD_STATE = {Busy=false, LastStored=nil, Critical=false}
-local SAVE_CPU_APPLIED = false
-
--- Forest Pirate runtime state. Weak-key tables automatically forget despawned models.
-local FOREST_GHOST_BLACKLIST = setmetatable({}, {__mode = "k"})
-local FOREST_DAMAGE_TRACK = setmetatable({}, {__mode = "k"})
-local ACTIVE_FOREST_MAGNET = {Enabled=false, Anchor=nil, Radius=0, Locked=setmetatable({}, {__mode="k"})}
-local FOREST_DAMAGE_PROVEN = false
-local ACTIVE_HOVER = {Root=nil, Humanoid=nil, Attachment=nil, Position=nil, Gyro=nil, Target=nil}
-local lastIslandWebhookKey = nil
-local lavaConnection = nil
-local CHARACTER_EPOCH = 0
-local lastPortalSuccessAt = -math.huge
-local boundHumanoids = {}
-
---==============================================================
--- NIGHT DEBUG LOGGER / WATCHDOG STATE
--- No manual log file is required. If the executor supports writefile/appendfile,
--- the script creates one automatically in the executor workspace.
---==============================================================
-
-local _nightStampOK, _nightStamp = pcall(function() return os.date("%Y%m%d_%H%M%S") end)
-if not _nightStampOK then _nightStamp = tostring(math.floor(os.clock())) end
-
-local NIGHT = {
-    LogPath = "PH_Night_" .. tostring(LP.Name):gsub("[^%w_%-]", "_") .. "_" .. tostring(_nightStamp) .. ".txt",
-    StartedAt = os.clock(),
-    LastProgressAt = os.clock(),
-    LastProgressSignature = "BOOT",
-    LastStatus = nil,
-    LastStatusLogAt = 0,
-    RuntimeSignature = nil,
-    RecoveryCount = 0,
-    MemoryLines = {},
-    FileReady = false,
-}
-
-local function nightTime()
-    local ok, t = pcall(function() return os.date("%Y-%m-%d %H:%M:%S") end)
-    return ok and t or tostring(math.floor(os.clock()))
-end
-
-local function initNightLog()
-    if not CONFIG.DEBUG.ENABLED or not CONFIG.DEBUG.LOG_TO_FILE then return end
-    local header = table.concat({
-        "===== PREHISTORIC V2 NIGHT DEBUG =====",
-        "ACCOUNT="..LP.Name,
-        "MASTER="..tostring(CONFIG.MASTER_NAME),
-        "JOB="..tostring(game.JobId),
-        "START="..nightTime(),
-        "LOG="..NIGHT.LogPath,
-        "======================================",
-        ""
-    }, "\n")
-    NIGHT.MemoryLines = {header}
-    if type(writefile) == "function" then
-        NIGHT.FileReady = pcall(writefile, NIGHT.LogPath, header)
-    end
-end
-
-local function flushNightLog()
-    if not CONFIG.DEBUG.ENABLED or not CONFIG.DEBUG.LOG_TO_FILE then return end
-    -- When appendfile exists, every line is already persisted; rewriting from the
-    -- memory fallback here would erase the appended overnight history.
-    if type(appendfile) == "function" and NIGHT.FileReady then return end
-    if type(writefile) ~= "function" then return end
-    local maxLines = CONFIG.DEBUG.MAX_MEMORY_LOG_LINES or 6000
-    while #NIGHT.MemoryLines > maxLines do
-        table.remove(NIGHT.MemoryLines, 1)
-    end
-    pcall(writefile, NIGHT.LogPath, table.concat(NIGHT.MemoryLines, "\n"))
-end
-
-local function logLine(tag, message)
-    if not CONFIG.DEBUG.ENABLED then return end
-    local line = string.format("[%s] [%s] %s", nightTime(), tostring(tag), tostring(message))
-    print("[PH-NIGHT] "..line)
-
-    if CONFIG.DEBUG.LOG_TO_FILE then
-        if type(appendfile) == "function" and NIGHT.FileReady then
-            pcall(appendfile, NIGHT.LogPath, line.."\n")
-        else
-            NIGHT.MemoryLines[#NIGHT.MemoryLines+1] = line
-            if (#NIGHT.MemoryLines % 10) == 0 then
-                flushNightLog()
-            end
+    for _,name in ipairs(CONFIG.TEAM.NAMES or {}) do
+        name = tostring(name or "")
+        if name ~= "" then
+            out[#out+1] = name
         end
     end
+
+    return out
 end
 
-local function noteProgress(signature)
-    signature = tostring(signature or "progress")
-    if signature ~= NIGHT.LastProgressSignature then
-        NIGHT.LastProgressSignature = signature
-        NIGHT.LastProgressAt = os.clock()
+local function dynamicTeamNames()
+    local configured = nonEmptyConfiguredNames()
+
+    -- If the user supplied at least MASTER + one slave, respect that roster.
+    if #configured >= 2 then
+        return configured
     end
-end
 
-initNightLog()
-logLine("BOOT", "Script started | file="..NIGHT.LogPath.." | fileAPI="..tostring(NIGHT.FileReady or type(appendfile)=="function"))
+    -- Zero-config fallback:
+    -- MASTER + first four other players sorted by UserId.
+    local out = {CONFIG.TEAM.MASTER_NAME}
+    local others = {}
 
-local function setStatus(s)
-    s = tostring(s)
-    if STATUS_LABEL then
-        STATUS_LABEL.Text = s
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p.Name ~= CONFIG.TEAM.MASTER_NAME then
+            others[#others+1] = p
+        end
     end
-    print("[PH-V2] " .. s)
 
-    if NIGHT.LastStatus ~= s or (os.clock() - NIGHT.LastStatusLogAt) > 20 then
-        NIGHT.LastStatus = s
-        NIGHT.LastStatusLogAt = os.clock()
-        logLine("STATUS", s)
-        noteProgress("STATUS:"..s)
+    table.sort(others,function(a,b)
+        return a.UserId < b.UserId
+    end)
+
+    for i=1,math.min(4,#others) do
+        out[#out+1] = others[i].Name
     end
+
+    return out
 end
 
-local function isRunning(token)
-    return _G.TeamConfig.IsRunning and token == RUN_TOKEN
+local function resolveTeamSlot()
+    local explicit = tonumber(ENV.PH_TEAM_SLOT)
+
+    if explicit and explicit >= 0 and explicit <= 4 then
+        return math.floor(explicit)
+    end
+
+    if LP.Name == CONFIG.TEAM.MASTER_NAME then
+        return 0
+    end
+
+    for i,name in ipairs(CONFIG.TEAM.NAMES or {}) do
+        if tostring(name) ~= "" and LP.Name == tostring(name) then
+            return i-1
+        end
+    end
+
+    local names = dynamicTeamNames()
+    for i,name in ipairs(names) do
+        if LP.Name == name then
+            return i-1
+        end
+    end
+
+    -- Unconfigured extra client: deterministic fallback.
+    return (math.abs(LP.UserId) % 4) + 1
 end
 
-local function isTeamName(name)
-    return table.find(CONFIG.TEAM, name) ~= nil
-end
+local TEAM_SLOT = resolveTeamSlot()
 
-local function teamIndex(name)
-    return table.find(CONFIG.TEAM, name)
-end
+local ROLE_BY_SLOT = {
+    [0] = "MASTER / DRIVER / GOLEM CTRL",
+    [1] = "PRESSURE A",
+    [2] = "PRESSURE B",
+    [3] = "GOLEM DPS",
+    [4] = "PRESSURE C",
+}
+
+local ROLE = ROLE_BY_SLOT[TEAM_SLOT] or ("SUPPORT "..TEAM_SLOT)
 
 local function isMaster()
-    return LP.Name == _G.TeamConfig.MasterName
+    return TEAM_SLOT == 0
 end
 
-local function roleText()
-    return isMaster() and "MASTER / BUY BOAT" or "SLAVE / PASSENGER"
+local function pressureWorkerIndex()
+    if TEAM_SLOT == 1 then return 1 end
+    if TEAM_SLOT == 2 then return 2 end
+    if TEAM_SLOT == 4 then return 3 end
+    if TEAM_SLOT == 3 then return 4 end
+    return 1
+end
+
+local function teamPlayerNames()
+    return dynamicTeamNames()
+end
+
+local function teamNameSet()
+    local set = {}
+    for _,name in ipairs(teamPlayerNames()) do
+        set[name] = true
+    end
+    return set
+end
+
+local function teamOnlineCount()
+    local set = teamNameSet()
+    local n = 0
+
+    for _,p in ipairs(Players:GetPlayers()) do
+        if set[p.Name] then
+            n += 1
+        end
+    end
+
+    return n
+end
+
+local function masterPlayer()
+    return Players:FindFirstChild(CONFIG.TEAM.MASTER_NAME)
+end
+
+local function masterAlive()
+    local p = masterPlayer()
+    local c = p and p.Character
+    local h = c and c:FindFirstChildOfClass("Humanoid")
+    return h and h.Health > 0 or false
 end
 
 --==============================================================
--- CHARACTER HELPERS
+-- BASIC STATE
 --==============================================================
+
+local STATE = {
+    Running = true,
+    Phase = "BOOT",
+    Status = "Starting...",
+    Magnet = nil,
+    Boat = "NONE",
+    Pressure = nil,
+    Relic = nil,
+    GolemHP = nil,
+    GolemCount = 0,
+    Egg = "WAIT",
+    Cycle = 0,
+    Token = 1,
+
+    MagnetChecked = false,
+    MagnetNeedsRefresh = true,
+    HuntRetry = 0,
+    CompletedEvents = 0,
+
+    -- User-facing pause switch.
+    -- Running keeps the script alive; AutoVolcano controls whether automation may act.
+    AutoVolcano = true,
+
+    Role = ROLE,
+    TeamSlot = TEAM_SLOT,
+    TeamOnline = 0,
+    TeamBoarded = 0,
+    Raid = "OFF",
+}
 
 local function char()
     return LP.Character
@@ -432,2056 +549,1776 @@ local function root()
     return c and c:FindFirstChild("HumanoidRootPart")
 end
 
-local function bindCharacter(c)
-    if not c then return end
-    local h = c:FindFirstChildOfClass("Humanoid") or c:WaitForChild("Humanoid", 10)
-    if not h or boundHumanoids[h] then return end
-    boundHumanoids[h] = true
-    CHARACTER_EPOCH = CHARACTER_EPOCH + 1
-
-    h.Died:Connect(function()
-        CHARACTER_EPOCH = CHARACTER_EPOCH + 1
-        local r = c:FindFirstChild("HumanoidRootPart")
-        logLine("DEATH", "pos="..tostring(r and r.Position or "nil").." status="..tostring(NIGHT.LastStatus))
-        setStatus("DIED -> automation paused until respawn")
-    end)
+local function alive()
+    local h = hum()
+    return h and h.Health > 0 and root() ~= nil
 end
 
-LP.CharacterAdded:Connect(function(c)
-    task.spawn(function()
-        bindCharacter(c)
-        c:WaitForChild("HumanoidRootPart", 10)
-        task.wait(CONFIG.RESPAWN_SETTLE_DELAY)
-        local rr = c:FindFirstChild("HumanoidRootPart")
-        logLine("RESPAWN", "pos="..tostring(rr and rr.Position or "nil"))
-        if _G.TeamConfig.IsRunning then
-            setStatus("RESPAWNED -> resuming current route")
-        end
-    end)
-end)
+local function normalize(v)
+    return string.lower(tostring(v or ""))
+        :gsub("<.->","")
+        :gsub("&nbsp;"," ")
+        :gsub("%s+"," ")
+        :gsub("^%s+","")
+        :gsub("%s+$","")
+end
 
-if LP.Character then
-    task.spawn(function() bindCharacter(LP.Character) end)
+local function current(token)
+    return STATE.Running
+        and ENV.PH_VOLCANO_KILL ~= true
+        and ENV.PH_TEAM_VOLCANO_KILL ~= true
+        and ENV.PH_TEAM_VOLCANO_GENERATION == SCRIPT_GENERATION
+        and (token == nil or token == STATE.Token)
+end
+
+local function autoOn()
+    return STATE.AutoVolcano == true
+end
+
+local function waitAuto(token)
+    while current(token) and not autoOn() do
+        task.wait(.10)
+    end
+    return current(token)
 end
 
 local function waitAlive(token)
-    while true do
-        if token and not isRunning(token) then return nil end
-        local c = LP.Character
-        local h = c and c:FindFirstChildOfClass("Humanoid")
-        local r = c and c:FindFirstChild("HumanoidRootPart")
-        if c and h and r and h.Health > 0 then
-            bindCharacter(c)
-            return c, h, r, CHARACTER_EPOCH
-        end
+    while current(token) do
+        if alive() then return true end
         task.wait(.15)
     end
+    return false
 end
 
-local function waitCharacter()
-    local c = waitAlive(nil)
-    return c
+--==============================================================
+-- KAWAII TEAM UI / DRAGGABLE
+--==============================================================
+
+local GUI_NAME = "PH_PrehistoricTeamKawaiiV1"
+local old = PG:FindFirstChild(GUI_NAME)
+if old then old:Destroy() end
+
+local function resolveKawaiiImage(source)
+    source = tostring(source or "")
+    if source == "" then
+        return ""
+    end
+
+    if tonumber(source) then
+        return "rbxassetid://"..source
+    end
+
+    if source:match("^rbxassetid://") then
+        return source
+    end
+
+    -- Optional HTTP -> custom asset path for supported executors.
+    if source:match("^https?://")
+    and type(writefile) == "function"
+    and type(getcustomasset) == "function" then
+        local requestFn =
+            (syn and syn.request)
+            or http_request
+            or request
+
+        if type(requestFn) == "function" then
+            local ok,res = pcall(function()
+                return requestFn({
+                    Url = source,
+                    Method = "GET",
+                })
+            end)
+
+            if ok and res and (res.Success == true or res.StatusCode == 200)
+            and type(res.Body) == "string" then
+                local ext = source:lower():match("%.([%a%d]+)[%?]?")
+                if ext ~= "jpg" and ext ~= "jpeg"
+                and ext ~= "png" and ext ~= "webp" then
+                    ext = "png"
+                end
+
+                local fileName = "PH_KAWAII_GIRL."..ext
+
+                local wrote = pcall(function()
+                    writefile(fileName,res.Body)
+                end)
+
+                if wrote then
+                    local okAsset,asset = pcall(function()
+                        return getcustomasset(fileName)
+                    end)
+
+                    if okAsset and asset then
+                        return asset
+                    end
+                end
+            end
+        end
+    end
+
+    return source
 end
 
-local function stopSit()
-    local h = hum()
-    if h then
-        h.Sit = false
-        h.Jump = true
+local gui = Instance.new("ScreenGui")
+gui.Name = GUI_NAME
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 99999
+gui.IgnoreGuiInset = false
+gui.Parent = PG
+
+local frame = Instance.new("Frame")
+frame.Parent = gui
+frame.Size = UDim2.fromOffset(720,440)
+frame.Position = UDim2.new(0,18,0.5,-220)
+frame.BackgroundColor3 = Color3.fromRGB(255,225,242)
+frame.BorderSizePixel = 0
+frame.Active = true
+Instance.new("UICorner",frame).CornerRadius = UDim.new(0,18)
+
+local frameStroke = Instance.new("UIStroke")
+frameStroke.Parent = frame
+frameStroke.Thickness = 2
+frameStroke.Transparency = .1
+frameStroke.Color = Color3.fromRGB(255,146,202)
+
+local bgGradient = Instance.new("UIGradient")
+bgGradient.Parent = frame
+bgGradient.Rotation = 25
+bgGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,Color3.fromRGB(255,226,244)),
+    ColorSequenceKeypoint.new(.5,Color3.fromRGB(238,226,255)),
+    ColorSequenceKeypoint.new(1,Color3.fromRGB(219,239,255)),
+})
+
+local title = Instance.new("TextLabel")
+title.Parent = frame
+title.Position = UDim2.fromOffset(18,12)
+title.Size = UDim2.fromOffset(670,34)
+title.BackgroundTransparency = 1
+title.Text = "♡ PREHISTORIC TEAM • KAWAII CONTROL ♡"
+title.TextColor3 = Color3.fromRGB(109,66,119)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 19
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Active = true
+
+local subtitle = Instance.new("TextLabel")
+subtitle.Parent = frame
+subtitle.Position = UDim2.fromOffset(20,44)
+subtitle.Size = UDim2.fromOffset(450,22)
+subtitle.BackgroundTransparency = 1
+subtitle.Text = "safe tween • team sync • volcano raid"
+subtitle.TextColor3 = Color3.fromRGB(151,104,153)
+subtitle.Font = Enum.Font.Gotham
+subtitle.TextSize = 12
+subtitle.TextXAlignment = Enum.TextXAlignment.Left
+
+local left = Instance.new("Frame")
+left.Parent = frame
+left.Position = UDim2.fromOffset(16,72)
+left.Size = UDim2.fromOffset(486,352)
+left.BackgroundColor3 = Color3.fromRGB(255,247,252)
+left.BackgroundTransparency = .10
+left.BorderSizePixel = 0
+Instance.new("UICorner",left).CornerRadius = UDim.new(0,14)
+
+local leftStroke = Instance.new("UIStroke")
+leftStroke.Parent = left
+leftStroke.Color = Color3.fromRGB(255,183,219)
+leftStroke.Transparency = .35
+
+local artPanel = Instance.new("Frame")
+artPanel.Parent = frame
+artPanel.Position = UDim2.fromOffset(514,72)
+artPanel.Size = UDim2.fromOffset(190,352)
+artPanel.BackgroundColor3 = Color3.fromRGB(248,235,255)
+artPanel.BorderSizePixel = 0
+Instance.new("UICorner",artPanel).CornerRadius = UDim.new(0,14)
+
+local artStroke = Instance.new("UIStroke")
+artStroke.Parent = artPanel
+artStroke.Color = Color3.fromRGB(205,164,238)
+artStroke.Transparency = .25
+
+local artGradient = Instance.new("UIGradient")
+artGradient.Parent = artPanel
+artGradient.Rotation = 90
+artGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0,Color3.fromRGB(255,234,247)),
+    ColorSequenceKeypoint.new(1,Color3.fromRGB(224,216,255)),
+})
+
+local artImage = Instance.new("ImageLabel")
+artImage.Parent = artPanel
+artImage.Position = UDim2.fromOffset(8,8)
+artImage.Size = UDim2.fromOffset(174,268)
+artImage.BackgroundTransparency = 1
+artImage.ScaleType = Enum.ScaleType.Crop
+artImage.Image = resolveKawaiiImage(CONFIG.UI.ANIME_IMAGE)
+Instance.new("UICorner",artImage).CornerRadius = UDim.new(0,12)
+
+local artFallback = Instance.new("TextLabel")
+artFallback.Parent = artPanel
+artFallback.Position = artImage.Position
+artFallback.Size = artImage.Size
+artFallback.BackgroundTransparency = 1
+artFallback.Text = "૮ ˶ᵔ ᵕ ᵔ˶ ა\n\nKAWAII\nVOLCANO\nGIRL\n\n♡ ✦ ♡"
+artFallback.TextColor3 = Color3.fromRGB(168,104,170)
+artFallback.Font = Enum.Font.GothamBold
+artFallback.TextSize = 17
+artFallback.TextWrapped = true
+artFallback.Visible = artImage.Image == ""
+
+local roleBadge = Instance.new("TextLabel")
+roleBadge.Parent = artPanel
+roleBadge.Position = UDim2.fromOffset(8,286)
+roleBadge.Size = UDim2.fromOffset(174,52)
+roleBadge.BackgroundColor3 = Color3.fromRGB(255,255,255)
+roleBadge.BackgroundTransparency = .2
+roleBadge.BorderSizePixel = 0
+roleBadge.TextColor3 = Color3.fromRGB(109,69,129)
+roleBadge.Font = Enum.Font.GothamBold
+roleBadge.TextSize = 11
+roleBadge.TextWrapped = true
+Instance.new("UICorner",roleBadge).CornerRadius = UDim.new(0,10)
+
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Parent = left
+statusLabel.Position = UDim2.fromOffset(10,10)
+statusLabel.Size = UDim2.fromOffset(466,78)
+statusLabel.BackgroundColor3 = Color3.fromRGB(80,59,98)
+statusLabel.BackgroundTransparency = .05
+statusLabel.BorderSizePixel = 0
+statusLabel.TextColor3 = Color3.fromRGB(255,244,253)
+statusLabel.Font = Enum.Font.Code
+statusLabel.TextSize = 11
+statusLabel.TextWrapped = true
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.TextYAlignment = Enum.TextYAlignment.Top
+Instance.new("UICorner",statusLabel).CornerRadius = UDim.new(0,10)
+
+local function makeCard(x,y,w,h)
+    local t = Instance.new("TextLabel")
+    t.Parent = left
+    t.Position = UDim2.fromOffset(x,y)
+    t.Size = UDim2.fromOffset(w,h)
+    t.BackgroundColor3 = Color3.fromRGB(255,255,255)
+    t.BackgroundTransparency = .08
+    t.BorderSizePixel = 0
+    t.TextColor3 = Color3.fromRGB(99,70,110)
+    t.Font = Enum.Font.GothamBold
+    t.TextSize = 12
+    t.TextWrapped = true
+    Instance.new("UICorner",t).CornerRadius = UDim.new(0,10)
+
+    local st = Instance.new("UIStroke")
+    st.Parent = t
+    st.Color = Color3.fromRGB(244,194,224)
+    st.Transparency = .45
+
+    return t
+end
+
+local teamLabel = makeCard(10,98,225,48)
+local magnetLabel = makeCard(241,98,225,48)
+local boatLabel = makeCard(10,154,225,48)
+local raidLabel = makeCard(241,154,225,48)
+local pressureLabel = makeCard(10,210,225,48)
+local relicLabel = makeCard(241,210,225,48)
+local golemLabel = makeCard(10,266,225,48)
+local eggLabel = makeCard(241,266,225,48)
+
+local autoToggle = Instance.new("TextButton")
+autoToggle.Parent = left
+autoToggle.Position = UDim2.fromOffset(10,322)
+autoToggle.Size = UDim2.fromOffset(456,22)
+autoToggle.BorderSizePixel = 0
+autoToggle.Font = Enum.Font.GothamBold
+autoToggle.TextSize = 11
+autoToggle.TextColor3 = Color3.new(1,1,1)
+autoToggle.AutoButtonColor = true
+Instance.new("UICorner",autoToggle).CornerRadius = UDim.new(0,9)
+
+local function refreshUI()
+    STATE.TeamOnline = teamOnlineCount()
+
+    statusLabel.Text =
+        "STATUS: "..STATE.Status..
+        "\nPHASE: "..STATE.Phase..
+        "\nPLAYER: "..LP.Name..
+        " | SLOT: "..tostring(STATE.TeamSlot)..
+        " | CYCLE: "..tostring(STATE.Cycle)
+
+    roleBadge.Text =
+        "♡ ROLE ♡\n"..tostring(STATE.Role)
+
+    teamLabel.Text =
+        "TEAM  ♡  Online "..tostring(STATE.TeamOnline)..
+        "/"..tostring(CONFIG.TEAM.EXPECTED_SIZE)..
+        "\nBoarded slaves: "..tostring(STATE.TeamBoarded or 0)
+
+    if isMaster() then
+        magnetLabel.Text =
+            "MAGNET  ✦  "..(
+                STATE.Magnet == nil and "?"
+                or (STATE.Magnet > 0 and ("YES ("..math.floor(STATE.Magnet)..")") or "NO")
+            )
+    else
+        magnetLabel.Text = "MAGNET  ✦  MASTER handles"
+    end
+
+    boatLabel.Text = "BOAT  ♡  "..tostring(STATE.Boat)
+    raidLabel.Text = "RAID  ✦  "..tostring(STATE.Raid)
+
+    pressureLabel.Text =
+        "PRESSURE  ♡  "..(
+            STATE.Pressure == nil and "?" or (tostring(STATE.Pressure).."%")
+        )
+
+    relicLabel.Text =
+        "RELIC HP  ✦  "..(
+            STATE.Relic == nil and "?"
+            or string.format("%.1f%%",STATE.Relic)
+        )
+
+    golemLabel.Text =
+        "GOLEM  ♡  "..(
+            (STATE.GolemCount or 0) <= 0 and "NONE"
+            or (
+                tostring(STATE.GolemCount).."x | HP "
+                ..tostring(math.floor(STATE.GolemHP or 0))
+            )
+        )
+
+    eggLabel.Text = "DRAGON EGG  ✦  "..tostring(STATE.Egg)
+
+    if STATE.AutoVolcano then
+        autoToggle.Text = "AUTO TEAM: ON  ♡  click to pause"
+        autoToggle.BackgroundColor3 = Color3.fromRGB(219,111,171)
+    else
+        autoToggle.Text = "AUTO TEAM: OFF  ♡  click to resume"
+        autoToggle.BackgroundColor3 = Color3.fromRGB(125,96,145)
     end
 end
 
-local function safeTween(targetCFrame, speed, token)
-    local c, h, r, epoch = waitAlive(token)
-    if not c or not h or not r then return false end
+local function setStatus(text, phase)
+    STATE.Status = tostring(text)
+    if phase then STATE.Phase = tostring(phase) end
+    refreshUI()
+    print(
+        "[PH TEAM]["..ROLE.."] "
+        ..STATE.Phase.." | "..STATE.Status
+    )
+end
 
-    local d = (r.Position - targetCFrame.Position).Magnitude
-    if d < 4 then
-        r.CFrame = targetCFrame
+autoToggle.Activated:Connect(function()
+    STATE.AutoVolcano = not STATE.AutoVolcano
+
+    if STATE.AutoVolcano then
+        setStatus("AUTO TEAM resumed","RESUME")
+    else
+        setStatus("AUTO TEAM paused","PAUSED")
+    end
+end)
+
+refreshUI()
+
+-- Mouse + touch draggable title bar.
+do
+    local dragging = false
+    local dragStart
+    local startPos
+
+    title.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if dragging and (
+            input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch
+        ) then
+            local d = input.Position-dragStart
+            frame.Position = UDim2.new(
+                startPos.X.Scale,startPos.X.Offset+d.X,
+                startPos.Y.Scale,startPos.Y.Offset+d.Y
+            )
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
+
+--==============================================================
+-- MOVEMENT / NOCLIP
+--==============================================================
+
+local noclip = false
+local collisionBackup = {}
+
+local function setPlayerNoclip(enabled)
+    local c = char()
+    if not c then return end
+
+    if enabled then
+        if not noclip then
+            table.clear(collisionBackup)
+            for _,v in ipairs(c:GetDescendants()) do
+                if v:IsA("BasePart") then
+                    collisionBackup[v] = v.CanCollide
+                end
+            end
+        end
+
+        noclip = true
+
+        for _,v in ipairs(c:GetDescendants()) do
+            if v:IsA("BasePart") then
+                v.CanCollide = false
+                v.AssemblyLinearVelocity = Vector3.zero
+                v.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+    else
+        for part,old in pairs(collisionBackup) do
+            if part and part.Parent then
+                pcall(function() part.CanCollide = old end)
+            end
+        end
+        table.clear(collisionBackup)
+        noclip = false
+    end
+end
+
+RunService.Stepped:Connect(function()
+    if noclip then
+        setPlayerNoclip(true)
+    end
+end)
+
+local function jumpOutOfSeat(token, reason)
+    if not waitAuto(token) then
+        return false,"STOPPED"
+    end
+
+    local h = hum()
+    if not h then
+        return false,"NO_HUMANOID"
+    end
+
+    if not h.SeatPart then
+        return true,"NOT_SEATED"
+    end
+
+    setStatus(
+        "JUMP out of boat seat"..(reason and (" | "..tostring(reason)) or ""),
+        "DISEMBARK"
+    )
+
+    local deadline = os.clock()+3.0
+
+    while current(token) and os.clock() < deadline do
+        if not alive() then
+            return false,"DIED_WHILE_JUMPING"
+        end
+
+        if not h.SeatPart then
+            task.wait(.12)
+
+            local rr = root()
+            if rr then
+                pcall(function()
+                    rr.AssemblyLinearVelocity = Vector3.zero
+                    rr.AssemblyAngularVelocity = Vector3.zero
+                end)
+            end
+
+            return true,"JUMP_UNSEATED"
+        end
+
+        -- User-required behavior: actually JUMP to break the VehicleSeat weld.
+        pcall(function()
+            h.Jump = true
+            h:ChangeState(Enum.HumanoidStateType.Jumping)
+        end)
+
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(
+                true,
+                Enum.KeyCode.Space,
+                false,
+                game
+            )
+            task.wait(.06)
+            VirtualInputManager:SendKeyEvent(
+                false,
+                Enum.KeyCode.Space,
+                false,
+                game
+            )
+        end)
+
+        -- Sit=false is only a helper AFTER issuing Jump, not the primary method.
+        pcall(function()
+            h.Sit = false
+        end)
+
+        task.wait(.10)
+    end
+
+    return h.SeatPart == nil,
+        h.SeatPart == nil and "JUMP_UNSEATED_LATE" or "JUMP_SEAT_STUCK"
+end
+
+local function tweenTo(cf, speed, token)
+    if not waitAlive(token) then return false,"DEAD" end
+    if not waitAuto(token) then return false,"STOPPED" end
+
+    -- Critical rule:
+    -- if player is seated, JUMP OUT FIRST. Never tween HRP against a seat weld.
+    local h0 = hum()
+    if h0 and h0.SeatPart then
+        local unseatOk,unseatWhy = jumpOutOfSeat(token,"before player tween")
+        if not unseatOk then
+            return false,"UNSEAT_FAIL:"..tostring(unseatWhy)
+        end
+    end
+
+    local moveSpeed = speed or CONFIG.PLAYER_SPEED
+    local MAX_SEGMENT = 42
+    local TARGET_EPS = 3
+    local started = os.clock()
+    local MAX_TOTAL = 120
+
+    local h = hum()
+    local oldAutoRotate = h and h.AutoRotate
+
+    if h then
+        h.AutoRotate = false
+    end
+
+    setPlayerNoclip(true)
+
+    local function cleanup()
+        setPlayerNoclip(false)
+
+        local hh = hum()
+        if hh and oldAutoRotate ~= nil then
+            hh.AutoRotate = oldAutoRotate
+        end
+    end
+
+    while current(token) do
+        if not autoOn() then
+            cleanup()
+            if not waitAuto(token) then
+                return false,"STOPPED"
+            end
+            setPlayerNoclip(true)
+        end
+
+        if not alive() then
+            cleanup()
+            return false,"DEAD"
+        end
+
+        local hh = hum()
+
+        -- If Roblox re-seats us mid-route, cancel movement, jump out, then continue
+        -- from the current replicated position.
+        if hh and hh.SeatPart then
+            setPlayerNoclip(false)
+
+            local unseatOk,unseatWhy =
+                jumpOutOfSeat(token,"re-seated during tween")
+
+            if not unseatOk then
+                cleanup()
+                return false,"RESEAT_UNSEAT_FAIL:"..tostring(unseatWhy)
+            end
+
+            setPlayerNoclip(true)
+        end
+
+        local r = root()
+        if not r then
+            cleanup()
+            return false,"NO_ROOT"
+        end
+
+        local delta = cf.Position-r.Position
+        local dist = delta.Magnitude
+
+        if dist <= TARGET_EPS then
+            local dur = math.max(dist/moveSpeed,.03)
+
+            local tw = TweenService:Create(
+                r,
+                TweenInfo.new(dur,Enum.EasingStyle.Linear),
+                {CFrame=cf}
+            )
+
+            tw:Play()
+            tw.Completed:Wait()
+
+            pcall(function()
+                r.AssemblyLinearVelocity = Vector3.zero
+                r.AssemblyAngularVelocity = Vector3.zero
+            end)
+
+            cleanup()
+            return true,"ARRIVED"
+        end
+
+        if os.clock()-started > MAX_TOTAL then
+            cleanup()
+            return false,"TIMEOUT"
+        end
+
+        local stepDist = math.min(MAX_SEGMENT,dist)
+        local alpha = stepDist/dist
+        local nextCF = r.CFrame:Lerp(cf,alpha)
+        local dur = math.max(stepDist/moveSpeed,.04)
+
+        local tw = TweenService:Create(
+            r,
+            TweenInfo.new(dur,Enum.EasingStyle.Linear),
+            {CFrame=nextCF}
+        )
+
+        local done = false
+        local conn
+
+        conn = tw.Completed:Connect(function()
+            done = true
+            if conn then conn:Disconnect() end
+        end)
+
+        tw:Play()
+
+        while not done do
+            if not current(token) or not alive() then
+                pcall(function() tw:Cancel() end)
+                cleanup()
+                return false,"INTERRUPTED"
+            end
+
+            if not autoOn() then
+                pcall(function() tw:Cancel() end)
+                done = true
+                break
+            end
+
+            local h2 = hum()
+
+            if h2 and h2.SeatPart then
+                pcall(function() tw:Cancel() end)
+                done = true
+                break
+            end
+
+            local rr = root()
+            if rr then
+                pcall(function()
+                    rr.AssemblyLinearVelocity = Vector3.zero
+                    rr.AssemblyAngularVelocity = Vector3.zero
+                end)
+            end
+
+            task.wait(.03)
+        end
+
+        task.wait(.015)
+    end
+
+    cleanup()
+    return false,"STOPPED"
+end
+
+
+-- Boat-search is straight. Player landing is intentionally NOT a direct
+-- sea-level line through the island: lift -> cross above terrain -> descend.
+local function safeIslandApproach(targetCF, token)
+    -- V2.2: no more exaggerated lift -> cross -> descend route.
+    -- After jumping out of the boat, move in ONE safe chunked straight tween.
+    -- tweenTo() already uses short segments + noclip + replicated-position recovery.
+    if not waitAlive(token) then
+        return false,"DEAD"
+    end
+
+    local h = hum()
+    if h and h.SeatPart then
+        local ok,why = jumpOutOfSeat(token,"before Fossil tween")
+        if not ok then
+            return false,"UNSEAT_FAIL:"..tostring(why)
+        end
+    end
+
+    return tweenTo(targetCF,135,token)
+end
+
+local function aimAt(pos)
+    local cam = workspace.CurrentCamera
+    if not cam then return end
+
+    pcall(function()
+        cam.CFrame = CFrame.lookAt(cam.CFrame.Position,pos)
+    end)
+end
+
+local function pressKey(key, hold)
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true,key,false,game)
+        task.wait(hold or .05)
+        VirtualInputManager:SendKeyEvent(false,key,false,game)
+    end)
+end
+
+local function holdE(sec)
+    pressKey(Enum.KeyCode.E,sec or .65)
+end
+
+local function holdFossilEVirtual(seconds, token)
+    -- Capture probe found PROMPT_COUNT = 0, so Fossil interaction is not a
+    -- ProximityPrompt. There is no prompt object to hold directly.
+    --
+    -- At the exact manually verified standing CFrame, emulate a REAL E hold:
+    -- key down -> wait -> key up. We only do this after reaching the captured
+    -- interaction spot to minimize accidental Observation/Instinct toggles.
+    local holdFor = seconds or CONFIG.FOSSIL.HOLD_SECONDS or 3.0
+
+    if not waitAuto(token) then
+        return false,"STOPPED"
+    end
+
+    if not current(token) or not alive() then
+        return false,"NOT_READY"
+    end
+
+    local downOk = pcall(function()
+        VirtualInputManager:SendKeyEvent(
+            true,
+            Enum.KeyCode.E,
+            false,
+            game
+        )
+    end)
+
+    if not downOk then
+        return false,"E_KEYDOWN_FAIL"
+    end
+
+    local deadline = os.clock()+holdFor
+
+    while current(token)
+    and alive()
+    and autoOn()
+    and os.clock() < deadline do
+        task.wait(.03)
+    end
+
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(
+            false,
+            Enum.KeyCode.E,
+            false,
+            game
+        )
+    end)
+
+    if not autoOn() then
+        return false,"PAUSED"
+    end
+
+    return true,"VIRTUAL_E_HOLD"
+end
+
+local function equipTooltip(tip)
+    local c = char()
+    local backpack = LP:FindFirstChildOfClass("Backpack")
+    if not c or not backpack then return nil end
+
+    for _,tool in ipairs(c:GetChildren()) do
+        if tool:IsA("Tool") and tostring(tool.ToolTip) == tip then
+            return tool
+        end
+    end
+
+    for _,tool in ipairs(backpack:GetChildren()) do
+        if tool:IsA("Tool") and tostring(tool.ToolTip) == tip then
+            local h = hum()
+            if h then
+                pcall(function() h:EquipTool(tool) end)
+                task.wait(.10)
+                return tool
+            end
+        end
+    end
+end
+
+--==============================================================
+-- REMOTES
+--==============================================================
+
+local Remotes = ReplicatedStorage:FindFirstChild("Remotes")
+local CommF = Remotes and Remotes:FindFirstChild("CommF_")
+if not CommF then
+    CommF = ReplicatedStorage:FindFirstChild("CommF_",true)
+end
+
+local Modules = ReplicatedStorage:FindFirstChild("Modules")
+local Net = Modules and Modules:FindFirstChild("Net")
+local RegisterAttack = Net and Net:FindFirstChild("RE/RegisterAttack")
+local RegisterHit = Net and Net:FindFirstChild("RE/RegisterHit")
+
+local function ensureMarines()
+    if LP.Team and LP.Team.Name == "Marines" then
         return true
     end
 
-    local bv = Instance.new("BodyVelocity")
-    bv.Name = "PH_TweenBV"
-    bv.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
-    bv.Velocity = Vector3.zero
-    bv.Parent = r
-
-    local conn
-    local died = false
-    local tw
-    local deathConn = h.Died:Connect(function()
-        died = true
-        if tw then pcall(function() tw:Cancel() end) end
-    end)
-
-    conn = RunService.Stepped:Connect(function()
-        if token and not isRunning(token) then
-            if tw then pcall(function() tw:Cancel() end) end
-            return
-        end
-        if h.Health <= 0 or CHARACTER_EPOCH ~= epoch then
-            died = true
-            if tw then pcall(function() tw:Cancel() end) end
-            return
-        end
-        for _,p in ipairs(c:GetDescendants()) do
-            if p:IsA("BasePart") then p.CanCollide = false end
-        end
-    end)
-
-    local t = math.max(d / (speed or CONFIG.PLAYER_TWEEN_SPEED), 0.05)
-    tw = TweenService:Create(r, TweenInfo.new(t, Enum.EasingStyle.Linear), {CFrame = targetCFrame})
-    tw:Play()
-    tw.Completed:Wait()
-
-    if conn then conn:Disconnect() end
-    if deathConn then deathConn:Disconnect() end
-    if bv and bv.Parent then bv:Destroy() end
-
-    if died or CHARACTER_EPOCH ~= epoch or not r.Parent then
-        setStatus("Movement interrupted by death -> waiting respawn")
-        waitAlive(token)
-        return false
-    end
-    return true
-end
-
-local function highTween(targetCFrame, speed, token)
-    local r = root()
-    if not r then return false end
-
-    local highY = math.max(r.Position.Y, targetCFrame.Position.Y) + CONFIG.SAFE_ALTITUDE
-    local up = CFrame.new(r.Position.X, highY, r.Position.Z)
-    local across = CFrame.new(targetCFrame.Position.X, highY, targetCFrame.Position.Z)
-
-    safeTween(up, speed or CONFIG.PRESSURE_TWEEN_SPEED, token)
-    if token and not isRunning(token) then return false end
-    safeTween(across, speed or CONFIG.PRESSURE_TWEEN_SPEED, token)
-    if token and not isRunning(token) then return false end
-    safeTween(targetCFrame, speed or CONFIG.PRESSURE_TWEEN_SPEED, token)
-    return true
-end
-
-local function resetCharacter()
-    local h = hum()
-    if h then
-        h.Health = 0
-    end
-    LP.CharacterAdded:Wait()
-    waitCharacter()
-    task.wait(1)
-end
-
--- Defined later after portal helpers are available.
-local resetBackToTiki
-
---==============================================================
--- WEBHOOK
---==============================================================
-
-local function sendWebhook(title, description, fields)
-    if CONFIG.WEBHOOK_URL == nil or CONFIG.WEBHOOK_URL == "" then
-        return false
-    end
-
-    local req = nil
-    if syn and syn.request then req = syn.request end
-    if not req and http_request then req = http_request end
-    if not req and request then req = request end
-    if not req then return false end
-
-    local embed = {
-        title = title,
-        description = description,
-        fields = fields or {},
-        footer = {text = "Prehistoric Team V2.10 | " .. LP.Name},
-        timestamp = DateTime.now():ToIsoDate(),
-    }
-
-    local payload = HttpService:JSONEncode({
-        username = "Prehistoric Team",
-        embeds = {embed},
-    })
+    if not CommF then return false end
 
     pcall(function()
-        req({
-            Url = CONFIG.WEBHOOK_URL,
-            Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = payload,
-        })
+        CommF:InvokeServer("SetTeam","Marines")
     end)
+
+    local deadline = os.clock()+10
+    repeat
+        task.wait(.25)
+        if LP.Team and LP.Team.Name == "Marines" then
+            return true
+        end
+    until os.clock() >= deadline
+
+    return false
+end
+
+--==============================================================
+-- GUI CLICK HELPERS / ONE-TIME MAGNET CHECK
+--==============================================================
+
+local function visibleGui(o)
+    if not o or not o:IsA("GuiObject") then return false end
+
+    local p = o
+    while p and p ~= PG do
+        if p:IsA("ScreenGui") and not p.Enabled then return false end
+        if p:IsA("GuiObject") and not p.Visible then return false end
+        if p:IsA("CanvasGroup") and p.GroupTransparency >= .995 then return false end
+        p = p.Parent
+    end
+
     return true
 end
 
---==============================================================
--- INVENTORY / LIVE ITEM COUNTERS
--- V2.7: one serialized inventory poller + exact Material schema + GUI fallback.
--- Do NOT treat an absent/unreadable server entry as authoritative zero.
---==============================================================
+local function insetClick(btn)
+    if not btn or not visibleGui(btn) then return false end
 
-function PHX.normalizeItemName(v)
-    local x = string.lower(tostring(v or ""))
-    x = x:gsub("[%[%]{}<>]", "")
-    x = x:gsub("%s+", " ")
-    return x:match("^%s*(.-)%s*$") or x
-end
+    local p = btn.AbsolutePosition
+    local s = btn.AbsoluteSize
+    local center = Vector2.new(p.X+s.X/2,p.Y+s.Y/2)
+    local inset = select(1,GuiService:GetGuiInset())
+    local pt = center+inset
 
-PHX.InventoryBusy = false
-PHX.InventoryLastError = nil
-PHX.InventorySchemaLogged = false
-_G.__PH_MATERIAL_CACHE = _G.__PH_MATERIAL_CACHE or {}
-_G.__PH_MATERIAL_CACHE[LP.Name] = _G.__PH_MATERIAL_CACHE[LP.Name] or {}
-PHX.MaterialPersistent = _G.__PH_MATERIAL_CACHE[LP.Name]
-
-function PHX.persistMaterial(itemName, count, source)
-    local key = PHX.normalizeItemName(itemName)
-    count = tonumber(count)
-    if not count then return end
-    PHX.MaterialPersistent[key] = {
-        Count = math.max(0, count),
-        Source = tostring(source or "MEMORY"),
-        At = os.clock(),
-    }
-end
-
-function PHX.consumeKnownMaterial(itemName, amount)
-    local key = PHX.normalizeItemName(itemName)
-    local t = ITEM_TRACK[key]
-    amount = math.max(0, tonumber(amount) or 0)
-    if t and t.Known then
-        local n = math.max(0, (tonumber(t.Optimistic) or tonumber(t.Server) or 0) - amount)
-        t.Server = n
-        t.Optimistic = n
-        t.OptimisticUntil = 0
-        t.Source = "CRAFT_LOCAL"
-        PHX.persistMaterial(itemName, n, "CRAFT_LOCAL")
-        return n
-    end
-    return nil
-end
-
-local function getInventory(force)
-    local now = os.clock()
-    if not force and INVENTORY_CACHE.Raw and (now - INVENTORY_CACHE.At) < CONFIG.ITEM_COUNTER.CACHE_SECONDS then
-        return INVENTORY_CACHE.Raw
-    end
-
-    local deadline = now + 2.5
-    while PHX.InventoryBusy and os.clock() < deadline do task.wait(.03) end
-    if PHX.InventoryBusy then
-        return INVENTORY_CACHE.Raw or {}
-    end
-
-    PHX.InventoryBusy = true
-    local ok, inv = pcall(function()
-        return CommF:InvokeServer("getInventory")
+    local ok = pcall(function()
+        VirtualInputManager:SendMouseButtonEvent(pt.X,pt.Y,0,true,game,0)
+        task.wait(.07)
+        VirtualInputManager:SendMouseButtonEvent(pt.X,pt.Y,0,false,game,0)
     end)
-    PHX.InventoryBusy = false
 
-    PHX.LastInventoryReadOK = ok and type(inv) == "table"
-    if PHX.LastInventoryReadOK then
-        INVENTORY_CACHE.Raw = inv
-        INVENTORY_CACHE.At = os.clock()
-        PHX.InventoryLastError = nil
-        if not PHX.InventorySchemaLogged then
-            PHX.InventorySchemaLogged = true
-            local n = 0
-            for _ in pairs(inv) do n = n + 1 end
-            logLine("INVENTORY", "getInventory OK | entries="..tostring(n))
-        end
-        return inv
-    end
-
-    PHX.InventoryLastError = tostring(inv)
-    logLine("INVENTORY_FAIL", "getInventory failed | "..tostring(inv))
-    return INVENTORY_CACHE.Raw or {}
+    task.wait(.10)
+    return ok
 end
 
-function PHX.entryCount(v)
-    if type(v) == "number" then return math.max(0, v) end
-    if type(v) ~= "table" then return nil end
-    local preferred = {
-        "Count","count","Amount","amount","Quantity","quantity","Qty","qty",
-        "Owned","owned","Number","number","Num","num","Stack","stack","Value","value"
-    }
-    for _,key in ipairs(preferred) do
-        local n = tonumber(v[key])
-        if n then return math.max(0, n) end
-    end
-    return nil
-end
-
-function PHX.exactMaterialCount(inv, itemName)
-    if type(inv) ~= "table" then return nil end
-    local wanted = PHX.normalizeItemName(itemName)
-    for _,entry in pairs(inv) do
-        if type(entry) == "table" then
-            local nm = PHX.normalizeItemName(entry.Name or entry.name or entry.ItemName or entry.itemName or "")
-            local tp = PHX.normalizeItemName(entry.Type or entry.type or "")
-            if nm == wanted and (tp == "" or tp == "material") then
-                local n = PHX.entryCount(entry)
-                if n ~= nil then return n end
-            end
-        end
-    end
-    return nil
-end
-
-function PHX.smartTableCount(root, itemName)
-    local wanted = PHX.normalizeItemName(itemName)
-    local best = nil
-    local seen = {}
-    local function scan(tbl, depth)
-        if type(tbl) ~= "table" or seen[tbl] or depth > 8 then return end
-        seen[tbl] = true
-        local matched = false
-        for k,v in pairs(tbl) do
-            if type(k) == "string" and PHX.normalizeItemName(k) == wanted then
-                local n = PHX.entryCount(v)
-                if n ~= nil then best = math.max(best or 0, n) end
-            end
-            if type(v) == "string" then
-                local key = type(k) == "string" and string.lower(k) or ""
-                if key == "name" or key == "itemname" or key == "displayname" or key == "material" then
-                    if PHX.normalizeItemName(v) == wanted then matched = true end
-                end
-            end
-        end
-        if matched then
-            local n = PHX.entryCount(tbl)
-            if n ~= nil then best = math.max(best or 0, n) end
-        end
-        for _,v in pairs(tbl) do
-            if type(v) == "table" then scan(v, depth + 1) end
-        end
-    end
-    scan(root, 0)
-    return best
-end
-
--- Fallback for the new Stash UI. If the card is instantiated client-side, read the
--- count text nearest the exact material name. This is only used when getInventory
--- does not expose the Material entry; it never overrides a valid server count.
-function PHX.guiTextNormalized(obj)
-    local txt = ""
-    pcall(function() txt = tostring(obj.Text or "") end)
-    txt = txt:gsub("<.->", "")
-    txt = txt:gsub("&nbsp;", " ")
-    return PHX.normalizeItemName(txt)
-end
-
-function PHX.guiMaterialCount(itemName)
-    local wanted = PHX.normalizeItemName(itemName)
-    local best, bestScore = nil, -math.huge
-
-    local function numericText(o)
-        if not (o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox")) then return nil end
-        local raw = tostring(o.Text or ""):gsub("<.->", ""):gsub(",", "")
-        local n = tonumber(raw:match("^%s*(%d+)%s*$"))
-        if n and n >= 0 and n <= 999999 then return n end
-        return nil
-    end
-
-    for _,label in ipairs(PG:GetDescendants()) do
-        if (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox"))
-            and PHX.guiTextNormalized(label) == wanted then
-            local okCenter, center = pcall(function()
-                return label.AbsolutePosition + label.AbsoluteSize/2
-            end)
-            local ancestor = label.Parent
-            local depth = 0
-            while ancestor and ancestor ~= PG and depth < 10 do
-                if ancestor:IsA("GuiObject") then
-                    for _,cand in ipairs(ancestor:GetDescendants()) do
-                        if cand ~= label then
-                            local n = numericText(cand)
-                            if n ~= nil then
-                                local score = 1000 - depth * 60
-                                local nm = string.lower(cand.Name or "")
-                                if nm:find("count",1,true) or nm:find("amount",1,true) or nm:find("quantity",1,true) or nm:find("owned",1,true) then
-                                    score = score + 500
-                                end
-                                if okCenter then
-                                    local ok2,p2 = pcall(function() return cand.AbsolutePosition + cand.AbsoluteSize/2 end)
-                                    if ok2 then score = score - math.min(700, (p2-center).Magnitude) end
-                                end
-                                if score > bestScore then
-                                    best, bestScore = n, score
-                                end
-                            end
-                        end
-                    end
-                end
-                ancestor = ancestor.Parent
-                depth = depth + 1
-            end
-        end
-    end
-    return best
-end
-
-function PHX.buttonAncestor(o)
-    local p = o
-    for _=1,12 do
-        if not p or p == PG then break end
-        if p:IsA("TextButton") or p:IsA("ImageButton") then return p end
-        p = p.Parent
-    end
-    return nil
-end
-
-function PHX.findStashButton()
-    local best, bestScore = nil, -math.huge
-    for _,o in ipairs(PG:GetDescendants()) do
-        if o:IsA("GuiObject") then
-            local name = string.lower(tostring(o.Name or ""))
-            local txt = ""
-            if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
-                txt = PHX.guiTextNormalized(o)
-            end
-            local hit = name:find("stash",1,true) ~= nil or txt == "stash" or txt:find("stash",1,true) ~= nil
-            if hit then
-                local b = (o:IsA("TextButton") or o:IsA("ImageButton")) and o or PHX.buttonAncestor(o)
-                if b then
-                    local score = 0
-                    if txt == "stash" then score = score + 1000 end
-                    if name:find("stash",1,true) then score = score + 700 end
-                    pcall(function() if b.Visible then score = score + 100 end end)
-                    if score > bestScore then best,bestScore = b,score end
-                end
-            end
-        end
-    end
-    return best
-end
-
-function PHX.stashLooksOpen()
-    local materialHits = 0
-    local allHits = 0
-    for _,o in ipairs(PG:GetDescendants()) do
-        if o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox") then
-            local t = PHX.guiTextNormalized(o)
-            if t == "scrap metal" or t == "blaze ember" or t == "dinosaur bones" or t == "volcanic magnet" then
-                materialHits = materialHits + 1
-            elseif t:match("^all%s*%(%d+%)$") or t == "items" then
-                allHits = allHits + 1
-            end
-        end
-    end
-    return materialHits > 0 or allHits >= 2
-end
-
-function PHX.findVisibleStashClose()
-    for _,o in ipairs(PG:GetDescendants()) do
-        if o:IsA("TextButton") or o:IsA("ImageButton") then
-            local nm = string.lower(tostring(o.Name or ""))
-            local tx = ""
-            if o:IsA("TextButton") then tx = string.lower(tostring(o.Text or "")) end
-            if (nm:find("close",1,true) or tx == "x" or tx == "×") then
-                local vis = false
-                pcall(function() vis = o.Visible end)
-                if vis then return o end
-            end
-        end
-    end
-    return nil
-end
-
-
-function PHX.signalGuiButton(btn)
+local function signalButton(btn)
     if not btn then return false end
-    local fired = false
-    local function hit(sig)
-        if getconnections then
-            local ok, cons = pcall(function() return getconnections(sig) end)
-            if ok and type(cons) == "table" then
-                for _,c in ipairs(cons) do
-                    if c.Fire then pcall(function() c:Fire() end); fired = true
-                    elseif c.Function then pcall(function() c.Function() end); fired = true end
+
+    if type(getconnections) == "function" then
+        local ok,cons = pcall(function() return getconnections(btn.Activated) end)
+        if ok and type(cons) == "table" and #cons > 0 then
+            for _,c in ipairs(cons) do
+                if c.Fire then
+                    local fired = pcall(function() c:Fire() end)
+                    if fired then task.wait(.08) return true end
+                elseif c.Function then
+                    local fired = pcall(function() c.Function() end)
+                    if fired then task.wait(.08) return true end
                 end
             end
         end
-        if firesignal then
-            local ok = pcall(function() firesignal(sig) end)
-            if ok then fired = true end
+    end
+
+    if type(firesignal) == "function" then
+        local ok = pcall(function() firesignal(btn.Activated) end)
+        if ok then task.wait(.08) return true end
+    end
+
+    return insetClick(btn)
+end
+
+local function waitUntil(fn, timeout)
+    local deadline = os.clock()+(timeout or 1)
+    repeat
+        local ok,res = pcall(fn)
+        if ok and res then return true end
+        task.wait(.04)
+    until os.clock() >= deadline
+    return false
+end
+
+local function inventoryRoot()
+    local top = PG:FindFirstChild("Inventory")
+    return top and top:FindFirstChild("Inventory")
+end
+
+local function inventoryOpen()
+    local inv = inventoryRoot()
+    if not inv then return false end
+
+    local main = inv:FindFirstChild("Main")
+    local header = main and main:FindFirstChild("Header")
+    local t = header and header:FindFirstChild("Title")
+
+    if t and (t:IsA("TextLabel") or t:IsA("TextButton")) then
+        return visibleGui(t) and normalize(t.Text) == "items"
+    end
+
+    return visibleGui(inv)
+end
+
+local function buttonInside(o)
+    if not o then return nil end
+    if o:IsA("TextButton") or o:IsA("ImageButton") then return o end
+
+    for _,d in ipairs(o:GetDescendants()) do
+        if d:IsA("TextButton") or d:IsA("ImageButton") then
+            return d
         end
     end
-    pcall(function() hit(btn.Activated) end)
-    pcall(function() hit(btn.MouseButton1Click) end)
-    task.wait(.08)
-    return fired
 end
 
-
--- V2.10: exact Stash reader learned from PH_FULL_PROBE.
--- The live UI exposes:
---   Inventory.Inventory.RightCard.ItemCard.Title.Text
---   Inventory.Inventory.RightCard.ItemCard.Display.Footer.CountRibbon.Count
--- We select Stash tiles through GUI signals and read that authoritative pair.
-function PHX.inventoryUiRoot()
-    local top = PG:FindFirstChild("Inventory")
-    if not top then return nil end
-    return top:FindFirstChild("Inventory")
+local function menuRoot()
+    local hudRoot = PG:FindFirstChild("HUDRoot")
+    local f = hudRoot and hudRoot:FindFirstChild("Frame")
+    local hud = f and f:FindFirstChild("HUD")
+    local col = hud and hud:FindFirstChild("LowerLeftColumn")
+    return col and col:FindFirstChild("Menu")
 end
 
-function PHX.readSelectedStashCard()
-    local root = PHX.inventoryUiRoot()
-    local right = root and root:FindFirstChild("RightCard")
+local function ensureInventoryOpen()
+    if inventoryOpen() then return true end
+
+    for _=1,4 do
+        local menu = menuRoot()
+        local items = menu and menu:FindFirstChild("Items")
+
+        if not items or not visibleGui(items) then
+            local toggle = menu and menu:FindFirstChild("Menu")
+            if toggle then
+                signalButton(toggle)
+                waitUntil(function()
+                    local m = menuRoot()
+                    local i = m and m:FindFirstChild("Items")
+                    return i and visibleGui(i)
+                end,.8)
+            end
+        end
+
+        menu = menuRoot()
+        items = menu and menu:FindFirstChild("Items")
+
+        if items and visibleGui(items) then
+            insetClick(items)
+            if waitUntil(inventoryOpen,1.5) then
+                return true
+            end
+        end
+
+        task.wait(.15)
+    end
+
+    return false
+end
+
+local function selectStash()
+    local inv = inventoryRoot()
+    local main = inv and inv:FindFirstChild("Main")
+    local nav = main and main:FindFirstChild("NavigationRail")
+
+    local deadline = os.clock()+3
+    local cat4
+
+    repeat
+        inv = inventoryRoot()
+        main = inv and inv:FindFirstChild("Main")
+        nav = main and main:FindFirstChild("NavigationRail")
+        cat4 = nav and nav:FindFirstChild("Category4")
+        if cat4 then break end
+        task.wait(.05)
+    until os.clock() >= deadline
+
+    if not cat4 then return false end
+
+    local b = buttonInside(cat4)
+    if not b then return false end
+
+    insetClick(b)
+    task.wait(.30)
+    return true
+end
+
+local function searchBox()
+    local inv = inventoryRoot()
+    if not inv then return nil end
+
+    for _,o in ipairs(inv:GetDescendants()) do
+        if o:IsA("TextBox") and visibleGui(o) then
+            local ph = normalize(o.PlaceholderText)
+            local nm = normalize(o.Name)
+            if ph:find("search",1,true)
+            or nm:find("search",1,true) then
+                return o
+            end
+        end
+    end
+end
+
+local function pageGrid()
+    local inv = inventoryRoot()
+    local main = inv and inv:FindFirstChild("Main")
+    local page = main and main:FindFirstChild("PageContent")
+    return page and page:FindFirstChild("TileGrid")
+end
+
+local function rightCard()
+    local inv = inventoryRoot()
+    local right = inv and inv:FindFirstChild("RightCard")
     local card = right and right:FindFirstChild("ItemCard")
-    if not card then return nil,nil,nil end
+    if not card then return nil,nil end
 
-    local titleObj = card:FindFirstChild("Title")
-    titleObj = titleObj and titleObj:FindFirstChild("Text")
+    local titleRoot = card:FindFirstChild("Title")
+    local titleObj = titleRoot and titleRoot:FindFirstChild("Text")
+
     local display = card:FindFirstChild("Display")
     local footer = display and display:FindFirstChild("Footer")
     local ribbon = footer and footer:FindFirstChild("CountRibbon")
     local countObj = ribbon and ribbon:FindFirstChild("Count")
-    local header = display and display:FindFirstChild("Header")
-    local catObj = header and header:FindFirstChild("Category")
 
-    local title = titleObj and tostring(titleObj.Text or "") or ""
-    local raw = countObj and tostring(countObj.Text or "") or ""
-    local category = catObj and tostring(catObj.Text or "") or ""
-    raw = raw:gsub(",", "")
-    local count = tonumber(raw:match("(%d+)"))
-    return title, count, category
+    if not titleObj or not countObj then return nil,nil end
+
+    local count = tonumber(tostring(countObj.Text or ""):gsub(",",""):match("(%d+)"))
+    return tostring(titleObj.Text or ""),count
 end
 
-function PHX.stashTileClickTarget(tile)
-    if not tile then return nil end
-    if tile:IsA("TextButton") or tile:IsA("ImageButton") then return tile end
-    for _,o in ipairs(tile:GetDescendants()) do
-        if o:IsA("TextButton") or o:IsA("ImageButton") then
-            return o
-        end
-    end
-    return nil
-end
+local function findInventoryClose()
+    local inv = inventoryRoot()
+    local main = inv and inv:FindFirstChild("Main")
+    if not inv or not main then return nil end
 
-function PHX.scanStashTilesExact()
-    local root = PHX.inventoryUiRoot()
-    local main = root and root:FindFirstChild("Main")
-    local page = main and main:FindFirstChild("PageContent")
-    local grid = page and page:FindFirstChild("TileGrid")
-    if not grid then
-        logLine("STASH_EXACT", "TileGrid missing")
-        return 0
-    end
+    local target = Vector2.new(
+        main.AbsolutePosition.X+main.AbsoluteSize.X-20,
+        main.AbsolutePosition.Y+20
+    )
 
-    local scroller = grid:IsA("ScrollingFrame") and grid or grid:FindFirstAncestorWhichIsA("ScrollingFrame")
-    local oldCanvas = nil
-    if scroller then pcall(function() oldCanvas = scroller.CanvasPosition end) end
+    local best,bestDist = nil,math.huge
 
-    local wanted = {
-        ["scrap metal"]="Scrap Metal",
-        ["blaze ember"]="Blaze Ember",
-        ["dinosaur bones"]="Dinosaur Bones",
-        ["volcanic magnet"]="Volcanic Magnet",
-    }
-    local found = {}
-    local pages = {0}
-    if scroller then
-        local ok, maxY, step = pcall(function()
-            local total = math.max(scroller.AbsoluteCanvasSize.Y, scroller.CanvasSize.Y.Offset)
-            local view = math.max(150, scroller.AbsoluteWindowSize.Y)
-            return math.max(0, total - view), math.max(120, view * .72)
-        end)
-        if ok and maxY and step then
-            local y = 0
-            while y < maxY do
-                y = math.min(maxY, y + step)
-                pages[#pages+1] = y
-                if #pages > 20 then break end
+    for _,o in ipairs(inv:GetDescendants()) do
+        if (o:IsA("TextButton") or o:IsA("ImageButton"))
+        and visibleGui(o)
+        and o.AbsoluteSize.X <= 130
+        and o.AbsoluteSize.Y <= 130 then
+            local p = o.AbsolutePosition
+            local s = o.AbsoluteSize
+            local c = Vector2.new(p.X+s.X/2,p.Y+s.Y/2)
+            local d = (c-target).Magnitude
+
+            if d < bestDist then
+                bestDist = d
+                best = o
             end
         end
     end
 
-    for _,y in ipairs(pages) do
-        if scroller then
-            pcall(function() scroller.CanvasPosition = Vector2.new(scroller.CanvasPosition.X, y) end)
-            task.wait(.08)
+    return best
+end
+
+local function closeInventory()
+    if not inventoryOpen() then return true end
+
+    local b = findInventoryClose()
+    if not b then return false end
+
+    insetClick(b)
+    return waitUntil(function() return not inventoryOpen() end,1.5)
+end
+
+local function checkVolcanicMagnet()
+    setStatus("Checking Volcanic Magnet in Stash","MAGNET CHECK")
+
+    -- Keep UI visible. Only disable input interception while the game UI is clicked.
+    local oldFrameActive = frame.Active
+    local oldTitleActive = title.Active
+    frame.Active = false
+    title.Active = false
+    task.wait(.05)
+
+    local count = nil
+    local why = "UNKNOWN"
+
+    local ok,err = xpcall(function()
+        if not ensureInventoryOpen() then
+            why = "ITEMS_OPEN_FAIL"
+            return
         end
 
-        local tiles = {}
+        if not selectStash() then
+            why = "STASH_OPEN_FAIL"
+            return
+        end
+
+        local search = searchBox()
+        local grid = pageGrid()
+
+        if not search or not grid then
+            why = "SEARCH_OR_GRID_MISSING"
+            return
+        end
+
+        search.Text = "Volcanic Magnet"
+        task.wait(.35)
+
+        local candidates = {}
+
         for _,tile in ipairs(grid:GetChildren()) do
-            if tostring(tile.Name):match("^Tile%-") then tiles[#tiles+1] = tile end
-        end
-        table.sort(tiles,function(a,b)
-            local la,lb = 0,0
-            pcall(function() la=a.LayoutOrder end)
-            pcall(function() lb=b.LayoutOrder end)
-            return la < lb
-        end)
-
-        for _,tile in ipairs(tiles) do
-            local btn = PHX.stashTileClickTarget(tile)
-            if btn then
-                PHX.signalGuiButton(btn)
-                task.wait(.075)
-                local title,count,category = PHX.readSelectedStashCard()
-                local key = PHX.normalizeItemName(title or "")
-                if wanted[key] and count ~= nil then
-                    local canonical = wanted[key]
-                    found[key] = count
-                    PHX.persistMaterial(canonical, count, "STASH_EXACT")
-                    PHX.setKnownMaterial(canonical, count, "STASH_EXACT")
-                    logLine("STASH_EXACT", canonical.."="..tostring(count).." | category="..tostring(category))
-                end
-            end
-            if found["scrap metal"] and found["blaze ember"] and found["dinosaur bones"] and found["volcanic magnet"] then
-                break
-            end
-        end
-    end
-
-    if scroller and oldCanvas then pcall(function() scroller.CanvasPosition = oldCanvas end) end
-
-    local n = 0
-    for _ in pairs(found) do n = n + 1 end
-    return n
-end
-
-function PHX.openStashPageExact()
-    -- Probe-confirmed hierarchy:
-    -- PlayerGui.Inventory.Inventory.Main.NavigationRail.Category4.Text == "Stash"
-    -- Temporarily expose the Inventory UI locally, fire the exact Stash tab by
-    -- signal (no screen click), then let the material tiles populate.
-    local top = PG:FindFirstChild("Inventory")
-    local root = top and top:FindFirstChild("Inventory")
-    local main = root and root:FindFirstChild("Main")
-    local nav = main and main:FindFirstChild("NavigationRail")
-    local cat = nav and nav:FindFirstChild("Category4")
-
-    local state = {top=top, root=root, main=main}
-    if top and top:IsA("ScreenGui") then
-        pcall(function() state.topEnabled = top.Enabled; top.Enabled = true end)
-    end
-    if root and root:IsA("GuiObject") then
-        pcall(function() state.rootVisible = root.Visible; root.Visible = true end)
-    end
-    if main and main:IsA("GuiObject") then
-        pcall(function() state.mainVisible = main.Visible; main.Visible = true end)
-    end
-
-    local btn = nil
-    if cat then
-        if cat:IsA("TextButton") or cat:IsA("ImageButton") then btn = cat end
-        if not btn then
-            for _,o in ipairs(cat:GetDescendants()) do
-                if o:IsA("TextButton") or o:IsA("ImageButton") then btn = o; break end
-            end
-        end
-        if not btn then
-            local textObj = cat:FindFirstChild("Text", true)
-            btn = textObj and PHX.buttonAncestor(textObj) or PHX.buttonAncestor(cat)
-        end
-    end
-    btn = btn or PHX.findStashButton()
-    if not btn then
-        logLine("STASH_SYNC_FAIL", "exact Category4/Stash button not found")
-        return false, state
-    end
-
-    PHX.signalGuiButton(btn)
-    local deadline = os.clock() + 1.8
-    repeat
-        task.wait(.06)
-        local rr = PHX.inventoryUiRoot()
-        local mm = rr and rr:FindFirstChild("Main")
-        local pp = mm and mm:FindFirstChild("PageContent")
-        local gg = pp and pp:FindFirstChild("TileGrid")
-        if gg then
-            for _,o in ipairs(gg:GetDescendants()) do
-                if o:IsA("TextLabel") and string.lower(tostring(o.Name)) == "label" then
-                    local par = o.Parent
-                    if par and string.lower(tostring(par.Name)) == "count" then
-                        return true, state
-                    end
+            if tostring(tile.Name):match("^Tile%-") then
+                local btn = buttonInside(tile)
+                if btn and visibleGui(btn) then
+                    candidates[#candidates+1] = btn
                 end
             end
         end
-    until os.clock() >= deadline
-    return true, state
-end
 
-function PHX.restoreInventoryUiState(state)
-    if not state then return end
-    if state.main and state.mainVisible ~= nil then pcall(function() state.main.Visible = state.mainVisible end) end
-    if state.root and state.rootVisible ~= nil then pcall(function() state.root.Visible = state.rootVisible end) end
-    if state.top and state.topEnabled ~= nil then pcall(function() state.top.Enabled = state.topEnabled end) end
-end
-
-function PHX.refreshMaterialViaStash()
-    -- V2.10.1: open the exact Stash tab learned from the probe. Do not treat a
-    -- closed/unpopulated Stash as zero/NOT_FOUND; retry instead.
-    local wasOpen = PHX.stashLooksOpen()
-    local state = nil
-
-    if not wasOpen then
-        local okOpen
-        okOpen, state = PHX.openStashPageExact()
-        if not okOpen then
-            PHX.restoreInventoryUiState(state)
-            return false
-        end
-    else
-        -- Even if Inventory is already visible, force Category4 once so we are
-        -- not accidentally scanning Backpack/Treasure tiles.
-        local root = PHX.inventoryUiRoot()
-        local main = root and root:FindFirstChild("Main")
-        local nav = main and main:FindFirstChild("NavigationRail")
-        local cat = nav and nav:FindFirstChild("Category4")
-        local btn = nil
-        if cat then
-            if cat:IsA("TextButton") or cat:IsA("ImageButton") then btn = cat end
-            if not btn then
-                for _,o in ipairs(cat:GetDescendants()) do
-                    if o:IsA("TextButton") or o:IsA("ImageButton") then btn=o; break end
-                end
-            end
-            if not btn then btn = PHX.buttonAncestor(cat:FindFirstChild("Text", true) or cat) end
-        end
-        if btn then PHX.signalGuiButton(btn); task.wait(.12) end
-    end
-
-    local found = PHX.scanStashTilesExact()
-
-    if found < 2 then
-        for _,name in ipairs({"Scrap Metal","Blaze Ember","Dinosaur Bones","Volcanic Magnet"}) do
-            local n = PHX.guiMaterialCount(name)
-            if n ~= nil then
-                PHX.persistMaterial(name, n, "STASH_GUI_FALLBACK")
-                PHX.setKnownMaterial(name, n, "STASH_GUI_FALLBACK")
-                found = found + 1
-                logLine("STASH_ITEM", name.."="..tostring(n).." fallback")
-            end
-        end
-    end
-
-    if not wasOpen then
-        PHX.restoreInventoryUiState(state)
-        task.wait(.05)
-    end
-
-    if found > 0 then
-        logLine("STASH_REFRESH", "exact/fallback material counters="..tostring(found))
-        return true
-    end
-    logLine("STASH_SYNC_FAIL", "Stash page did not populate target materials; will retry, not assume zero")
-    return false
-end
-
-PHX.CounterSyncBusy = false
-function PHX.forceCounterSync()
-    if PHX.CounterSyncBusy then return false end
-    PHX.CounterSyncBusy = true
-    local ok = false
-    pcall(function()
-        getInventory(true)
-        local s = PHX.exactMaterialCount(INVENTORY_CACHE.Raw, "Scrap Metal") or PHX.smartTableCount(INVENTORY_CACHE.Raw, "Scrap Metal")
-        local e = PHX.exactMaterialCount(INVENTORY_CACHE.Raw, "Blaze Ember") or PHX.smartTableCount(INVENTORY_CACHE.Raw, "Blaze Ember")
-        if s ~= nil then PHX.setKnownMaterial("Scrap Metal", s, "REMOTE_EXACT") end
-        if e ~= nil then PHX.setKnownMaterial("Blaze Ember", e, "REMOTE_EXACT") end
-        if s == nil or e == nil then
-            ok = PHX.refreshMaterialViaStash() or ok
+        if #candidates == 0 then
+            count = 0
+            why = "ABSENT"
         else
-            ok = true
-        end
-    end)
-    PHX.CounterSyncBusy = false
-    return ok
-end
+            for _,btn in ipairs(candidates) do
+                insetClick(btn)
 
-function PHX.inventoryHasMaterialSchema(inv)
-    if type(inv) ~= "table" then return false end
-    for _,entry in pairs(inv) do
-        if type(entry) == "table" then
-            local tp = PHX.normalizeItemName(entry.Type or entry.type or "")
-            if tp == "material" then return true end
-        end
-    end
-    return false
-end
-
-function PHX.serverInventoryCount(itemName, force)
-    local inv = getInventory(force)
-    local exact = PHX.exactMaterialCount(inv, itemName)
-    if exact ~= nil then return exact, "REMOTE_EXACT" end
-    local deep = PHX.smartTableCount(inv, itemName)
-    if deep ~= nil then return deep, "REMOTE_DEEP" end
-    local gui = PHX.guiMaterialCount(itemName)
-    if gui ~= nil then return gui, "STASH_GUI" end
-
-    -- If the Stash cards are not instantiated because the panel is closed, open it
-    -- through GUI signals (not a physical click), read all materials, then close it.
-    if not PHX.InventoryStashRefreshBusy then
-        PHX.InventoryStashRefreshBusy = true
-        pcall(function() PHX.refreshMaterialViaStash() end)
-        PHX.InventoryStashRefreshBusy = false
-        local mem = PHX.MaterialPersistent[PHX.normalizeItemName(itemName)]
-        if type(mem) == "table" and tonumber(mem.Count) then
-            return math.max(0, tonumber(mem.Count)), tostring(mem.Source or "STASH_GUI_AUTO")
-        end
-    end
-
-    -- Only call a missing entry ZERO when the returned table demonstrably contains
-    -- Material records. If the current game build returns weapons/other inventory only,
-    -- "not found" is UNKNOWN, not zero. This was the V2.6.1 2/10-vs-27 bug.
-    if PHX.LastInventoryReadOK and PHX.inventoryHasMaterialSchema(inv) then
-        return 0, "REMOTE_ABSENT"
-    end
-    return nil, "UNAVAILABLE"
-end
-
-
--- V2.9.5 runtime inventory probe. When material schema is unknown we dump the
--- exact getInventory table shape once. This is diagnostic only and does not
--- influence routing/counters.
-function PHX.valuePreview(v)
-    local tv = type(v)
-    if tv == "string" then return string.format("%q", v) end
-    if tv == "number" or tv == "boolean" or tv == "nil" then return tostring(v) end
-    return "<"..tv..">"
-end
-
-function PHX.dumpInventoryProbe(reason)
-    if not writefile then return nil end
-    local inv = getInventory(true)
-    local lines = {
-        "===== PREHISTORIC INVENTORY PROBE V2.10 =====",
-        "ACCOUNT="..LP.Name,
-        "REASON="..tostring(reason or "manual"),
-        "LastInventoryReadOK="..tostring(PHX.LastInventoryReadOK),
-        "LastError="..tostring(PHX.InventoryLastError),
-        "",
-    }
-    local seen, nodes = {}, 0
-    local function walk(v, path, depth)
-        if nodes > 1800 or depth > 7 then return end
-        if type(v) ~= "table" then
-            lines[#lines+1] = path.." = "..PHX.valuePreview(v)
-            nodes = nodes + 1
-            return
-        end
-        if seen[v] then return end
-        seen[v] = true
-        for k,x in pairs(v) do
-            if nodes > 1800 then break end
-            local kp = path.."["..PHX.valuePreview(k).."]"
-            if type(x) == "table" then
-                lines[#lines+1] = kp.." = <table>"
-                nodes = nodes + 1
-                walk(x, kp, depth + 1)
-            else
-                lines[#lines+1] = kp.." = "..PHX.valuePreview(x)
-                nodes = nodes + 1
-            end
-        end
-    end
-    walk(inv, "inventory", 0)
-
-    lines[#lines+1] = ""
-    lines[#lines+1] = "===== PLAYER DATA CANDIDATES ====="
-    local dataRoots = {LP:FindFirstChild("Data"), LP:FindFirstChild("Backpack")}
-    for _,root in ipairs(dataRoots) do
-        if root then
-            for _,o in ipairs(root:GetDescendants()) do
-                local n = string.lower(o.Name or "")
-                if n:find("scrap",1,true) or n:find("ember",1,true) or n:find("magnet",1,true) or n:find("bone",1,true) then
-                    local val = ""
-                    pcall(function() val = " value="..tostring(o.Value) end)
-                    lines[#lines+1] = o:GetFullName().." | "..o.ClassName..val
-                end
-            end
-        end
-    end
-
-    lines[#lines+1] = ""
-    lines[#lines+1] = "===== VISIBLE GUI ITEM TEXT ====="
-    for _,o in ipairs(PG:GetDescendants()) do
-        if (o:IsA("TextLabel") or o:IsA("TextButton")) and visibleGui(o) then
-            local txt = tostring(o.Text or "")
-            local l = string.lower(txt)
-            if l:find("scrap",1,true) or l:find("ember",1,true) or l:find("magnet",1,true) or l:find("bone",1,true)
-                or txt:match("^%s*%d+%s*$") then
-                lines[#lines+1] = o:GetFullName().." | text="..string.format("%q",txt)
-            end
-        end
-    end
-
-    local path = "PH_InventoryProbe_"..LP.Name.."_V294.txt"
-    pcall(function() writefile(path, table.concat(lines, "\n")) end)
-    logLine("INV_PROBE", "wrote "..path.." | nodes="..tostring(nodes))
-    return path
-end
-
-PHX.InventoryProbeWritten = false
-function PHX.ensureInventoryProbeIfUnknown()
-    if PHX.InventoryProbeWritten then return end
-    local _,ss,sk = PHX.materialCountInfo("Scrap Metal", true)
-    local _,es,ek = PHX.materialCountInfo("Blaze Ember", true)
-    if not sk or not ek or ss == "UNAVAILABLE" or es == "UNAVAILABLE" then
-        PHX.InventoryProbeWritten = true
-        task.spawn(function() PHX.dumpInventoryProbe("material_count_unknown") end)
-    end
-end
-
-function PHX.trackerFor(itemName)
-    local key = PHX.normalizeItemName(itemName)
-    local t = ITEM_TRACK[key]
-    if not t then
-        local server, source = PHX.serverInventoryCount(itemName, true)
-        local known = server ~= nil
-        if not known then
-            local mem = PHX.MaterialPersistent[key]
-            if type(mem) == "table" and tonumber(mem.Count) then
-                server = math.max(0, tonumber(mem.Count))
-                source = "MEMORY"
-                known = true
-            end
-        end
-        server = server or 0
-        t = {
-            Server=server,
-            Optimistic=server,
-            OptimisticUntil=0,
-            Source=source or "UNAVAILABLE",
-            Known=known,
-            ObservedGain=0,
-        }
-        ITEM_TRACK[key] = t
-        if known then PHX.persistMaterial(itemName, server, source) end
-    end
-    return t, key
-end
-
-local function inventoryCount(itemName, force)
-    local t = PHX.trackerFor(itemName)
-    local server, source = PHX.serverInventoryCount(itemName, force)
-
-    if server ~= nil then
-        t.Server = server
-        t.Source = source
-        t.Known = true
-        if server >= (t.Optimistic or 0) or os.clock() > (t.OptimisticUntil or 0) then
-            t.Optimistic = server
-            t.OptimisticUntil = 0
-        end
-        PHX.persistMaterial(itemName, math.max(t.Server or 0, t.Optimistic or 0), source)
-    end
-
-    return math.max(t.Server or 0, t.Optimistic or 0)
-end
-
-function PHX.materialCountInfo(itemName, force)
-    local count = inventoryCount(itemName, force)
-    local t = PHX.trackerFor(itemName)
-    return count, tostring(t.Source or "UNAVAILABLE"), t.Known == true
-end
-
-function PHX.setKnownMaterial(itemName, count, source)
-    count = tonumber(count)
-    if not count then return false end
-    local t = PHX.trackerFor(itemName)
-    count = math.max(0, count)
-    t.Server = count
-    t.Optimistic = count
-    t.OptimisticUntil = 0
-    t.Source = source or "GUI"
-    t.Known = true
-    PHX.persistMaterial(itemName, count, t.Source)
-    logLine("ITEM_SYNC", tostring(itemName).."="..tostring(count).." | source="..tostring(t.Source))
-    return true
-end
-
-function PHX.guiVisible(obj)
-    local p = obj
-    while p and p ~= PG do
-        if p:IsA("GuiObject") and not p.Visible then return false end
-        p = p.Parent
-    end
-    return true
-end
-
-function PHX.guiRequirementCount(itemName, required)
-    local wanted = PHX.normalizeItemName(itemName)
-    local best, bestDist = nil, math.huge
-    for _,obj in ipairs(PG:GetDescendants()) do
-        if (obj:IsA("TextLabel") or obj:IsA("TextButton")) and PHX.guiVisible(obj)
-            and PHX.normalizeItemName(obj.Text) == wanted then
-            local center = nil
-            pcall(function() center = obj.AbsolutePosition + obj.AbsoluteSize/2 end)
-            local a = obj.Parent
-            local hops = 0
-            while a and a ~= PG and hops < 8 do
-                if a:IsA("GuiObject") then
-                    for _,x in ipairs(a:GetDescendants()) do
-                        if (x:IsA("TextLabel") or x:IsA("TextButton")) and PHX.guiVisible(x) then
-                            local txt = tostring(x.Text or ""):gsub(",","")
-                            local have, need = txt:match("(%d+)%s*/%s*(%d+)")
-                            have, need = tonumber(have), tonumber(need)
-                            if have and need and (not required or need == required) then
-                                return have
-                            end
-                            local n = tonumber(txt:match("^%s*(%d+)%s*$"))
-                            if n and n <= 9999 and center then
-                                local p = nil
-                                pcall(function() p = x.AbsolutePosition + x.AbsoluteSize/2 end)
-                                if p then
-                                    local d = (p-center).Magnitude
-                                    if d < bestDist then best, bestDist = n, d end
-                                end
-                            end
-                        end
+                local deadline = os.clock()+.65
+                repeat
+                    local name,n = rightCard()
+                    if normalize(name) == "volcanic magnet" and n ~= nil then
+                        count = n
+                        why = "FOUND"
+                        break
                     end
-                end
-                a = a.Parent
-                hops = hops + 1
+                    task.wait(.04)
+                until os.clock() >= deadline
+
+                if count ~= nil then break end
             end
         end
-    end
-    if best ~= nil and bestDist < 420 then return best end
-    return nil
-end
 
-function PHX.syncCraftMaterialCounts()
-    local scrap = PHX.guiRequirementCount("Scrap Metal", 10)
-    local ember = PHX.guiRequirementCount("Blaze Ember", 15)
-    if scrap ~= nil then PHX.setKnownMaterial("Scrap Metal", scrap, "CRAFT_GUI") end
-    if ember ~= nil then PHX.setKnownMaterial("Blaze Ember", ember, "CRAFT_GUI") end
-    return scrap, ember
-end
-
-function PHX.warmMaterialInventory(seconds)
-    local deadline = os.clock() + (seconds or 3.0)
-    local names = {"Scrap Metal","Blaze Ember","Volcanic Magnet","Dinosaur Bones"}
-    repeat
-        local known = 0
-        for _,name in ipairs(names) do
-            local _,source = PHX.materialCountInfo(name, true)
-            if source ~= "UNAVAILABLE" and source ~= "INIT" then known = known + 1 end
-        end
-        if known >= 3 then return true end
-        task.wait(.18)
-    until os.clock() >= deadline
-    return false
-end
-
-function PHX.clearOptimisticCount(itemName)
-    local t = PHX.trackerFor(itemName)
-    local server, source = PHX.serverInventoryCount(itemName, true)
-    if server ~= nil then
-        t.Server = server
-        t.Optimistic = server
-        t.OptimisticUntil = 0
-        t.Source = source
-        t.Known = true
-        PHX.persistMaterial(itemName, server, source)
-    end
-    return math.max(t.Server or 0, t.Optimistic or 0)
-end
-
-function PHX.recordItemGain(itemName, amount, sourceText)
-    amount = math.max(1, tonumber(amount) or 1)
-    local t = PHX.trackerFor(itemName)
-    local before = math.max(t.Server or 0, t.Optimistic or 0)
-    local server, source = PHX.serverInventoryCount(itemName, true)
-    if server ~= nil and server > before then
-        t.Server = server
-        t.Optimistic = server
-        t.OptimisticUntil = 0
-        t.Source = source
-        t.Known = true
-        PHX.persistMaterial(itemName, server, source)
-    else
-        t.ObservedGain = (tonumber(t.ObservedGain) or 0) + amount
-        t.Optimistic = before + amount
-        t.OptimisticUntil = os.clock() + CONFIG.ITEM_COUNTER.OPTIMISTIC_GAIN_SECONDS
-        if server ~= nil then
-            t.Server = server
-            t.Source = source
-            t.Known = true
-            PHX.persistMaterial(itemName, math.max(t.Server or 0,t.Optimistic or 0), source)
-        end
-    end
-    logLine("ITEM_GAIN", tostring(itemName).." +"..amount.." | live="..tostring(math.max(t.Server or 0,t.Optimistic or 0)).." | known="..tostring(t.Known).." | source="..tostring(sourceText))
-end
-
-local TRACKED_PICKUPS = {
-    ["scrap metal"] = "Scrap Metal",
-    ["blaze ember"] = "Blaze Ember",
-    ["volcanic magnet"] = "Volcanic Magnet",
-    ["dinosaur bones"] = "Dinosaur Bones",
-    ["dinosaur bone"] = "Dinosaur Bones",
-}
-
-function PHX.parsePickupText(text)
-    local raw = tostring(text or "")
-    local low = string.lower(raw)
-    local amount = tonumber(raw:match("%((%d+)%s*[xX]%)") or raw:match("(%d+)%s*[xX]")) or 1
-    local looksLikeGain = low:find("obtained",1,true) or low:find("received",1,true)
-        or low:find("acquired",1,true) or low:find("crafted",1,true)
-        or low:find("you got",1,true) or raw:match("%(%d+%s*[xX]%)")
-    if not looksLikeGain then return end
-    for needle,itemName in pairs(TRACKED_PICKUPS) do
-        if low:find(needle,1,true) then
-            PHX.recordItemGain(itemName, amount, raw)
-            return
-        end
-    end
-end
-
-function PHX.watchPickupTextObject(obj)
-    if PICKUP_WATCHED[obj] then return end
-    if not (obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox")) then return end
-    PICKUP_WATCHED[obj] = tostring(obj.Text or "")
-    local function inspect()
-        local text = tostring(obj.Text or "")
-        if text ~= PICKUP_WATCHED[obj] then
-            PICKUP_WATCHED[obj] = text
-            PHX.parsePickupText(text)
-        end
-    end
-    obj:GetPropertyChangedSignal("Text"):Connect(inspect)
-    PHX.parsePickupText(obj.Text)
-end
-
-for _,obj in ipairs(PG:GetDescendants()) do pcall(PHX.watchPickupTextObject, obj) end
-PG.DescendantAdded:Connect(function(obj) pcall(PHX.watchPickupTextObject, obj) end)
-
--- One inventory RemoteFunction poller instead of several independent loops racing it.
-task.spawn(function()
-    while true do
-        task.wait(1.35)
-        pcall(function()
-            getInventory(true)
-            for _,name in ipairs({"Scrap Metal","Blaze Ember","Volcanic Magnet","Dinosaur Bones"}) do
-                inventoryCount(name, false)
-            end
-        end)
-    end
-end)
-
-local function hasVolcanicMagnet()
-    return inventoryCount("Volcanic Magnet", true) > 0
-end
-
---==============================================================
--- SAVE CPU / LOW GRAPHICS (SAFE: visual-only, no gameplay objects destroyed)
---==============================================================
-
-function PHX.isPressureSensorVFX(obj)
-    local p = obj
-    local sawRocks = false
-    local sawPrehistoric = false
-    while p and p ~= workspace do
-        if p.Name == "VolcanoRocks" then sawRocks = true end
-        if p.Name == "PrehistoricIsland" then sawPrehistoric = true end
-        p = p.Parent
-    end
-    return sawRocks and sawPrehistoric
-end
-
-function PHX.isDynamicGameplayPart(obj)
-    if not obj then return false end
-    local c = LP.Character
-    if c and obj:IsDescendantOf(c) then return true end
-    local enemies = workspace:FindFirstChild("Enemies")
-    if enemies and obj:IsDescendantOf(enemies) then return true end
-    local boats = workspace:FindFirstChild("Boats")
-    if boats and obj:IsDescendantOf(boats) then return true end
-    for _,p in ipairs(Players:GetPlayers()) do
-        if p.Character and obj:IsDescendantOf(p.Character) then return true end
-    end
-    return false
-end
-
-function PHX.optimizeVisualObject(obj)
-    if not SAVE_CPU_APPLIED or not obj or not obj.Parent then return end
-
-    if obj:IsA("BasePart") then
-        pcall(function() obj.CastShadow = false end)
-        pcall(function() obj.Reflectance = 0 end)
-        if CONFIG.SAVE_CPU.HIDE_STATIC_MAP_VISUALS then
-            local map = workspace:FindFirstChild("Map")
-            if map and obj:IsDescendantOf(map) and not PHX.isDynamicGameplayPart(obj) then
-                -- LocalTransparencyModifier is render-only. Collision/touch/query and the
-                -- instance tree stay intact, so portal/event logic can still use the map.
-                pcall(function() obj.LocalTransparencyModifier = 1 end)
-            end
-        end
-        return
-    end
-
-    if CONFIG.SAVE_CPU.HIDE_TEXTURES_DECALS and (obj:IsA("Texture") or obj:IsA("Decal")) then
-        pcall(function() obj.Transparency = 1 end)
-        return
-    end
-
-    if CONFIG.SAVE_CPU.DISABLE_NONESSENTIAL_VFX then
-        if PHX.isPressureSensorVFX(obj) then
-            -- Pressure detection reads Beam.Enabled / ParticleEmitter.Enabled. Never
-            -- disable these sensor VFX or pressure farming would lose its runtime signal.
-            return
-        end
-        if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
-            or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
-            pcall(function() obj.Enabled = false end)
-            return
-        end
-        if obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
-            pcall(function() obj.Enabled = false end)
-            return
-        end
-        if obj:IsA("Highlight") then
-            pcall(function() obj.Enabled = false end)
-            return
-        end
-    end
-end
-
-function PHX.applySaveCpu()
-    if SAVE_CPU_APPLIED or not CONFIG.SAVE_CPU.ENABLED then return end
-    SAVE_CPU_APPLIED = true
-
-    pcall(function()
-        if type(setfpscap) == "function" then setfpscap(CONFIG.SAVE_CPU.FPS_CAP) end
-    end)
-    if CONFIG.SAVE_CPU.LOW_GRAPHICS_QUALITY then
-        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
-    end
-
-    pcall(function() Lighting.GlobalShadows = false end)
-    pcall(function() Lighting.EnvironmentDiffuseScale = 0 end)
-    pcall(function() Lighting.EnvironmentSpecularScale = 0 end)
-
-    if CONFIG.SAVE_CPU.REDUCE_TERRAIN then
-        local terrain = workspace:FindFirstChildOfClass("Terrain")
-        if terrain then
-            pcall(function() terrain.Decoration = false end)
-            pcall(function() terrain.WaterWaveSize = 0 end)
-            pcall(function() terrain.WaterWaveSpeed = 0 end)
-            pcall(function() terrain.WaterReflectance = 0 end)
-            pcall(function() terrain.WaterTransparency = 1 end)
-        end
-    end
-
-    local cpuObjects = workspace:GetDescendants()
-    for i,obj in ipairs(cpuObjects) do
-        PHX.optimizeVisualObject(obj)
-        -- Yield periodically so Delta/mobile does not freeze the UI while optimizing a huge map.
-        if i % 250 == 0 then task.wait() end
-    end
-    cpuObjects = nil
-    workspace.DescendantAdded:Connect(function(obj)
-        task.defer(function() pcall(PHX.optimizeVisualObject, obj) end)
+        search.Text = ""
+        closeInventory()
+    end,function(e)
+        return tostring(e)
     end)
 
-    if CONFIG.SAVE_CPU.FULL_3D_RENDER_OFF then
-        pcall(function() RunService:Set3dRenderingEnabled(false) end)
+    frame.Active = oldFrameActive
+    title.Active = oldTitleActive
+
+    if not ok then
+        setStatus("Magnet check error: "..tostring(err),"MAGNET CHECK")
+        return nil
     end
 
-    logLine("SAVE_CPU", "ON | fps="..tostring(CONFIG.SAVE_CPU.FPS_CAP).." hideMap="..tostring(CONFIG.SAVE_CPU.HIDE_STATIC_MAP_VISUALS).." preservePressureVFX=true")
+    STATE.Magnet = count
+    refreshUI()
+
+    setStatus(
+        "Volcanic Magnet = "..tostring(count).." | "..tostring(why),
+        "MAGNET CHECK"
+    )
+
+    return count
 end
 
-task.spawn(function()
-    task.wait(1)
-    PHX.applySaveCpu()
-end)
-
---==============================================================
--- TEAM / MARINES
---==============================================================
-
-local function ensureMarines()
-    if LP.Team and LP.Team.Name == "Marines" then return true end
-    pcall(function()
-        CommF:InvokeServer("SetTeam", "Marines")
-    end)
-    local deadline = os.clock() + 10
-    repeat
-        task.wait(.25)
-        if LP.Team and LP.Team.Name == "Marines" then return true end
-    until os.clock() > deadline
-    return false
-end
-
--- Join Marines as soon as the script core is ready, before the user even presses START
--- or changes the local MASTER selection. This also handles the initial Blox Fruits team picker.
-task.spawn(function()
-    for attempt=1,4 do
-        if ensureMarines() then
-            logLine("TEAM", "Auto-joined Marines before role/master selection")
-            return
-        end
-        task.wait(1)
+local function ensureMagnetBaseline(reason)
+    -- IMPORTANT:
+    -- This is NOT called for death/boat-loss recovery.
+    -- It runs at startup, then optionally once after a completed event.
+    if STATE.MagnetChecked and not STATE.MagnetNeedsRefresh then
+        return STATE.Magnet ~= nil and STATE.Magnet > 0
     end
-    logLine("TEAM", "Marine auto-join not confirmed after startup retries")
-end)
 
---==============================================================
--- TOOLS / COMBAT
---==============================================================
+    for attempt=1,CONFIG.MAGNET_CHECK.STARTUP_RETRIES do
+        setStatus(
+            "Magnet check "..attempt.."/"..CONFIG.MAGNET_CHECK.STARTUP_RETRIES..
+            " | "..tostring(reason),
+            "MAGNET CHECK"
+        )
 
-local function getToolByTooltip(tooltip)
-    local c = char()
-    local bp = LP:FindFirstChild("Backpack")
-    for _,container in ipairs({c, bp}) do
-        if container then
-            for _,v in ipairs(container:GetChildren()) do
-                if v:IsA("Tool") then
-                    local ok,tip = pcall(function() return v.ToolTip end)
-                    if ok and tip == tooltip then
-                        return v
-                    end
-                end
+        local count = checkVolcanicMagnet()
+
+        if count ~= nil then
+            STATE.Magnet = count
+            STATE.MagnetChecked = true
+            STATE.MagnetNeedsRefresh = false
+            refreshUI()
+
+            if count > 0 then
+                setStatus(
+                    "Magnet confirmed once -> hunt loop armed",
+                    "READY"
+                )
+                return true
             end
-        end
-    end
-end
 
-local function equipTooltip(tooltip)
-    local h = hum()
-    if not h then return nil end
-    local tool = getToolByTooltip(tooltip)
-    if not tool then return nil end
-    if tool.Parent ~= char() then
-        h:EquipTool(tool)
-        task.wait(.12)
-    end
-    return tool
-end
-
-local function pressKey(keyCode, hold)
-    VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
-    task.wait(hold or .07)
-    VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
-end
-
-local function aimAt(pos)
-    local r = root()
-    if r then
-        local flat = Vector3.new(pos.X, r.Position.Y, pos.Z)
-        if (flat - r.Position).Magnitude > 1 then
-            r.CFrame = CFrame.lookAt(r.Position, flat)
-        end
-    end
-    local cam = workspace.CurrentCamera
-    if cam then
-        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, pos)
-    end
-end
-
-local SKILL_KEYS = {
-    Enum.KeyCode.X,
-    Enum.KeyCode.C,
-    Enum.KeyCode.V,
-    Enum.KeyCode.F,
-}
-
-local function useXCVF(targetPos)
-    -- Probe confirms Dragon Talon exposes ToolTip="Melee" and the fruit exposes
-    -- ToolTip="Blox Fruit". Give equip/input replication time, then spam a full
-    -- X/C/V/F cycle twice. No mouse input is used.
-    local function castSet(tooltip)
-        local tool = equipTooltip(tooltip)
-        if not tool then
-            logLine("SKILL_CAST", "missing tooltip="..tostring(tooltip))
+            setStatus(
+                "NO Volcanic Magnet -> Auto Magnet required",
+                "WAIT MAGNET"
+            )
             return false
         end
-        task.wait(.18)
 
-        for pass=1,2 do
-            for _,k in ipairs(SKILL_KEYS) do
-                if targetPos then aimAt(targetPos) end
-                pressKey(k, .11)
-                task.wait(.17)
-            end
-            task.wait(.06)
-        end
-        logLine("SKILL_CAST", tostring(tooltip).." XCVF x2 | "..tostring(tool.Name))
-        return true
-    end
-
-    if targetPos then aimAt(targetPos) end
-    castSet("Melee")
-    task.wait(.08)
-    castSet("Blox Fruit")
-end
-
---==============================================================
--- MELEE ATTACK BACKENDS
---==============================================================
--- V2 used Tool:Activate()/firesignal plus the legacy CombatFramework controller.
--- Current Blox Fruits clients can register melee swings through Modules.Net:
---   RE/RegisterAttack -> RE/RegisterHit
--- Keep the legacy controller only as a cooldown/range fallback. No real mouse click is used.
-
-local CombatState = nil
-local NetAttackCache = { Net = nil, RegisterAttack = nil, RegisterHit = nil }
-local AttackBackendLogged = false
-local AttackSuccessLogged = false
-
-local function resolveCombatState()
-    if type(CombatState) == "table" and CombatState.activeController then
-        return CombatState
-    end
-
-    local ps = LP:FindFirstChild("PlayerScripts")
-    local module = ps and ps:FindFirstChild("CombatFramework")
-    if not module then return nil end
-
-    local ok, framework = pcall(require, module)
-    if not ok then return nil end
-
-    if type(framework) == "table" and framework.activeController then
-        CombatState = framework
-        return CombatState
-    end
-
-    local candidates = {}
-    if type(getupvalues) == "function" then candidates[#candidates+1] = getupvalues end
-    if debug and type(debug.getupvalues) == "function" then candidates[#candidates+1] = debug.getupvalues end
-
-    for _,getter in ipairs(candidates) do
-        local ok2, ups = pcall(getter, framework)
-        if ok2 and type(ups) == "table" then
-            -- Most old clients expose the combat state as upvalue #2.
-            local direct = ups[2]
-            if type(direct) == "table" and direct.activeController then
-                CombatState = direct
-                return CombatState
-            end
-            for _,v in pairs(ups) do
-                if type(v) == "table" and v.activeController then
-                    CombatState = v
-                    return CombatState
-                end
-            end
+        if attempt < CONFIG.MAGNET_CHECK.STARTUP_RETRIES then
+            task.wait(CONFIG.MAGNET_CHECK.RETRY_GAP)
         end
     end
 
-    return nil
-end
-
-local function resolveNetAttack()
-    if NetAttackCache.RegisterAttack and NetAttackCache.RegisterHit then
-        return NetAttackCache.RegisterAttack, NetAttackCache.RegisterHit
-    end
-
-    local modules = ReplicatedStorage:FindFirstChild("Modules")
-    local net = modules and modules:FindFirstChild("Net")
-    if not net then return nil, nil end
-
-    NetAttackCache.Net = net
-    NetAttackCache.RegisterAttack = net:FindFirstChild("RE/RegisterAttack")
-    NetAttackCache.RegisterHit = net:FindFirstChild("RE/RegisterHit")
-    return NetAttackCache.RegisterAttack, NetAttackCache.RegisterHit
-end
-
-local function buffMeleeHitbox()
-    local state = resolveCombatState()
-    local ac = state and state.activeController
-    if not ac then return nil end
-
-    pcall(function()
-        ac.hitboxMagnitude = CONFIG.MELEE_HITBOX_MAGNITUDE
-        ac.timeToNextAttack = 0
-        ac.timeToNextBlock = 0
-        ac.focusStart = 0
-        ac.attacking = false
-        ac.blocking = false
-        ac.increment = 4
-        ac.currentAttackTrack = 0
-        if ac.humanoid then ac.humanoid.AutoRotate = true end
-    end)
-
-    return ac
-end
-
-local function normalizeAttackModels(models)
-    if typeof(models) == "Instance" then
-        return {models}
-    end
-    if type(models) == "table" then
-        return models
-    end
-    return nil
-end
-
-local function collectNetHits(models, distance)
-    local rp = root()
-    if not rp then return nil, {} end
-
-    local list = normalizeAttackModels(models)
-    local hits, basePart, seen = {}, nil, {}
-
-    local function addEnemy(enemy)
-        if not enemy or seen[enemy] or not enemy.Parent then return end
-        local eh = enemy:FindFirstChildOfClass("Humanoid")
-        local part = enemy:FindFirstChild("Head") or enemy:FindFirstChild("HumanoidRootPart")
-        if not eh or eh.Health <= 0 or not part then return end
-        if (part.Position - rp.Position).Magnitude > (distance or CONFIG.MELEE_NET_DISTANCE) then return end
-        seen[enemy] = true
-        basePart = basePart or part
-        hits[#hits+1] = {enemy, part}
-    end
-
-    if list then
-        for _,enemy in ipairs(list) do addEnemy(enemy) end
-    else
-        local enemies = workspace:FindFirstChild("Enemies")
-        if enemies then
-            for _,enemy in ipairs(enemies:GetChildren()) do addEnemy(enemy) end
-        end
-    end
-
-    return basePart, hits
-end
-
-local function attackViaNet(models)
-    local registerAttack, registerHit = resolveNetAttack()
-    if not registerAttack or not registerHit then return false, 0, "NET_MISSING" end
-
-    local basePart, hits = collectNetHits(models, CONFIG.MELEE_NET_DISTANCE)
-    if not basePart or #hits == 0 then return false, 0, "NO_HITS" end
-
-    local okA = pcall(function()
-        registerAttack:FireServer(CONFIG.MELEE_CLICK_DELAY)
-    end)
-    local okH = pcall(function()
-        registerHit:FireServer(basePart, hits)
-    end)
-
-    return okA and okH, #hits, (okA and okH) and "NET" or "NET_ERROR"
-end
-
-local function attackViaLeftClickRemote(tool, models)
-    if not tool then return false, 0 end
-    local remote = tool:FindFirstChild("LeftClickRemote")
-    if not remote or not remote.FireServer then return false, 0 end
-
-    local rp = root()
-    if not rp then return false, 0 end
-    local list = normalizeAttackModels(models) or {}
-    local fired = 0
-
-    for _,enemy in ipairs(list) do
-        local eh = enemy and enemy:FindFirstChildOfClass("Humanoid")
-        local erp = enemy and (enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChild("Head"))
-        if eh and eh.Health > 0 and erp then
-            local delta = erp.Position - rp.Position
-            if delta.Magnitude <= CONFIG.MELEE_NET_DISTANCE and delta.Magnitude > 0 then
-                local ok = pcall(function() remote:FireServer(delta.Unit, 1) end)
-                if ok then fired = fired + 1 end
-            end
-        end
-    end
-
-    return fired > 0, fired
-end
-
-local function virtualMeleeAttack(tool, models)
-    if not tool or not char() or tool.Parent ~= char() then return false, "NO_TOOL" end
-
-    local ac = buffMeleeHitbox()
-    local registerAttack, registerHit = resolveNetAttack()
-    if not AttackBackendLogged then
-        AttackBackendLogged = true
-        logLine("ATTACK_BACKEND", "RegisterAttack="..tostring(registerAttack ~= nil).." RegisterHit="..tostring(registerHit ~= nil).." CombatFramework="..tostring(ac ~= nil).." LeftClickRemote="..tostring(tool:FindFirstChild("LeftClickRemote") ~= nil))
-    end
-
-    -- Modern backend first. This is what actually tells the server that a melee swing hit.
-    local okNet, hitCount, backend = attackViaNet(models)
-    if okNet then return true, backend, hitCount end
-
-    -- Some equipped tools expose a dedicated left-click remote. Still no screen/real click.
-    local okLeft, leftCount = attackViaLeftClickRemote(tool, models)
-    if okLeft then return true, "LEFT_CLICK_REMOTE", leftCount end
-
-    -- Legacy controller fallback for older client layouts.
-    if ac and type(ac.attack) == "function" then
-        local ok = pcall(function() ac:attack() end)
-        if ok then return true, "COMBAT_FRAMEWORK", 0 end
-    end
-
-    -- Final Roblox Tool fallback. This is activation of the Tool object, not a screen click.
-    local ok = pcall(function() tool:Activate() end)
-    if ok then return true, "TOOL_ACTIVATE", 0 end
-
-    return false, backend or "NO_BACKEND", hitCount or 0
-end
-
-local function virtualToolClick(tool, models)
-    return virtualMeleeAttack(tool, models)
-end
-
--- Pin legacy controller values while automation is active. Modern Net attack does not
--- depend on hitboxMagnitude, but keeping this helps on old servers/client layouts.
-task.spawn(function()
-    while task.wait(0.05) do
-        if _G.TeamConfig and _G.TeamConfig.IsRunning then
-            pcall(buffMeleeHitbox)
-        end
-    end
-end)
-
-local function meleeM1(targetModel, token)
-    local h = targetModel and targetModel:FindFirstChildOfClass("Humanoid")
-    local rr = targetModel and targetModel:FindFirstChild("HumanoidRootPart")
-    if not h or not rr then return false end
-
-    local _,_,_,epoch = waitAlive(token)
-    if not epoch then return false end
-
-    pcall(function()
-        rr.CanCollide = false
-        rr.Size = Vector3.new(110,110,110)
-    end)
-
-    local tool = equipTooltip("Melee")
-    while h.Parent and h.Health > 0 and (not token or isRunning(token)) do
-        if CHARACTER_EPOCH ~= epoch or not hum() or hum().Health <= 0 then
-            setStatus("Died during mob farm -> pause and resume after respawn")
-            waitAlive(token)
-            return false
-        end
-        rr = targetModel:FindFirstChild("HumanoidRootPart")
-        if not rr then break end
-        if not safeTween(rr.CFrame * CFrame.new(0, 16, 0), 330, token) then return false end
-        aimAt(rr.Position)
-        tool = equipTooltip("Melee") or tool
-        buffMeleeHitbox()
-        if tool and tool.Parent == char() then virtualToolClick(tool, {targetModel}) end
-        task.wait(CONFIG.MELEE_ATTACK_INTERVAL)
-    end
-    return h.Health <= 0
-end
-
-local function farmNamedMob(name, fallbackCFrame, token)
-    local enemies = workspace:FindFirstChild("Enemies")
-    if not enemies then return false end
-
-    local found = nil
-    for _,m in ipairs(enemies:GetChildren()) do
-        if m.Name == name then
-            local h = m:FindFirstChildOfClass("Humanoid")
-            if h and h.Health > 0 then
-                found = m
-                break
-            end
-        end
-    end
-
-    if found then
-        meleeM1(found, token)
-        return true
-    end
-
-    if fallbackCFrame then
-        safeTween(fallbackCFrame * CFrame.new(0,18,0), CONFIG.PLAYER_TWEEN_SPEED, token)
-    end
-    task.wait(.5)
+    setStatus(
+        "Magnet check failed after controlled retries",
+        "MAGNET CHECK"
+    )
     return false
 end
 
 --==============================================================
--- LAVA PROTECTION
+-- PORTAL ROUTING
+-- Uses the game's own island portals.
+-- Player only SAFE-TWEENs to a portal CFrame; the portal performs the teleport.
 --==============================================================
 
-local function isLavaPart(v)
-    if not v:IsA("BasePart") then return false end
-    local n = string.lower(v.Name)
-    return n:find("lava", 1, true) ~= nil or v:GetAttribute("__LavaPart") == true
-end
+local function nearestRegion()
+    local rr = root()
+    if not rr then return "UNKNOWN",math.huge end
 
-local function neutralizeLavaObject(v)
-    if not isLavaPart(v) then return end
-    pcall(function()
-        v.CanTouch = false
-        v.CanCollide = false
-    end)
-    local ti = v:FindFirstChild("TouchInterest")
-    if ti then
-        pcall(function() ti:Destroy() end)
-    end
-end
+    local p = rr.Position
 
-local function enableLavaProtection(island)
-    if lavaConnection then
-        lavaConnection:Disconnect()
-        lavaConnection = nil
-    end
-    for _,v in ipairs(island:GetDescendants()) do
-        neutralizeLavaObject(v)
-    end
-    lavaConnection = island.DescendantAdded:Connect(function(v)
-        task.defer(function()
-            neutralizeLavaObject(v)
-        end)
-    end)
-end
-
-local function disableLavaProtection()
-    if lavaConnection then
-        lavaConnection:Disconnect()
-        lavaConnection = nil
-    end
-end
-
---==============================================================
--- PORTALS
---==============================================================
-
-local function nearestDistance(pos)
-    local r = root()
-    if not r then return math.huge end
-    return (r.Position - pos).Magnitude
-end
-
-local function getRegion()
-    local r = root()
-    if not r then return "UNKNOWN", math.huge end
-    local p = r.Position
-
-    -- Landmark-first region detection. The old nearest-portal-only method could
-    -- misclassify a whole island and make Hydra recovery bounce through Castle/Turtle.
-    local hydraD = (p - CONFIG.DRAGON_HUNTER.STAND.Position).Magnitude
-    local turtleD = (p - CONFIG.MOB_CAMPS.ForestPirate.Position).Magnitude
-    local tikiD = (p - CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude
-    local castleD = (p - CONFIG.PORTALS.Castle_To_Hydra.Position).Magnitude
-
-    if hydraD <= 5200 then return "HYDRA", hydraD end
-    if turtleD <= 6500 then return "TURTLE", turtleD end
-    if tikiD <= 5200 then return "TIKI", tikiD end
-    if castleD <= 4200 then return "CASTLE", castleD end
-
-    local regions = {
+    local anchors = {
         TIKI = CONFIG.PORTALS.Tiki_To_Castle.Position,
-        CASTLE = CONFIG.PORTALS.Castle_To_Hydra.Position,
+        CASTLE = CONFIG.PORTALS.Castle_To_Tiki.Position,
         TURTLE = CONFIG.PORTALS.Turtle_To_Castle.Position,
         HYDRA = CONFIG.PORTALS.Hydra_To_Castle.Position,
     }
 
-    local best,bestD = "UNKNOWN", math.huge
-    for name,pos in pairs(regions) do
+    local best = "UNKNOWN"
+    local bestDist = math.huge
+
+    for name,pos in pairs(anchors) do
         local d = (p-pos).Magnitude
-        if d < bestD then best,bestD = name,d end
+        if d < bestDist then
+            bestDist = d
+            best = name
+        end
     end
-    if bestD > 8000 then return "UNKNOWN", bestD end
-    return best, bestD
+
+    return best,bestDist
 end
 
--- Portal travel is NEVER allowed to fall through into long-distance island tweening.
--- We cross the portal plane several times and verify the destination region.
-local function waitPortalChainDelay(token)
-    local remain = CONFIG.PORTAL_CHAIN_DELAY - (os.clock() - lastPortalSuccessAt)
-    if remain <= 0 then return true end
-    setStatus(string.format("Portal cooldown %.1fs before next gate", remain))
-    local untilAt = os.clock() + remain
-    while os.clock() < untilAt do
-        if token and not isRunning(token) then return false end
-        if not waitAlive(token) then return false end
+local function enterPortalSafe(cf,label,token)
+    setStatus("Portal route -> "..label,"PORTAL")
+
+    if not alive() then
+        return false,"DEAD"
+    end
+
+    -- If somehow seated, obey the project rule: jump out first.
+    local h = hum()
+    if h and h.SeatPart then
+        local ok,why = jumpOutOfSeat(token,"before portal")
+        if not ok then
+            return false,"UNSEAT_FAIL:"..tostring(why)
+        end
+    end
+
+    local before = root()
+    before = before and before.Position or nil
+
+    -- Safe approach to the portal; no long CFrame teleport.
+    local approach = cf * CFrame.new(0,8,0)
+
+    local ok,why = tweenTo(approach,155,token)
+    if not ok then
+        return false,"APPROACH_FAIL:"..tostring(why)
+    end
+
+    ok,why = tweenTo(cf,95,token)
+    if not ok then
+        return false,"ENTRY_FAIL:"..tostring(why)
+    end
+
+    -- Wait for the game's portal transition.
+    local deadline = os.clock()+5
+
+    repeat
+        if not current(token) then
+            return false,"STOPPED"
+        end
+
+        if not alive() then
+            return false,"DIED_IN_PORTAL"
+        end
+
+        local rr = root()
+        if rr and before and (rr.Position-before).Magnitude > 700 then
+            task.wait(.7)
+            return true,"PORTAL_OK"
+        end
+
         task.wait(.10)
-    end
-    return true
+    until os.clock() >= deadline
+
+    return false,"NO_PORTAL_TRANSITION"
 end
 
-local function markPortalSuccess()
-    lastPortalSuccessAt = os.clock()
-end
+local function routeToTiki(token)
+    local region,dist = nearestRegion()
 
-local function usePortal(cf, expectedRegion, token)
-    for attempt=1,5 do
-        if token and not isRunning(token) then return false end
-        if not waitPortalChainDelay(token) then return false end
-        if not waitAlive(token) then return false end
+    setStatus(
+        "Route to Tiki | "..tostring(region)..
+        " | nearest "..tostring(math.floor(dist or 0)),
+        "PORTAL"
+    )
 
-        local beforeRegion = getRegion()
-        local beforeRoot = root()
-        logLine("PORTAL", "attempt="..attempt.." from="..tostring(beforeRegion).." to="..tostring(expectedRegion).." pos="..tostring(beforeRoot and beforeRoot.Position or "nil"))
-        setStatus("PORTAL -> "..tostring(expectedRegion).." ["..attempt.."/5]")
-
-        -- Critical V2.8 fix: Castle portals sit close together. A straight tween
-        -- to Hydra can physically cross the Turtle/Tiki trigger first. Always approach
-        -- from ABOVE the selected gate, then descend to its own entry side.
-        local approach = cf * CFrame.new(0,0,-12)
-        if not highTween(approach, 320, token) then
-            task.wait(.15)
-        end
-        if token and not isRunning(token) then return false end
-
-        safeTween(cf * CFrame.new(0,0,3), 90, token)
-        task.wait(.30)
-
-        local r = root()
-        if r then
-            local passes = {
-                CFrame.new(0,0,8),
-                CFrame.new(0,0,-3),
-                CFrame.new(3,0,1),
-                CFrame.new(-3,0,1),
-                CFrame.new(0,1.5,0),
-            }
-            for _,off in ipairs(passes) do
-                if token and not isRunning(token) then return false end
-                r.CFrame = cf * off
-                task.wait(.18)
-                local current = getRegion()
-                if current == expectedRegion then
-                    markPortalSuccess()
-                    local afterRoot = root()
-                    logLine("PORTAL_OK", "to="..tostring(expectedRegion).." pos="..tostring(afterRoot and afterRoot.Position or "nil"))
-                    noteProgress("PORTAL:"..tostring(expectedRegion))
-                    task.wait(1.25)
-                    return true
-                end
-                -- If another nearby Castle portal fired, STOP manipulating CFrame
-                -- immediately. The next route iteration will deliberately return to Castle.
-                if current ~= beforeRegion and current ~= "UNKNOWN" then
-                    logLine("PORTAL_WRONG_DEST", "wanted="..tostring(expectedRegion).." got="..tostring(current).." attempt="..attempt)
-                    markPortalSuccess()
-                    task.wait(1.25)
-                    break
-                end
-            end
-        end
-
-        for _=1,10 do
-            task.wait(.18)
-            local current = getRegion()
-            if current == expectedRegion then
-                markPortalSuccess()
-                local afterRoot = root()
-                logLine("PORTAL_OK", "to="..tostring(expectedRegion).." pos="..tostring(afterRoot and afterRoot.Position or "nil"))
-                noteProgress("PORTAL:"..tostring(expectedRegion))
-                task.wait(1.25)
-                return true
-            end
-            if current ~= beforeRegion and current ~= "UNKNOWN" then
-                logLine("PORTAL_WRONG_DEST", "wanted="..tostring(expectedRegion).." got="..tostring(current).." replication phase")
-                markPortalSuccess()
-                task.wait(1.25)
-                break
-            end
-        end
+    if region == "TIKI" then
+        return true,"ALREADY_TIKI"
     end
 
-    logLine("PORTAL_FAIL", "expected="..tostring(expectedRegion).." current="..tostring(getRegion()))
-    setStatus("PORTAL FAILED -> "..tostring(expectedRegion).." | STOP ROUTE")
-    return false
-end
-
-local function goCastle(token)
-    local region = getRegion()
-    if region == "CASTLE" then return true end
-    if region == "TIKI" then return usePortal(CONFIG.PORTALS.Tiki_To_Castle, "CASTLE", token) end
-    if region == "TURTLE" then return usePortal(CONFIG.PORTALS.Turtle_To_Castle, "CASTLE", token) end
-    if region == "HYDRA" then return usePortal(CONFIG.PORTALS.Hydra_To_Castle, "CASTLE", token) end
-    return false
-end
-
-local function goTiki(token)
-    local region = getRegion()
-    if region == "TIKI" then return true end
-
-    if region ~= "CASTLE" then
-        if not goCastle(token) then
-            setStatus("PORTAL: failed to reach Castle")
-            return false
-        end
-        task.wait(1.0)
+    if region == "CASTLE" then
+        return enterPortalSafe(
+            CONFIG.PORTALS.Castle_To_Tiki,
+            "Castle -> Tiki",
+            token
+        )
     end
 
-    if getRegion() == "TIKI" then return true end
-    local ok = usePortal(CONFIG.PORTALS.Castle_To_Tiki, "TIKI", token)
-    task.wait(1.0)
-    if getRegion() == "TIKI" then return true end
+    if region == "HYDRA" then
+        local ok,why = enterPortalSafe(
+            CONFIG.PORTALS.Hydra_To_Castle,
+            "Hydra -> Castle",
+            token
+        )
+        if not ok then return false,why end
 
-    setStatus("PORTAL: Castle -> Tiki not confirmed")
-    return ok and true or false
-end
+        task.wait(.65)
 
-local function goTurtle(token)
-    local region = getRegion()
-    if region == "TURTLE" then return true end
-    if region ~= "CASTLE" then
-        if not goCastle(token) then return false end
-        if not waitPortalChainDelay(token) then return false end
-    end
-    if getRegion() ~= "CASTLE" then return false end
-    return usePortal(CONFIG.PORTALS.Castle_To_Turtle, "TURTLE", token)
-end
-
-local function goHydra(token)
-    local region = getRegion()
-    if region == "HYDRA" then return true end
-    if region ~= "CASTLE" then
-        if not goCastle(token) then return false end
-        if not waitPortalChainDelay(token) then return false end
-    end
-    if getRegion() ~= "CASTLE" then return false end
-    return usePortal(CONFIG.PORTALS.Castle_To_Hydra, "HYDRA", token)
-end
-
-resetBackToTiki = function(token)
-    if not CONFIG.RESET_TO_TIKI_AFTER_EVENT then return true end
-
-    setStatus("Rewards collected -> reset back to Tiki")
-    resetCharacter()
-    if token and not isRunning(token) then return false end
-
-    -- If this account already had Tiki as its spawn, the reset is enough.
-    -- Otherwise, finish the return through the known Castle/Tiki portal route.
-    if getRegion() ~= "TIKI" then
-        goTiki(token)
+        return enterPortalSafe(
+            CONFIG.PORTALS.Castle_To_Tiki,
+            "Castle -> Tiki",
+            token
+        )
     end
 
-    if getRegion() == "TIKI" then
-        pcall(function() CommF:InvokeServer("SetSpawnPoint") end)
-        setStatus("Returned to Tiki Outpost")
-        return true
+    if region == "TURTLE" then
+        local ok,why = enterPortalSafe(
+            CONFIG.PORTALS.Turtle_To_Castle,
+            "Turtle -> Castle",
+            token
+        )
+        if not ok then return false,why end
+
+        task.wait(.65)
+
+        return enterPortalSafe(
+            CONFIG.PORTALS.Castle_To_Tiki,
+            "Castle -> Tiki",
+            token
+        )
     end
 
-    setStatus("WARNING: reset completed but Tiki position not confirmed")
-    return false
+    return false,"UNKNOWN_REGION"
 end
 
 --==============================================================
 -- BOAT
 --==============================================================
 
-local function boatOwnerName(boat)
-    local owner = boat and boat:FindFirstChild("Owner")
+local function boatOwner(boat)
+    if not boat then return nil end
+
+    local attr = boat:GetAttribute("Owner")
+    if attr ~= nil then
+        return tostring(attr)
+    end
+
+    local owner = boat:FindFirstChild("Owner")
     if owner and owner:IsA("ValueBase") then
         return tostring(owner.Value)
     end
 end
 
-local function getMasterBoat()
+local function readBoatHealth(boat)
+    if not boat then return nil end
+
+    for _,attrName in ipairs({"Health","BoatHealth","HP"}) do
+        local v = boat:GetAttribute(attrName)
+        if tonumber(v) ~= nil then
+            return tonumber(v)
+        end
+    end
+
+    for _,name in ipairs({"Health","BoatHealth","HP"}) do
+        local v = boat:FindFirstChild(name,true)
+        if v and v:IsA("ValueBase") and tonumber(v.Value) ~= nil then
+            return tonumber(v.Value)
+        end
+    end
+
+    return nil
+end
+
+local function boatAlive(boat)
+    if not boat or not boat.Parent then
+        return false
+    end
+
+    local hp = readBoatHealth(boat)
+    if hp ~= nil and hp <= 0 then
+        return false
+    end
+
+    return true
+end
+
+local function getOwnBoat()
     local boats = workspace:FindFirstChild("Boats")
     if not boats then return nil end
+
     for _,b in ipairs(boats:GetChildren()) do
-        if b.Name == CONFIG.BOAT_NAME and boatOwnerName(b) == _G.TeamConfig.MasterName then
+        if b.Name == CONFIG.BOAT_NAME and boatAlive(b) then
+            local owner = boatOwner(b)
+            if owner == LP.Name or owner == tostring(LP) then
+                return b
+            end
+        end
+    end
+end
+
+local function masterBoat()
+    local boats = workspace:FindFirstChild("Boats")
+    if not boats then return nil end
+
+    for _,b in ipairs(boats:GetChildren()) do
+        if b.Name == CONFIG.BOAT_NAME and boatAlive(b) then
+            local owner = boatOwner(b)
+
+            if owner == CONFIG.TEAM.MASTER_NAME then
+                return b
+            end
+
+            local driver = b:FindFirstChildWhichIsA("VehicleSeat",true)
+            local occ = driver and driver.Occupant
+            local c = occ and occ.Parent
+
+            if c and c.Name == CONFIG.TEAM.MASTER_NAME then
+                return b
+            end
+        end
+    end
+end
+
+local function passengerSeats(boat)
+    local seats = {}
+    if not boat then return seats end
+
+    for _,o in ipairs(boat:GetDescendants()) do
+        if o:IsA("Seat") and not o:IsA("VehicleSeat") then
+            seats[#seats+1] = o
+        end
+    end
+
+    table.sort(seats,function(a,b)
+        local ap,bp = a.Position,b.Position
+        if math.abs(ap.X-bp.X) > .1 then return ap.X < bp.X end
+        if math.abs(ap.Z-bp.Z) > .1 then return ap.Z < bp.Z end
+        return a:GetFullName() < b:GetFullName()
+    end)
+
+    return seats
+end
+
+local function teamBoardedCount(boat)
+    local set = teamNameSet()
+    local count = 0
+
+    for _,seat in ipairs(passengerSeats(boat)) do
+        local occ = seat.Occupant
+        local c = occ and occ.Parent
+
+        if c and set[c.Name] and c.Name ~= CONFIG.TEAM.MASTER_NAME then
+            count += 1
+        end
+    end
+
+    STATE.TeamBoarded = count
+    return count
+end
+
+local function boardPassenger(boat,token)
+    if not boatAlive(boat) then
+        return false,"NO_BOAT"
+    end
+
+    local h = hum()
+    if not h then
+        return false,"NO_HUMANOID"
+    end
+
+    -- Already sitting somewhere in this boat.
+    if h.SeatPart and h.SeatPart:IsDescendantOf(boat) then
+        STATE.Boat = "PASSENGER"
+        refreshUI()
+        return true,"ALREADY_SEATED"
+    end
+
+    local seats = passengerSeats(boat)
+    if #seats == 0 then
+        return false,"NO_PASSENGER_SEATS"
+    end
+
+    local preferred = math.clamp(TEAM_SLOT,1,#seats)
+    local seat = seats[preferred]
+
+    if seat.Occupant and seat.Occupant ~= h then
+        seat = nil
+        for _,candidate in ipairs(seats) do
+            if not candidate.Occupant then
+                seat = candidate
+                break
+            end
+        end
+    end
+
+    if not seat then
+        return false,"ALL_PASSENGER_SEATS_BUSY"
+    end
+
+    setStatus(
+        "Safe tween -> passenger seat "..preferred,
+        "BOARD TEAM BOAT"
+    )
+
+    local ok,why = tweenTo(
+        seat.CFrame*CFrame.new(0,3,0),
+        145,
+        token
+    )
+
+    if not ok then
+        return false,"SEAT_TWEEN:"..tostring(why)
+    end
+
+    pcall(function()
+        seat:Sit(h)
+    end)
+
+    if firetouchinterest and root() then
+        pcall(function()
+            firetouchinterest(root(),seat,0)
+            task.wait(.08)
+            firetouchinterest(root(),seat,1)
+        end)
+    end
+
+    local deadline = os.clock()+4
+
+    repeat
+        if h.SeatPart == seat or seat.Occupant == h then
+            STATE.Boat = "PASSENGER"
+            refreshUI()
+            return true,"SEATED"
+        end
+
+        pcall(function()
+            seat:Sit(h)
+        end)
+
+        task.wait(.10)
+    until os.clock() >= deadline
+
+    return false,"SEAT_TIMEOUT"
+end
+
+local function waitForTeamBoarding(boat,token)
+    if not isMaster() then
+        return true
+    end
+
+    local roster = teamPlayerNames()
+    local desired = math.min(
+        CONFIG.TEAM.REQUIRED_SLAVES,
+        math.max(#roster-1,0)
+    )
+
+    -- If roster isn't configured yet, still display/await the requested size.
+    if desired <= 0 then
+        desired = CONFIG.TEAM.REQUIRED_SLAVES
+    end
+
+    local deadline = os.clock()+CONFIG.TEAM.WAIT_FOR_TEAM_SECONDS
+
+    while current(token) and boatAlive(boat) do
+        local boarded = teamBoardedCount(boat)
+
+        setStatus(
+            "Waiting team on Grand Brigade | "
+            ..boarded.."/"..desired.." slaves",
+            "TEAM BOARDING"
+        )
+
+        if boarded >= desired then
+            return true
+        end
+
+        if os.clock() >= deadline then
+            if CONFIG.TEAM.ALLOW_PARTIAL_AFTER_TIMEOUT
+            and boarded >= CONFIG.TEAM.MIN_SLAVES_AFTER_TIMEOUT then
+                setStatus(
+                    "Team wait timeout -> depart with "..boarded.." slaves",
+                    "TEAM BOARDING"
+                )
+                return true
+            end
+
+            deadline = os.clock()+10
+        end
+
+        task.wait(.35)
+    end
+
+    return boatAlive(boat)
+end
+
+local function buyBoat(token)
+    local existing = getOwnBoat()
+    if existing then
+        STATE.Boat = "READY"
+        refreshUI()
+        return existing
+    end
+
+    -- Use island portals instead of doing one huge cross-map player tween.
+    local rr = root()
+
+    if rr
+    and (rr.Position-CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude > 3500 then
+        local portalOk,portalWhy = routeToTiki(token)
+
+        if not portalOk then
+            setStatus(
+                "Portal route failed: "..tostring(portalWhy)..
+                " -> safe tween fallback",
+                "BUY BOAT"
+            )
+        end
+    end
+
+    setStatus("Safe tween -> Tiki Boat Dealer","BUY BOAT")
+
+    local moveOk,moveWhy =
+        tweenTo(CONFIG.BOAT_DEALER_CFRAME,165,token)
+
+    if not moveOk then
+        setStatus(
+            "Boat Dealer tween failed: "..tostring(moveWhy),
+            "BUY BOAT"
+        )
+        return nil
+    end
+
+    pcall(function()
+        if CommF then CommF:InvokeServer("SetSpawnPoint") end
+    end)
+
+    for attempt=1,5 do
+        setStatus("Buying MarineGrandBrigade "..attempt.."/5","BUY BOAT")
+
+        pcall(function()
+            if CommF then
+                CommF:InvokeServer("BuyBoat",CONFIG.BOAT_BUY_NAME)
+            end
+        end)
+
+        task.wait(1)
+
+        local b = getOwnBoat()
+        if b then
+            STATE.Boat = "READY"
+            refreshUI()
             return b
         end
     end
+
+    STATE.Boat = "BUY FAIL"
+    refreshUI()
+    return nil
 end
 
-local function sortPassengerSeats(boat)
-    local driver = boat and boat:FindFirstChild("VehicleSeat")
-    if not driver or not driver:IsA("VehicleSeat") then return {} end
+local function boardDriver(boat, token)
+    if not boat then return false end
 
-    local seats = {}
-    for _,v in ipairs(boat:GetDescendants()) do
-        if v:IsA("Seat") and not v:IsA("VehicleSeat") then
-            local lp = driver.CFrame:PointToObjectSpace(v.Position)
-            table.insert(seats, {seat=v, x=lp.X, z=lp.Z})
-        end
-    end
+    local seat = boat:FindFirstChild("VehicleSeat")
+        or boat:FindFirstChildWhichIsA("VehicleSeat",true)
 
-    table.sort(seats, function(a,b)
-        if math.abs(a.z-b.z) > .1 then return a.z < b.z end
-        return a.x < b.x
-    end)
-
-    local out = {}
-    for _,x in ipairs(seats) do table.insert(out, x.seat) end
-    return out
-end
-
-local function slaveIndex()
-    local n = 0
-    for _,name in ipairs(CONFIG.TEAM) do
-        if name ~= _G.TeamConfig.MasterName then
-            n = n + 1
-            if name == LP.Name then return n end
-        end
-    end
-end
-
-local function sitOn(seat, token)
     if not seat then return false end
+
     local h = hum()
     if not h then return false end
 
     if seat.Occupant == h then return true end
-    stopSit()
-    safeTween(seat.CFrame * CFrame.new(0,3,0), 250, token)
+
+    tweenTo(seat.CFrame*CFrame.new(0,3,0),CONFIG.PLAYER_SPEED,token)
 
     pcall(function() seat:Sit(h) end)
+
     if firetouchinterest and root() then
         pcall(function()
-            firetouchinterest(root(), seat, 0)
+            firetouchinterest(root(),seat,0)
             task.wait(.1)
-            firetouchinterest(root(), seat, 1)
+            firetouchinterest(root(),seat,1)
         end)
     end
 
     local deadline = os.clock()+4
     repeat
-        task.wait(.1)
-        if seat.Occupant == h then return true end
+        if seat.Occupant == h then
+            STATE.Boat = "DRIVING"
+            refreshUI()
+            return true
+        end
+
         pcall(function() seat:Sit(h) end)
-    until os.clock()>deadline or (token and not isRunning(token))
+        task.wait(.10)
+    until os.clock() >= deadline
+
     return seat.Occupant == h
 end
 
-local function buyGrandBrigade(token)
-    if not isMaster() then return nil end
-    local existing = getMasterBoat()
-    if existing then return existing end
-
-    setStatus("MASTER: going to Tiki Boat Dealer")
-    goTiki(token)
-    safeTween(CONFIG.BOAT_DEALER_CFRAME, 260, token)
-
-    pcall(function() CommF:InvokeServer("SetSpawnPoint") end)
-
-    for attempt=1,5 do
-        pcall(function()
-            CommF:InvokeServer("BuyBoat", CONFIG.BOAT_BUY_NAME)
-        end)
-        task.wait(1)
-        local b = getMasterBoat()
-        if b then
-            setStatus("Boat spawned: "..b.Name)
-            return b
-        end
-        setStatus("BuyBoat retry "..attempt.."/5")
-    end
-    return nil
-end
-
-local function boardBoat(boat, token)
-    if not boat then return false end
-    if isMaster() then
-        return sitOn(boat:FindFirstChild("VehicleSeat"), token)
-    end
-
-    local idx = slaveIndex()
-    local seats = sortPassengerSeats(boat)
-    if not idx or not seats[idx] then return false end
-    return sitOn(seats[idx], token)
-end
-
-local function countTeamAboard(boat)
-    local count = 0
-    for _,v in ipairs(boat:GetDescendants()) do
-        if v:IsA("Seat") or v:IsA("VehicleSeat") then
-            local occ = v.Occupant
-            if occ and occ.Parent then
-                local p = Players:GetPlayerFromCharacter(occ.Parent)
-                if p and isTeamName(p.Name) then count = count + 1 end
-            end
-        end
-    end
-    return count
-end
-
 local function boatNoclip(boat)
+    if not boat then return end
     for _,v in ipairs(boat:GetDescendants()) do
         if v:IsA("BasePart") then
             v.CanCollide = false
@@ -2489,171 +2326,563 @@ local function boatNoclip(boat)
     end
 end
 
-function PHX.prehistoricMarker()
+local function stopBoatMotion(boat)
+    if not boat or not boat.Parent then return end
+
+    local seat = boat:FindFirstChildWhichIsA("VehicleSeat",true)
+
+    if seat then
+        pcall(function()
+            seat.ThrottleFloat = 0
+            seat.SteerFloat = 0
+        end)
+    end
+
+    for _,v in ipairs(boat:GetDescendants()) do
+        if v:IsA("BasePart") then
+            pcall(function()
+                v.AssemblyLinearVelocity = Vector3.zero
+                v.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+    end
+end
+
+local function dismountBoat(boat,token)
+    stopBoatMotion(boat)
+
+    local h = hum()
+    if not h then
+        return false,"NO_HUMANOID"
+    end
+
+    if not h.SeatPart then
+        return true,"ALREADY_UNSEATED"
+    end
+
+    -- Mandatory boat exit path:
+    -- JUMP first -> confirm SeatPart=nil -> only then may player tween.
+    local ok,why = jumpOutOfSeat(token,"Prehistoric island found")
+
+    if not ok then
+        return false,why
+    end
+
+    stopBoatMotion(boat)
+    task.wait(.12)
+
+    return true,why
+end
+
+local function prehistoricMarker()
     local origin = workspace:FindFirstChild("_WorldOrigin")
     local locations = origin and origin:FindFirstChild("Locations")
-    return locations and (locations:FindFirstChild("Prehistoric Island") or locations:FindFirstChild("PrehistoricIsland"))
+    return locations and (
+        locations:FindFirstChild("Prehistoric Island")
+        or locations:FindFirstChild("PrehistoricIsland")
+    )
 end
 
-local function findPrehistoric()
+local function prehistoricIsland()
     local map = workspace:FindFirstChild("Map")
-    local island = map and map:FindFirstChild("PrehistoricIsland")
-    if island then return island end
-    return nil
+    return map and map:FindFirstChild("PrehistoricIsland")
 end
 
-local function boatFlyTo(boat, targetPos, token)
-    if not boat or not boat.Parent then return false end
+local function boatFlyTo(boat,targetPos,token)
+    if not boatAlive(boat) then
+        return false,"BOAT_DESTROYED"
+    end
+
+    if not alive() then
+        return false,"PLAYER_DIED"
+    end
+
     local start = boat:GetPivot()
     local startPos = start.Position
     local dist = (targetPos-startPos).Magnitude
-    local duration = math.max(dist/CONFIG.BOAT_TWEEN_SPEED, .05)
-    local startTime = os.clock()
+    local duration = math.max(dist/CONFIG.BOAT_SPEED,.05)
+    local started = os.clock()
 
-    while isRunning(token) and boat.Parent do
-        if findPrehistoric() or PHX.prehistoricMarker() then return true end
-        local a = math.clamp((os.clock()-startTime)/duration, 0, 1)
-        local pos = startPos:Lerp(targetPos, a)
-        local dir = targetPos-pos
-        local targetCF
-        if dir.Magnitude > .5 then
-            targetCF = CFrame.lookAt(pos, pos+Vector3.new(dir.X,0,dir.Z))
-        else
-            targetCF = CFrame.new(pos) * start.Rotation
+    while current(token) do
+        if not autoOn() then
+            stopBoatMotion(boat)
+
+            if not waitAuto(token) then
+                return false,"STOPPED"
+            end
+
+            -- Rebuild this leg from the boat's current replicated position.
+            start = boat:GetPivot()
+            startPos = start.Position
+            dist = (targetPos-startPos).Magnitude
+            duration = math.max(dist/CONFIG.BOAT_SPEED,.05)
+            started = os.clock()
         end
+
+        if prehistoricIsland() or prehistoricMarker() then
+            return true,"PREHISTORIC_FOUND"
+        end
+
+        if not alive() then
+            return false,"PLAYER_DIED"
+        end
+
+        if not boatAlive(boat) then
+            return false,"BOAT_DESTROYED"
+        end
+
+        local a = math.clamp((os.clock()-started)/duration,0,1)
+        local pos = startPos:Lerp(targetPos,a)
+        local dir = targetPos-pos
+
+        local cf
+        if dir.Magnitude > .5 then
+            cf = CFrame.lookAt(
+                pos,
+                pos+Vector3.new(dir.X,0,dir.Z)
+            )
+        else
+            cf = CFrame.new(pos)*start.Rotation
+        end
+
         boatNoclip(boat)
-        pcall(function() boat:PivotTo(targetCF) end)
-        if a >= 1 then break end
+
+        pcall(function()
+            boat:PivotTo(cf)
+        end)
+
+        if a >= 1 then
+            return true,"LEG_COMPLETE"
+        end
+
         RunService.Heartbeat:Wait()
     end
-    return findPrehistoric() ~= nil or PHX.prehistoricMarker() ~= nil
+
+    return false,"STOPPED"
 end
 
-local function searchSeaUntilIsland(boat, token)
-    local c = CONFIG.SEA6_CENTER
-    local patrol = {
-        c,
-        c + Vector3.new(-5500,0,0),
-        c + Vector3.new(-5500,0,5500),
-        c + Vector3.new(0,0,5500),
-        c + Vector3.new(5500,0,5500),
-        c + Vector3.new(5500,0,0),
-        c + Vector3.new(5500,0,-5500),
-        c + Vector3.new(0,0,-5500),
-        c + Vector3.new(-5500,0,-5500),
-    }
+local function searchPrehistoric(boat,token)
+    -- Straight-only Sea 6 search.
+    -- If player dies or boat is destroyed, return a reason to the recovery loop.
+    if not boatAlive(boat) then
+        return nil,"BOAT_DESTROYED"
+    end
 
-    local i = 1
-    while isRunning(token) and boat and boat.Parent do
-        local island = findPrehistoric()
-        if island then return island end
-        if PHX.prehistoricMarker() then
-            setStatus("MASTER: Prehistoric marker detected -> STOP boat, waiting map")
-            local deadline = os.clock() + 12
-            while isRunning(token) and os.clock() < deadline do
-                island = findPrehistoric()
-                if island then return island end
+    if not alive() then
+        return nil,"PLAYER_DIED"
+    end
+
+    local startPos = boat:GetPivot().Position
+    local center = CONFIG.SEA_PATROL_CENTER
+
+    local flatDir = Vector3.new(
+        center.X-startPos.X,
+        0,
+        center.Z-startPos.Z
+    )
+
+    if flatDir.Magnitude < 1 then
+        local look = boat:GetPivot().LookVector
+        flatDir = Vector3.new(look.X,0,look.Z)
+    end
+
+    if flatDir.Magnitude < 1 then
+        flatDir = Vector3.new(0,0,-1)
+    end
+
+    local dir = flatDir.Unit
+    local STEP = 6500
+    local leg = 1
+
+    while current(token) do
+        if not alive() then
+            return nil,"PLAYER_DIED"
+        end
+
+        if not boatAlive(boat) then
+            return nil,"BOAT_DESTROYED"
+        end
+
+        local island = prehistoricIsland()
+        if island then
+            return island,"MAP_FOUND"
+        end
+
+        if prehistoricMarker() then
+            setStatus(
+                "Prehistoric marker found -> waiting map",
+                "SEA SEARCH"
+            )
+
+            local deadline = os.clock()+12
+            repeat
+                if not alive() then
+                    return nil,"PLAYER_DIED"
+                end
+
+                if not boatAlive(boat) then
+                    return nil,"BOAT_DESTROYED"
+                end
+
+                island = prehistoricIsland()
+                if island then
+                    return island,"MARKER_FOUND"
+                end
+
                 task.wait(.15)
+            until os.clock() >= deadline
+        end
+
+        local target = startPos + dir*(STEP*leg)
+
+        setStatus(
+            "Sea 6 straight hunt | leg "..leg..
+            " | retry "..STATE.HuntRetry,
+            "SEA SEARCH"
+        )
+
+        local moved,why = boatFlyTo(boat,target,token)
+
+        if not moved then
+            return nil,why
+        end
+
+        island = prehistoricIsland()
+        if island then
+            return island,"MAP_FOUND"
+        end
+
+        leg += 1
+    end
+
+    return nil,"STOPPED"
+end
+
+local function waitForRespawnRecovery(token)
+    setStatus(
+        "Player died -> waiting respawn, Magnet cache preserved",
+        "RECOVERY"
+    )
+
+    local deadline = os.clock()+CONFIG.RECOVERY.RESPAWN_WAIT
+
+    repeat
+        if alive() then
+            task.wait(1.0)
+            return true
+        end
+        task.wait(.20)
+    until os.clock() >= deadline or not current(token)
+
+    return alive()
+end
+
+local function huntPrehistoricWithRecovery(token)
+    -- Death and boat destruction stay INSIDE this loop.
+    -- They never call checkVolcanicMagnet again.
+    while current(token) do
+        local existingIsland = prehistoricIsland()
+        if existingIsland then
+            local currentBoat = getOwnBoat()
+
+            if currentBoat then
+                stopBoatMotion(currentBoat)
+
+                local ok,why = dismountBoat(currentBoat,token)
+                if not ok and alive() then
+                    setStatus(
+                        "Existing island | dismount retry: "..tostring(why),
+                        "DISEMBARK"
+                    )
+                    task.wait(.30)
+                    continue
+                end
+            end
+
+            STATE.Boat = "PARKED / ISLAND FOUND"
+            refreshUI()
+            return existingIsland,"EXISTING_ISLAND"
+        end
+
+        if not alive() then
+            STATE.HuntRetry += 1
+
+            if not waitForRespawnRecovery(token) then
+                return nil,"RESPAWN_TIMEOUT"
+            end
+
+            -- Respawn can change team in some situations; repair it quietly.
+            ensureMarines()
+        end
+
+        local boat = getOwnBoat()
+
+        if not boatAlive(boat) then
+            STATE.HuntRetry += 1
+            STATE.Boat = "REBUY"
+            refreshUI()
+
+            setStatus(
+                "Boat missing/destroyed -> portal Tiki -> rebuy, Magnet NOT rechecked",
+                "RECOVERY"
+            )
+
+            boat = buyBoat(token)
+
+            if not boat then
+                task.wait(CONFIG.RECOVERY.BOAT_REBUY_GAP)
+                continue
             end
         end
-        setStatus("MASTER: sea search point "..i.." | aboard "..countTeamAboard(boat).."/5")
-        boatFlyTo(boat, patrol[i], token)
-        island = findPrehistoric()
-        if island then return island end
-        i = i + 1
-        if i > #patrol then i = 1 end
+
+        if not boardDriver(boat,token) then
+            if not alive() then
+                STATE.HuntRetry += 1
+                waitForRespawnRecovery(token)
+            elseif not boatAlive(boat) then
+                STATE.HuntRetry += 1
+                STATE.Boat = "DESTROYED"
+                refreshUI()
+            else
+                setStatus("Driver seat failed -> retrying same hunt","RECOVERY")
+                task.wait(.75)
+            end
+            continue
+        end
+
+        waitForTeamBoarding(boat,token)
+
+        local island,why = searchPrehistoric(boat,token)
+
+        if island then
+            setStatus(
+                "Prehistoric found -> stop boat -> JUMP out -> island tween",
+                "DISEMBARK"
+            )
+
+            stopBoatMotion(boat)
+
+            local unseatOk,unseatWhy = dismountBoat(boat,token)
+
+            if not unseatOk then
+                setStatus(
+                    "Island found but dismount failed: "..tostring(unseatWhy),
+                    "DISEMBARK"
+                )
+
+                if not alive() then
+                    waitForRespawnRecovery(token)
+                    continue
+                end
+
+                task.wait(.35)
+                continue
+            end
+
+            STATE.Boat = "PARKED / ISLAND FOUND"
+            refreshUI()
+            return island,why
+        end
+
+        STATE.HuntRetry += 1
+
+        if why == "PLAYER_DIED" then
+            waitForRespawnRecovery(token)
+
+        elseif why == "BOAT_DESTROYED" then
+            STATE.Boat = "DESTROYED"
+            refreshUI()
+            setStatus(
+                "Boat destroyed -> rebuy + continue straight hunt",
+                "RECOVERY"
+            )
+            task.wait(CONFIG.RECOVERY.BOAT_REBUY_GAP)
+
+        elseif why == "STOPPED" then
+            return nil,why
+
+        else
+            setStatus(
+                "Sea hunt retry: "..tostring(why),
+                "RECOVERY"
+            )
+            task.wait(.75)
+        end
     end
+
+    return nil,"STOPPED"
 end
 
 --==============================================================
--- PREHISTORIC / RELIC
+-- PREHISTORIC EVENT
 --==============================================================
 
-local function getRelic(island)
+local function relic(island)
     local core = island and island:FindFirstChild("Core")
     return core and core:FindFirstChild("PrehistoricRelic")
 end
 
-local function relicPart(relic)
-    if not relic then return nil end
-    return relic:FindFirstChild("Inside") or relic:FindFirstChild("Skull") or relic:FindFirstChildWhichIsA("BasePart", true)
+local function relicPart(island)
+    local r = relic(island)
+    if not r then return nil end
+
+    return r:FindFirstChild("Inside")
+        or r:FindFirstChild("Skull")
+        or r:FindFirstChildWhichIsA("BasePart",true)
 end
 
-local function countTeamNear(pos, radius)
-    local n = 0
-    for _,p in ipairs(Players:GetPlayers()) do
-        if isTeamName(p.Name) and p.Character then
-            local rr = p.Character:FindFirstChild("HumanoidRootPart")
-            local hh = p.Character:FindFirstChildOfClass("Humanoid")
-            if rr and hh and hh.Health > 0 and (rr.Position-pos).Magnitude <= radius then
-                n = n + 1
-            end
-        end
+local function capturedFossilTarget(island)
+    local r = relic(island)
+    if not r then return nil,nil end
+
+    local ok,pivot = pcall(function()
+        return r:GetPivot()
+    end)
+
+    if not ok or not pivot then
+        return nil,nil
     end
-    return n
-end
 
-local function moveToRelic(island, token)
-    stopSit()
-    local relic = getRelic(island)
-    local part = relicPart(relic)
-    if not part then return false end
-
-    local idx = teamIndex(LP.Name) or 1
-    local angle = (idx-1) * (math.pi*2/5)
-    local off = Vector3.new(math.cos(angle)*9, 4, math.sin(angle)*9)
-    highTween(CFrame.new(part.Position+off), 360, token)
-    return true
-end
-
-local function holdE(sec)
-    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-    task.wait(sec or .62)
-    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-end
-
-local function startEventAsMaster(island, token)
-    if not isMaster() then return true end
-    if island:GetAttribute("IsMinigameActive") == true then return true end
-
-    local relic = getRelic(island)
-    local part = relicPart(relic)
-    if not part then return false end
-
-    setStatus("MASTER: waiting >=4 team near relic")
-    while isRunning(token) and island.Parent and island:GetAttribute("IsMinigameActive") ~= true do
-        local near = countTeamNear(part.Position, CONFIG.RELIC_RADIUS)
-        if near >= CONFIG.MIN_TEAM_NEAR_RELIC then
-            setStatus("MASTER: "..near.." near relic -> HOLD E")
-            safeTween(part.CFrame * CFrame.new(0,0,-5), 220, token)
-            aimAt(part.Position)
-            holdE(.62)
-            task.wait(.7)
-            if island:GetAttribute("IsMinigameActive") == true then return true end
-        else
-            setStatus("Relic ready: "..near.."/"..CONFIG.MIN_TEAM_NEAR_RELIC)
-        end
-        task.wait(.4)
-    end
-    return island:GetAttribute("IsMinigameActive") == true
+    return pivot * CONFIG.FOSSIL.PLAYER_RELATIVE_TO_RELIC, pivot
 end
 
 local function parsePercent(text)
-    return tonumber(tostring(text or ""):match("(%d+)%%"))
+    return tonumber(tostring(text or ""):match("(%d+)%s*%%"))
 end
 
-local function getPressure()
+local function topHUD()
     local main = PG:FindFirstChild("Main")
-    local hud = main and main:FindFirstChild("TopHUDList")
-    local lbl = hud and hud:FindFirstChild("PrehistoricRaidTimer")
-    return lbl and parsePercent(lbl.Text), lbl
+    return main and main:FindFirstChild("TopHUDList")
 end
 
-local function getRelicHealthPercent(island)
-    local relic = getRelic(island)
-    if not relic then return nil end
-    local hp = relic:FindFirstChild("Health")
-    local mx = relic:FindFirstChild("MaxHealth")
+local function hudActuallyVisible(o)
+    if not o or not o:IsA("GuiObject") then
+        return false
+    end
+
+    local p = o
+    while p and p ~= PG do
+        if p:IsA("ScreenGui") and not p.Enabled then
+            return false
+        end
+
+        if p:IsA("GuiObject") and not p.Visible then
+            return false
+        end
+
+        if p:IsA("CanvasGroup") and p.GroupTransparency >= .995 then
+            return false
+        end
+
+        p = p.Parent
+    end
+
+    return o.AbsoluteSize.X > 0 and o.AbsoluteSize.Y > 0
+end
+
+local function visibleHUDTextObjects()
+    local hud = topHUD()
+    local out = {}
+
+    if not hud then
+        return out
+    end
+
+    for _,o in ipairs(hud:GetDescendants()) do
+        if (o:IsA("TextLabel") or o:IsA("TextButton"))
+        and hudActuallyVisible(o)
+        and tostring(o.Text or "") ~= "" then
+            out[#out+1] = o
+        end
+    end
+
+    table.sort(out,function(a,b)
+        local sa = a.AbsoluteSize.X*a.AbsoluteSize.Y + a.ZIndex*100
+        local sb = b.AbsoluteSize.X*b.AbsoluteSize.Y + b.ZIndex*100
+        return sa > sb
+    end)
+
+    return out
+end
+
+local function allTopHUDText()
+    local parts = {}
+
+    for _,o in ipairs(visibleHUDTextObjects()) do
+        parts[#parts+1] = tostring(o.Text)
+    end
+
+    return table.concat(parts,"\n")
+end
+
+local function findVisiblePercent(labelNeedle)
+    labelNeedle = string.lower(labelNeedle)
+
+    for _,o in ipairs(visibleHUDTextObjects()) do
+        local raw = tostring(o.Text or "")
+        local low = string.lower(raw)
+
+        if low:find(labelNeedle,1,true) then
+            local n = parsePercent(raw)
+            if n ~= nil then
+                return n
+            end
+        end
+    end
+
+    return nil
+end
+
+local function eventActive()
+    local txt = string.lower(allTopHUDText())
+
+    if txt:find("time left",1,true)
+    and (
+        txt:find("volcano pressure",1,true)
+        or txt:find("relic health",1,true)
+    ) then
+        return true
+    end
+
+    local island = prehistoricIsland()
+    return island and island:GetAttribute("IsMinigameActive") == true or false
+end
+
+local function pressure()
+    local exact = findVisiblePercent("volcano pressure")
+    if exact ~= nil then
+        return exact
+    end
+
+    local txt = allTopHUDText()
+    return tonumber(
+        txt:match("[Vv]olcano%s+[Pp]ressure%s*:%s*(%d+)%s*%%")
+        or txt:match("[Pp]ressure%s*:%s*(%d+)%s*%%")
+    )
+end
+
+local function relicHP(island)
+    local exact = findVisiblePercent("relic health")
+    if exact ~= nil then
+        return exact
+    end
+
+    local txt = allTopHUDText()
+    local n = tonumber(
+        txt:match("[Rr]elic%s+[Hh]ealth%s*:%s*(%d+)%s*%%")
+        or txt:match("[Rr]elic%s+[Hh][Pp]%s*:%s*(%d+)%s*%%")
+    )
+
+    if n ~= nil then
+        return n
+    end
+
+    local r = relic(island)
+    if not r then return nil end
+
+    local hp = r:FindFirstChild("Health")
+    local mx = r:FindFirstChild("MaxHealth")
+
     if hp and mx and mx.Value > 0 then
         return hp.Value/mx.Value*100
     end
@@ -2661,262 +2890,1133 @@ end
 
 local function rockActive(rock)
     for _,v in ipairs(rock:GetDescendants()) do
-        if (v:IsA("Beam") or v:IsA("ParticleEmitter")) and v.Enabled then
+        if (v:IsA("Beam") or v:IsA("ParticleEmitter"))
+        and v.Enabled then
             return true
         end
     end
+
     return false
 end
 
-local function activePressureRocks(island)
-    local core = island:FindFirstChild("Core")
+local function activeRocks(island)
+    local core = island and island:FindFirstChild("Core")
     local folder = core and core:FindFirstChild("VolcanoRocks")
     if not folder then return {} end
 
-    local list = {}
+    local out = {}
+
     for _,rock in ipairs(folder:GetChildren()) do
         if rock:IsA("Model") and rockActive(rock) then
-            local mesh = rock:FindFirstChild("volcanorock") or rock:FindFirstChildWhichIsA("BasePart", true)
-            if mesh then table.insert(list, {model=rock, part=mesh}) end
+            local p = rock:FindFirstChild("volcanorock")
+                or rock:FindFirstChildWhichIsA("BasePart",true)
+
+            if p then
+                out[#out+1] = {model=rock,part=p}
+            end
         end
     end
 
     local rr = root()
     if rr then
-        table.sort(list, function(a,b)
-            return (a.part.Position-rr.Position).Magnitude < (b.part.Position-rr.Position).Magnitude
+        table.sort(out,function(a,b)
+            return (a.part.Position-rr.Position).Magnitude
+                < (b.part.Position-rr.Position).Magnitude
         end)
     end
-    return list
+
+    return out
 end
 
--- V2.9 keeps the V2.8 pressure worker learned from the supplied full-run video:
--- react immediately instead of waiting for pressure/relic damage to accumulate.
-function PHX.pressureRockBurst(target, token)
-    if not target or not target.model or not target.part then return false end
-    if not target.model.Parent or not rockActive(target.model) then return true end
+local function teamPressureTarget(island,workerIndex)
+    local rocks = activeRocks(island)
 
-    local deadline = os.clock() + CONFIG.PRESSURE.MAX_BURST_SECONDS
-    while isRunning(token) and target.model.Parent and rockActive(target.model) and os.clock() < deadline do
+    if #rocks == 0 then
+        return nil,0
+    end
+
+    -- Stable cross-client ordering by world position.
+    table.sort(rocks,function(a,b)
+        local ap,bp = a.part.Position,b.part.Position
+
+        if math.abs(ap.X-bp.X) > .25 then
+            return ap.X < bp.X
+        end
+
+        if math.abs(ap.Z-bp.Z) > .25 then
+            return ap.Z < bp.Z
+        end
+
+        return ap.Y < bp.Y
+    end)
+
+    local idx = ((math.max(workerIndex,1)-1) % #rocks)+1
+    return rocks[idx],#rocks
+end
+
+local SKILLS = {
+    Enum.KeyCode.X,
+    Enum.KeyCode.C,
+    Enum.KeyCode.V,
+    Enum.KeyCode.F,
+}
+
+local function pressureBurst(target,token)
+    if not target or not target.model or not target.part then
+        return false
+    end
+
+    local deadline = os.clock()+CONFIG.PRESSURE.BURST_SECONDS
+
+    while current(token)
+    and target.model.Parent
+    and rockActive(target.model)
+    and os.clock() < deadline do
         local p = target.part.Position
-        local rp = root()
-        if not rp then return false end
+        local hover = CFrame.new(
+            p+Vector3.new(0,CONFIG.PRESSURE.ROCK_HOVER_Y,0)
+        )
 
-        local hover = CFrame.new(p + Vector3.new(0, CONFIG.PRESSURE.ROCK_HOVER_Y, 0))
-        if (rp.Position - hover.Position).Magnitude > 14 then
-            if not safeTween(hover, CONFIG.PRESSURE_TWEEN_SPEED, token) then return false end
-        else
-            rp.CFrame = CFrame.lookAt(rp.Position, Vector3.new(p.X, rp.Position.Y, p.Z))
-        end
-        aimAt(p)
+        local rr = root()
+        if not rr then return false end
 
-        local function castSet(tooltip)
-            local tool = equipTooltip(tooltip)
-            if not tool then return end
-            for _,k in ipairs(SKILL_KEYS) do
-                if not isRunning(token) or not target.model.Parent or not rockActive(target.model) then break end
-                aimAt(p)
-                pressKey(k, CONFIG.PRESSURE.SKILL_HOLD)
-                task.wait(CONFIG.PRESSURE.SKILL_GAP)
-            end
-        end
-
-        -- User-locked pressure combo: Melee X/C/V/F, then Fruit X/C/V/F. No M1.
-        castSet("Melee")
-        if target.model.Parent and rockActive(target.model) then castSet("Blox Fruit") end
-
-        if target.model.Parent and rockActive(target.model) then
-            task.wait(.03)
-        end
-    end
-
-    if not target.model.Parent or not rockActive(target.model) then
-        noteProgress("PRESSURE_ROCK_FIXED")
-        return true
-    end
-    return false
-end
-
-function PHX.pickPressureRock(island, offset)
-    local rocks = activePressureRocks(island)
-    if #rocks == 0 then return nil, 0 end
-    local idx = ((tonumber(offset) or 1) - 1) % #rocks + 1
-    return rocks[idx], #rocks
-end
-
-function PHX.golemKillAura(golem, token)
-    if not golem or not golem.Parent then return true end
-    local gh = golem:FindFirstChildOfClass("Humanoid")
-    if not gh or gh.Health <= 0 then return true end
-
-    local deadline = os.clock() + CONFIG.GOLEM_AURA.BURST_SECONDS
-    local tool = equipTooltip("Melee")
-
-    while isRunning(token) and golem.Parent and gh.Parent and gh.Health > 0 and os.clock() < deadline do
-        local gp = golem:FindFirstChild("HumanoidRootPart") or golem:FindFirstChild("Head")
-        local rp = root()
-        if not gp or not rp then break end
-
-        pcall(function()
-            gp.CanCollide = false
-            if gp:IsA("BasePart") then
-                gp.Size = Vector3.new(CONFIG.GOLEM_AURA.HITBOX_SIZE, CONFIG.GOLEM_AURA.HITBOX_SIZE, CONFIG.GOLEM_AURA.HITBOX_SIZE)
-            end
-        end)
-
-        if (rp.Position - gp.Position).Magnitude > CONFIG.GOLEM_AURA.APPROACH_DISTANCE then
-            if not safeTween(CFrame.new(gp.Position + Vector3.new(0, CONFIG.GOLEM_AURA.HOVER_Y, 0)), 420, token) then
+        if (rr.Position-hover.Position).Magnitude > 14 then
+            if not tweenTo(hover,CONFIG.PRESSURE_SPEED,token) then
                 return false
             end
         end
 
-        aimAt(gp.Position)
-        tool = equipTooltip("Melee") or tool
-        if tool and tool.Parent == char() then
-            virtualToolClick(tool, {golem})
-        end
-        task.wait(CONFIG.GOLEM_AURA.ATTACK_INTERVAL)
-    end
+        aimAt(p)
 
-    if gh.Health <= 0 or not golem.Parent then
-        noteProgress("LAVA_GOLEM_DELETED")
-        return true
-    end
-    return false
-end
-
-local function masterPressureLoop(island, token)
-    enableLavaProtection(island)
-    setStatus("MASTER: pressure controller armed")
-
-    while isRunning(token) and island.Parent and island:GetAttribute("IsMinigameActive") == true do
-        local pressure = getPressure()
-        local hpPct = getRelicHealthPercent(island)
-        local target, rockCount = PHX.pickPressureRock(island, teamIndex(LP.Name) or 1)
-
-        local emergency = (pressure and pressure >= CONFIG.PRESSURE.EMERGENCY_AT)
-            or (hpPct and hpPct <= CONFIG.PRESSURE.RELIC_EMERGENCY_AT)
-
-        setStatus(
-            "MASTER | Pressure="..tostring(pressure or "?")..
-            "% | Relic="..string.format("%.1f", hpPct or 0)..
-            "% | Rocks="..tostring(rockCount)..
-            (emergency and " | EMERGENCY" or "")
-        )
-
-        if target then
-            PHX.pressureRockBurst(target, token)
-        else
-            task.wait(.05)
-        end
-    end
-
-    disableLavaProtection()
-end
-
-local function slaveGolemLoop(island, token)
-    enableLavaProtection(island)
-    local enemies = workspace:FindFirstChild("Enemies")
-    local relic = getRelic(island)
-    local rp = relicPart(relic)
-
-    while isRunning(token) and island.Parent and island:GetAttribute("IsMinigameActive") == true do
-        local golem = nil
-        if enemies then
-            for _,m in ipairs(enemies:GetChildren()) do
-                if m.Name == "Lava Golem" then
-                    local h = m:FindFirstChildOfClass("Humanoid")
-                    if h and h.Health > 0 then
-                        golem = m
+        for _,tip in ipairs({"Melee","Blox Fruit"}) do
+            local tool = equipTooltip(tip)
+            if tool then
+                for _,key in ipairs(SKILLS) do
+                    if not current(token)
+                    or not target.model.Parent
+                    or not rockActive(target.model) then
                         break
                     end
+
+                    aimAt(p)
+                    pressKey(key,CONFIG.PRESSURE.SKILL_HOLD)
+                    task.wait(CONFIG.PRESSURE.SKILL_GAP)
                 end
             end
         end
+    end
 
-        -- Golems directly threaten Relic HP. All four slaves prioritize the same
-        -- server-visible target and use the proven Net attack backend as a kill aura.
-        if golem then
-            local gh = golem:FindFirstChildOfClass("Humanoid")
-            setStatus("SLAVE KILL AURA | Lava Golem "..tostring(gh and math.floor(gh.Health) or "?"))
-            PHX.golemKillAura(golem, token)
+    return not target.model.Parent or not rockActive(target.model)
+end
+
+local function enableLavaProtection(island)
+    local core = island and island:FindFirstChild("Core")
+    local lava = core and core:FindFirstChild("InteriorLava")
+    if not lava then return end
+
+    for _,v in ipairs(lava:GetDescendants()) do
+        if v:IsA("BasePart") then
+            pcall(function()
+                v.CanTouch = false
+                v.CanCollide = false
+            end)
+        end
+    end
+end
+
+local golemPrepared = setmetatable({}, {__mode="k"})
+local golemLastBring = setmetatable({}, {__mode="k"})
+local clusterAnchorCF = nil
+local clusterIslandRef = nil
+
+local function boostSimulationRadiusOnce(golem)
+    if not golem or golemPrepared[golem] then
+        return
+    end
+
+    golemPrepared[golem] = true
+
+    pcall(function()
+        if setsimulationradius then
+            setsimulationradius(1000,1000)
+        end
+    end)
+
+    pcall(function()
+        if sethiddenproperty then
+            sethiddenproperty(LP,"SimulationRadius",1000)
+        end
+    end)
+end
+
+local function prepareGolemOnce(golem)
+    if not golem or not golem.Parent then return end
+
+    boostSimulationRadiusOnce(golem)
+
+    local gp = golem:FindFirstChild("HumanoidRootPart")
+        or golem:FindFirstChild("Head")
+
+    if gp then
+        pcall(function()
+            gp.Size = Vector3.new(
+                CONFIG.GOLEM.BRING_HITBOX,
+                CONFIG.GOLEM.BRING_HITBOX,
+                CONFIG.GOLEM.BRING_HITBOX
+            )
+            gp.CanCollide = false
+        end)
+    end
+
+    -- Heavy descendant pass only once per Golem.
+    for _,bp in ipairs(golem:GetDescendants()) do
+        if bp:IsA("BasePart") then
+            pcall(function()
+                bp.CanCollide = false
+            end)
+        end
+    end
+end
+
+local function liveGolems()
+    local enemies = workspace:FindFirstChild("Enemies")
+    local out = {}
+
+    if not enemies then
+        return out
+    end
+
+    for _,m in ipairs(enemies:GetChildren()) do
+        if m:IsA("Model") and m.Name == "Lava Golem" then
+            local h = m:FindFirstChildOfClass("Humanoid")
+            local gp = m:FindFirstChild("HumanoidRootPart")
+                or m:FindFirstChild("Head")
+
+            if h and h.Health > 0 and gp then
+                out[#out+1] = m
+            end
+        end
+    end
+
+    return out
+end
+
+local function totalGolemHP(golems)
+    local total = 0
+
+    for _,g in ipairs(golems or {}) do
+        local h = g:FindFirstChildOfClass("Humanoid")
+        if h and h.Health > 0 then
+            total += h.Health
+        end
+    end
+
+    return total
+end
+
+local function resetClusterAnchorIfNeeded(island)
+    if clusterIslandRef ~= island then
+        clusterIslandRef = island
+        clusterAnchorCF = nil
+    end
+end
+
+local function computeClusterAnchor(island,golems)
+    resetClusterAnchorIfNeeded(island)
+
+    if clusterAnchorCF then
+        return clusterAnchorCF
+    end
+
+    local r = relic(island)
+    if not r then return nil end
+
+    local ok,pivot = pcall(function()
+        return r:GetPivot()
+    end)
+
+    if not ok or not pivot then
+        return nil
+    end
+
+    local relicPos = pivot.Position
+
+    -- Use the average spawn direction of all current Golems, so the cluster
+    -- is pushed AWAY from Fossil instead of dragged across it.
+    local sum = Vector3.zero
+    local count = 0
+    local avgY = relicPos.Y
+
+    for _,g in ipairs(golems or {}) do
+        local gp = g:FindFirstChild("HumanoidRootPart")
+            or g:FindFirstChild("Head")
+
+        if gp then
+            sum += Vector3.new(
+                gp.Position.X-relicPos.X,
+                0,
+                gp.Position.Z-relicPos.Z
+            )
+            avgY += gp.Position.Y
+            count += 1
+        end
+    end
+
+    local away = sum
+
+    if away.Magnitude < 1 then
+        local lv = pivot.LookVector
+        away = Vector3.new(-lv.X,0,-lv.Z)
+    end
+
+    if away.Magnitude < 1 then
+        away = Vector3.new(1,0,0)
+    end
+
+    if count > 0 then
+        avgY = (avgY-relicPos.Y)/count
+    else
+        avgY = relicPos.Y
+    end
+
+    local targetPos =
+        relicPos
+        + away.Unit*CONFIG.GOLEM.BRING_DISTANCE_FROM_RELIC
+
+    targetPos = Vector3.new(
+        targetPos.X,
+        avgY + CONFIG.GOLEM.BRING_HEIGHT_OFFSET,
+        targetPos.Z
+    )
+
+    local face = Vector3.new(
+        relicPos.X,
+        targetPos.Y,
+        relicPos.Z
+    )
+
+    clusterAnchorCF = CFrame.lookAt(targetPos,face)
+    return clusterAnchorCF
+end
+
+local function clusterSlotCF(anchor,index,total)
+    -- User asked to "túm lại 1 chỗ".
+    -- Keep the cluster extremely tight, but give each model a tiny offset
+    -- to reduce unstable model overlap.
+    if not anchor then return nil end
+
+    if total <= 1 then
+        return anchor
+    end
+
+    local angle = ((index-1)/math.max(total,1))*math.pi*2
+    local radius = CONFIG.GOLEM.CLUSTER_RADIUS
+
+    local offset = Vector3.new(
+        math.cos(angle)*radius,
+        0,
+        math.sin(angle)*radius
+    )
+
+    return CFrame.lookAt(
+        anchor.Position+offset,
+        anchor.Position+offset+anchor.LookVector
+    )
+end
+
+local function bringAllGolemsToCluster(island,golems,force)
+    local golemes = golems or liveGolems()
+    if #golemes == 0 then
+        return nil,0
+    end
+
+    local anchor = computeClusterAnchor(island,golemes)
+    if not anchor then
+        return nil,#golemes
+    end
+
+    local now = os.clock()
+
+    for i,golem in ipairs(golemes) do
+        local h = golem:FindFirstChildOfClass("Humanoid")
+        local gp = golem:FindFirstChild("HumanoidRootPart")
+            or golem:FindFirstChild("Head")
+
+        if h and h.Health > 0 and gp then
+            prepareGolemOnce(golem)
+
+            local slot = clusterSlotCF(anchor,i,#golemes)
+            local last = golemLastBring[golem] or 0
+            local drift = (gp.Position-slot.Position).Magnitude
+
+            if force or (
+                now-last >= CONFIG.GOLEM.BRING_INTERVAL
+                and drift >= CONFIG.GOLEM.REBRING_DRIFT
+            ) then
+                golemLastBring[golem] = now
+
+                pcall(function()
+                    golem:PivotTo(slot)
+
+                    local newRoot =
+                        golem:FindFirstChild("HumanoidRootPart")
+                        or golem:FindFirstChild("Head")
+
+                    if newRoot then
+                        newRoot.AssemblyLinearVelocity = Vector3.zero
+                        newRoot.AssemblyAngularVelocity = Vector3.zero
+                    end
+                end)
+            end
+        end
+    end
+
+    return anchor,#golemes
+end
+
+local function netHitGolemCluster(golems)
+    local rr = root()
+
+    if not rr then
+        return false
+    end
+
+    local live = {}
+    local primaryPart = nil
+
+    for _,golem in ipairs(golems or {}) do
+        local h = golem:FindFirstChildOfClass("Humanoid")
+        local gp = golem:FindFirstChild("HumanoidRootPart")
+            or golem:FindFirstChild("Head")
+
+        if h and h.Health > 0 and gp
+        and (rr.Position-gp.Position).Magnitude <= CONFIG.GOLEM.NET_DISTANCE then
+            primaryPart = primaryPart or gp
+            live[#live+1] = {golem,gp}
+        end
+    end
+
+    if #live == 0 or not primaryPart then
+        return false
+    end
+
+    if not RegisterAttack or not RegisterHit then
+        local tool = equipTooltip("Melee")
+        if tool then
+            pcall(function() tool:Activate() end)
+            return true
+        end
+        return false
+    end
+
+    local okA = pcall(function()
+        RegisterAttack:FireServer(.05)
+    end)
+
+    local okH = pcall(function()
+        -- One attack registration, all clustered Golems in one target list.
+        RegisterHit:FireServer(primaryPart,live)
+    end)
+
+    return okA and okH
+end
+
+local function golemClusterBurst(island,token)
+    local golemes = liveGolems()
+
+    if #golemes == 0 then
+        STATE.GolemCount = 0
+        STATE.GolemHP = nil
+        refreshUI()
+        return true
+    end
+
+    local anchor = computeClusterAnchor(island,golemes)
+    if not anchor then
+        return false
+    end
+
+    -- Immediately pull ALL living Golems away from Fossil.
+    bringAllGolemsToCluster(island,golemes,true)
+
+    local rr = root()
+    if not rr then
+        return false
+    end
+
+    local playerTarget = CFrame.new(
+        anchor.Position + Vector3.new(0,CONFIG.GOLEM.HOVER_Y,0)
+    )
+
+    if (rr.Position-playerTarget.Position).Magnitude
+    > CONFIG.GOLEM.APPROACH_DISTANCE then
+        local ok = tweenTo(
+            playerTarget,
+            165,
+            token
+        )
+
+        if not ok then
+            return false
+        end
+    end
+
+    local deadline = os.clock()+CONFIG.GOLEM.BURST_SECONDS
+    local lastTotalHP = totalGolemHP(golemes)
+    local progressAt = os.clock()
+
+    while current(token)
+    and autoOn()
+    and os.clock() < deadline do
+        -- Re-scan every loop because another Golem can spawn during the event.
+        golemes = liveGolems()
+
+        if #golemes == 0 then
+            STATE.GolemCount = 0
+            STATE.GolemHP = nil
+            refreshUI()
+            return true
+        end
+
+        anchor = computeClusterAnchor(island,golemes) or anchor
+
+        -- Keep every live Golem in the same cluster.
+        bringAllGolemsToCluster(island,golemes,false)
+
+        local totalHP = totalGolemHP(golemes)
+        STATE.GolemCount = #golemes
+        STATE.GolemHP = totalHP
+        refreshUI()
+
+        if totalHP < lastTotalHP then
+            lastTotalHP = totalHP
+            progressAt = os.clock()
+        end
+
+        local first = golemes[1]
+        local firstPart = first and (
+            first:FindFirstChild("HumanoidRootPart")
+            or first:FindFirstChild("Head")
+        )
+
+        if firstPart then
+            aimAt(firstPart.Position)
+        end
+
+        equipTooltip("Melee")
+        netHitGolemCluster(golemes)
+
+        -- Stall fallback: if aggregate HP is not changing, use one normal
+        -- physical activation rather than flooding more remotes.
+        if os.clock()-progressAt >= CONFIG.GOLEM.STALL_SECONDS then
+            setStatus(
+                "Golem cluster stalled -> physical Melee fallback | "
+                ..#golemes.."x",
+                "GOLEM RECOVERY"
+            )
+
+            local tool = equipTooltip("Melee")
+            if tool then
+                pcall(function() tool:Activate() end)
+            end
+
+            progressAt = os.clock()
+            task.wait(.20)
+        end
+
+        task.wait(CONFIG.GOLEM.ATTACK_INTERVAL)
+    end
+
+    return #liveGolems() == 0
+end
+
+local function golemSupportBurst(island,token)
+    local golemes = liveGolems()
+
+    if #golemes == 0 then
+        return true
+    end
+
+    local center = Vector3.zero
+    local count = 0
+
+    for _,g in ipairs(golemes) do
+        local gp = g:FindFirstChild("HumanoidRootPart")
+            or g:FindFirstChild("Head")
+
+        if gp then
+            center += gp.Position
+            count += 1
+        end
+    end
+
+    if count <= 0 then
+        return false
+    end
+
+    center /= count
+
+    local targetCF = CFrame.new(
+        center + Vector3.new(0,CONFIG.GOLEM.HOVER_Y,0)
+    )
+
+    local rr = root()
+    if not rr then return false end
+
+    if (rr.Position-targetCF.Position).Magnitude
+    > CONFIG.GOLEM.APPROACH_DISTANCE then
+        local ok = tweenTo(targetCF,165,token)
+        if not ok then
+            return false
+        end
+    end
+
+    local deadline = os.clock()+CONFIG.GOLEM.BURST_SECONDS
+
+    while current(token)
+    and autoOn()
+    and eventActive()
+    and os.clock() < deadline do
+        golemes = liveGolems()
+
+        if #golemes == 0 then
+            return true
+        end
+
+        STATE.GolemCount = #golemes
+        STATE.GolemHP = totalGolemHP(golemes)
+        refreshUI()
+
+        local first = golemes[1]
+        local gp = first and (
+            first:FindFirstChild("HumanoidRootPart")
+            or first:FindFirstChild("Head")
+        )
+
+        if gp then
+            aimAt(gp.Position)
+        end
+
+        equipTooltip("Melee")
+        netHitGolemCluster(golemes)
+
+        task.wait(CONFIG.GOLEM.ATTACK_INTERVAL)
+    end
+
+    return #liveGolems() == 0
+end
+
+local function startEvent(island,token)
+    if eventActive() then
+        return true
+    end
+
+    local r = relic(island)
+    if not r then
+        setStatus("PrehistoricRelic not found","START EVENT")
+        return false
+    end
+
+    setStatus(
+        "Fossil -> exact captured spot -> Virtual HOLD E 3s",
+        "START EVENT"
+    )
+
+    local h = hum()
+
+    if h and h.SeatPart then
+        local unseatOk,unseatWhy =
+            jumpOutOfSeat(token,"before exact Fossil spot")
+
+        if not unseatOk then
+            setStatus(
+                "Could not JUMP out of seat: "..tostring(unseatWhy),
+                "START EVENT"
+            )
+            return false
+        end
+    end
+
+    local targetCF,pivot = capturedFossilTarget(island)
+
+    if not targetCF then
+        setStatus(
+            "Could not resolve captured Fossil CFrame",
+            "START EVENT"
+        )
+        return false
+    end
+
+    -- Safe tween to the EXACT relative standing pose that was manually captured.
+    local moveOk,moveWhy =
+        tweenTo(targetCF,CONFIG.FOSSIL.SAFE_SPEED,token)
+
+    if not moveOk then
+        setStatus(
+            "Exact Fossil tween failed: "..tostring(moveWhy),
+            "START EVENT"
+        )
+        return false
+    end
+
+    -- Settle at the precise captured pose without a long-distance teleport.
+    -- This final assignment is only a tiny correction after the safe tween.
+    local rr = root()
+    if rr and (rr.Position-targetCF.Position).Magnitude <= 4 then
+        pcall(function()
+            rr.CFrame = targetCF
+            rr.AssemblyLinearVelocity = Vector3.zero
+            rr.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end
+
+    task.wait(CONFIG.FOSSIL.SETTLE_TIME)
+
+    if not autoOn() then
+        return false
+    end
+
+    setStatus(
+        "Exact Fossil position reached | Virtual HOLD E "..tostring(CONFIG.FOSSIL.HOLD_SECONDS).."s",
+        "START EVENT"
+    )
+
+    -- One deliberate hold first. Do not spam E because E is also Observation.
+    local held,holdWhy =
+        holdFossilEVirtual(CONFIG.FOSSIL.HOLD_SECONDS,token)
+
+    if not held then
+        setStatus(
+            "Fossil E hold failed: "..tostring(holdWhy),
+            "START EVENT"
+        )
+        return false
+    end
+
+    local deadline = os.clock()+2.0
+
+    repeat
+        if eventActive() then
+            setStatus("Fossil event started","VOLCANO")
+            return true
+        end
+        task.wait(.08)
+    until os.clock() >= deadline
+
+    -- Safety: do NOT repeatedly press E when the interaction is unconfirmed,
+    -- because E can toggle Observation/Instinct.
+    setStatus(
+        "Fossil E hold sent but event not confirmed -> AUTO PAUSED for inspection",
+        "FOSSIL DEBUG"
+    )
+
+    STATE.AutoVolcano = false
+    refreshUI()
+
+    return false
+end
+
+local function runVolcano(island,token)
+    enableLavaProtection(island)
+
+    setStatus("Volcano HUD detected -> solo controller armed","VOLCANO")
+
+    local hudGrace = os.clock()+2.0
+    while current(token) and not eventActive() and os.clock() < hudGrace do
+        task.wait(.05)
+    end
+
+    while current(token)
+    and island.Parent
+    and eventActive() do
+        if not autoOn() then
+            setStatus(
+                "AUTO VOLCANO OFF - event control paused",
+                "PAUSED"
+            )
+
+            if not waitAuto(token) then
+                break
+            end
+
+            setStatus(
+                "AUTO VOLCANO resumed inside event",
+                "VOLCANO"
+            )
+        end
+        STATE.Pressure = pressure()
+        STATE.Relic = relicHP(island)
+
+        local rocks = activeRocks(island)
+        local rock = rocks[1]
+        local golemes = liveGolems()
+
+        STATE.GolemCount = #golemes
+        STATE.GolemHP = #golemes > 0 and totalGolemHP(golemes) or nil
+        refreshUI()
+
+        -- V2.9 MULTI-GOLEM PRIORITY:
+        -- Any number of live Lava Golems are gathered into ONE cluster far
+        -- from Fossil, then hit together with one RegisterHit target list.
+        if #golemes > 0 and CONFIG.GOLEM.PRIORITY_FIRST then
+            local anchor = computeClusterAnchor(island,golemes)
+            local relicModel = relic(island)
+            local relicPivot
+
+            if relicModel then
+                pcall(function()
+                    relicPivot = relicModel:GetPivot()
+                end)
+            end
+
+            local awayDist = "?"
+            if anchor and relicPivot then
+                awayDist = tostring(math.floor(
+                    (anchor.Position-relicPivot.Position).Magnitude
+                ))
+            end
+
+            setStatus(
+                "GOLEM CLUSTER FIRST | "..#golemes..
+                "x | bring "..awayDist..
+                " studs | total HP="..
+                tostring(math.floor(STATE.GolemHP or 0)),
+                "GOLEM"
+            )
+
+            golemClusterBurst(island,token)
+
+        elseif rock then
+            setStatus(
+                "Fixing pressure | P="..tostring(STATE.Pressure or "?")..
+                " | Rocks="..#rocks,
+                "PRESSURE"
+            )
+            pressureBurst(rock,token)
+
         else
-            local pressure = getPressure()
-            local hpPct = getRelicHealthPercent(island)
-            local needAssist = (pressure and pressure >= CONFIG.PRESSURE.ASSIST_AT)
-                or (hpPct and hpPct <= CONFIG.PRESSURE.RELIC_ASSIST_AT)
+            setStatus(
+                "Stable | P="..tostring(STATE.Pressure or "?")..
+                " | Relic="..tostring(STATE.Relic or "?"),
+                "VOLCANO"
+            )
+            task.wait(.08)
+        end
+    end
 
-            if needAssist then
-                local idx = (slaveIndex() or 1) + 1
-                local target, rockCount = PHX.pickPressureRock(island, idx)
+    STATE.Pressure = pressure()
+    STATE.Relic = relicHP(island)
+    STATE.GolemHP = nil
+    STATE.GolemCount = 0
+    clusterAnchorCF = nil
+    clusterIslandRef = nil
+    refreshUI()
+
+    return true
+end
+
+local function runTeamVolcano(island,token)
+    enableLavaProtection(island)
+
+    STATE.Raid = "ACTIVE"
+    setStatus(
+        "TEAM RAID ACTIVE | "..ROLE,
+        "TEAM VOLCANO"
+    )
+
+    while current(token)
+    and island.Parent
+    and eventActive() do
+        if not autoOn() then
+            STATE.Raid = "PAUSED"
+            setStatus("AUTO TEAM OFF - raid control paused","PAUSED")
+
+            if not waitAuto(token) then
+                break
+            end
+
+            STATE.Raid = "ACTIVE"
+        end
+
+        STATE.Pressure = pressure()
+        STATE.Relic = relicHP(island)
+
+        local golemes = liveGolems()
+        STATE.GolemCount = #golemes
+        STATE.GolemHP = #golemes > 0 and totalGolemHP(golemes) or nil
+        refreshUI()
+
+        if TEAM_SLOT == 0 then
+            -- MASTER controls the cluster so multiple clients do not fight over PivotTo.
+            if #golemes > 0 then
                 setStatus(
-                    "SLAVE PRESSURE ASSIST | P="..tostring(pressure or "?")..
-                    "% Relic="..string.format("%.1f", hpPct or 0)..
-                    "% Rocks="..tostring(rockCount)
+                    "MASTER GOLEM CTRL | "..#golemes..
+                    "x | total HP "..math.floor(STATE.GolemHP or 0),
+                    "GOLEM CTRL"
                 )
-                if target then
-                    PHX.pressureRockBurst(target, token)
+                golemClusterBurst(island,token)
+            else
+                local rock,count = teamPressureTarget(island,1)
+
+                if rock then
+                    setStatus(
+                        "MASTER assists pressure | "..count.." rocks",
+                        "PRESSURE"
+                    )
+                    pressureBurst(rock,token)
                 else
-                    task.wait(.05)
+                    task.wait(.08)
+                end
+            end
+
+        elseif TEAM_SLOT == 3 then
+            -- Dedicated DPS account does NOT move Golems. MASTER owns bring.
+            if #golemes > 0 then
+                setStatus(
+                    "GOLEM DPS | "..#golemes..
+                    "x | total HP "..math.floor(STATE.GolemHP or 0),
+                    "GOLEM DPS"
+                )
+
+                -- If MASTER died, temporarily take over cluster control.
+                if masterAlive() then
+                    golemSupportBurst(island,token)
+                else
+                    setStatus(
+                        "MASTER down -> GOLEM DPS takes cluster control",
+                        "GOLEM TAKEOVER"
+                    )
+                    golemClusterBurst(island,token)
                 end
             else
-                if rp then
-                    local idx = slaveIndex() or 1
-                    local off = Vector3.new((idx-2.5)*5, 14, idx%2==0 and 8 or -8)
-                    local rr = root()
-                    local pos = rp.Position + off
-                    if rr and (rr.Position-pos).Magnitude > 12 then
-                        safeTween(CFrame.new(pos), 320, token)
-                    end
+                local rock,count =
+                    teamPressureTarget(island,pressureWorkerIndex())
+
+                if rock then
+                    setStatus(
+                        "No Golem -> DPS helps pressure | "..count.." rocks",
+                        "PRESSURE SUPPORT"
+                    )
+                    pressureBurst(rock,token)
+                else
+                    task.wait(.08)
                 end
+            end
+
+        else
+            -- Pressure A/B/C stay on rocks even while Golems exist.
+            -- This is the main advantage over solo.
+            local worker = pressureWorkerIndex()
+            local rock,count = teamPressureTarget(island,worker)
+
+            if rock then
+                setStatus(
+                    ROLE.." | rock slot "..worker..
+                    " | active "..count,
+                    "PRESSURE TEAM"
+                )
+                pressureBurst(rock,token)
+
+            elseif #golemes > 0 then
+                -- No active rock: free account contributes DPS.
+                setStatus(
+                    ROLE.." | no rock -> Golem support",
+                    "GOLEM SUPPORT"
+                )
+                golemSupportBurst(island,token)
+
+            else
+                setStatus(
+                    ROLE.." | stable | P="..
+                    tostring(STATE.Pressure or "?")..
+                    " | Relic="..tostring(STATE.Relic or "?"),
+                    "TEAM VOLCANO"
+                )
                 task.wait(.08)
             end
         end
     end
 
-    disableLavaProtection()
+    STATE.Raid = "ENDED"
+    STATE.Pressure = pressure()
+    STATE.Relic = relicHP(island)
+    STATE.GolemHP = nil
+    STATE.GolemCount = 0
+    refreshUI()
+
+    return true
 end
 
 --==============================================================
--- COLLECT BONES / EGGS / DRAGON FRUIT
+-- REWARDS
 --==============================================================
 
 local function interactionPart(obj)
+    if not obj then return nil end
     if obj:IsA("BasePart") then return obj end
-    return obj:FindFirstChildWhichIsA("BasePart", true)
+    return obj:FindFirstChildWhichIsA("BasePart",true)
 end
 
-local function interactCollectible(obj, token)
-    if not obj or not obj.Parent then return false end
+local function collectDragonEgg(island,token)
+    STATE.Egg = "WAIT"
+    refreshUI()
+
+    local core = island and island:FindFirstChild("Core")
+    if not core then return false end
+
+    local folder = core:FindFirstChild("SpawnedDragonEggs")
+
+    local waitUntilTime = os.clock()+CONFIG.EGG.WAIT_SECONDS
+
+    while current(token) and os.clock() < waitUntilTime do
+        folder = core:FindFirstChild("SpawnedDragonEggs")
+
+        if folder and #folder:GetChildren() > 0 then
+            break
+        end
+
+        task.wait(.10)
+    end
+
+    if not folder or #folder:GetChildren() == 0 then
+        STATE.Egg = "NONE"
+        refreshUI()
+        setStatus("No Dragon Egg spawned","REWARD")
+        return true
+    end
+
+    local rr = root()
+    local eggs = {}
+
+    for _,egg in ipairs(folder:GetChildren()) do
+        local p = interactionPart(egg)
+        if p then
+            eggs[#eggs+1] = {obj=egg,part=p}
+        end
+    end
+
+    if #eggs == 0 then
+        STATE.Egg = "NONE"
+        refreshUI()
+        return true
+    end
+
+    table.sort(eggs,function(a,b)
+        if not rr then return true end
+        return (a.part.Position-rr.Position).Magnitude
+            < (b.part.Position-rr.Position).Magnitude
+    end)
+
+    local egg = eggs[1].obj
+    local p = eggs[1].part
+
+    setStatus("Nearest Dragon Egg -> HOLD E","DRAGON EGG")
+    STATE.Egg = "PICKING"
+    refreshUI()
+
+    tweenTo(
+        p.CFrame*CFrame.new(0,2.5,-CONFIG.EGG.APPROACH_DISTANCE),
+        CONFIG.PLAYER_SPEED,
+        token
+    )
+
+    aimAt(p.Position)
+
+    local prompt = egg:FindFirstChildWhichIsA("ProximityPrompt",true)
+    local hold = CONFIG.EGG.HOLD_E
+
+    if prompt then
+        hold = math.max(
+            hold,
+            (tonumber(prompt.HoldDuration) or 0)+.12
+        )
+    end
+
+    local picked = false
+
+    for attempt=1,CONFIG.EGG.RETRIES do
+        if not egg.Parent
+        or not egg:IsDescendantOf(folder) then
+            picked = true
+            break
+        end
+
+        local ep = interactionPart(egg)
+        if ep then
+            if (root().Position-ep.Position).Magnitude > 7 then
+                tweenTo(
+                    ep.CFrame*CFrame.new(0,2.5,-CONFIG.EGG.APPROACH_DISTANCE),
+                    CONFIG.PLAYER_SPEED,
+                    token
+                )
+            end
+            aimAt(ep.Position)
+        end
+
+        setStatus(
+            "Dragon Egg HOLD E "..attempt.."/"..CONFIG.EGG.RETRIES,
+            "DRAGON EGG"
+        )
+
+        holdE(hold)
+        task.wait(CONFIG.EGG.RETRY_GAP)
+    end
+
+    if not egg.Parent or not egg:IsDescendantOf(folder) then
+        picked = true
+    end
+
+    -- One fallback only, after physical Hold-E attempts.
+    if not picked and Net then
+        local re = Net:FindFirstChild("RE/CollectedDragonEgg")
+        if re then
+            pcall(function() re:FireServer() end)
+            task.wait(.35)
+            picked = not egg.Parent or not egg:IsDescendantOf(folder)
+        end
+    end
+
+    STATE.Egg = picked and "PICKED" or "FAILED"
+    refreshUI()
+
+    setStatus(
+        picked and "Dragon Egg picked" or "Dragon Egg pickup not confirmed",
+        "DRAGON EGG"
+    )
+
+    return picked
+end
+
+local function interactCollectible(obj,token)
     local p = interactionPart(obj)
     if not p then return false end
 
-    highTween(p.CFrame * CFrame.new(0,3,0), 330, token)
+    tweenTo(p.CFrame*CFrame.new(0,3,0),CONFIG.PLAYER_SPEED,token)
 
-    local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+    local prompt = obj:FindFirstChildWhichIsA("ProximityPrompt",true)
     if prompt and fireproximityprompt then
         pcall(function() fireproximityprompt(prompt) end)
-        task.wait(.25)
+        task.wait(.20)
         return true
     end
 
-    local cd = obj:FindFirstChildWhichIsA("ClickDetector", true)
-    if cd and fireclickdetector then
-        pcall(function() fireclickdetector(cd) end)
-        task.wait(.25)
+    local click = obj:FindFirstChildWhichIsA("ClickDetector",true)
+    if click and fireclickdetector then
+        pcall(function() fireclickdetector(click) end)
+        task.wait(.20)
         return true
     end
 
-    local touch = obj:FindFirstChildWhichIsA("TouchTransmitter", true)
+    local touch = obj:FindFirstChildWhichIsA("TouchTransmitter",true)
     if touch and firetouchinterest and root() then
         local tp = touch.Parent
         if tp and tp:IsA("BasePart") then
             pcall(function()
-                firetouchinterest(root(), tp, 0)
-                task.wait(.12)
-                firetouchinterest(root(), tp, 1)
+                firetouchinterest(root(),tp,0)
+                task.wait(.10)
+                firetouchinterest(root(),tp,1)
             end)
-            task.wait(.25)
+            task.wait(.20)
             return true
         end
     end
@@ -2924,2564 +4024,398 @@ local function interactCollectible(obj, token)
     return false
 end
 
-local function collectBones(island, token)
-    -- In the supplied full-run video Dinosaur Bones are granted automatically
-    -- as the event ends. Do only a short physical sweep so eggs are never delayed.
-    setStatus("Rewards -> quick Dinosaur Bones sweep")
-    local deadline = os.clock()+2.5
-    local tried = {}
-    local quietSince = os.clock()
+local function collectBones(island,token)
+    if not CONFIG.BONES.ENABLED then return true end
 
-    while isRunning(token) and island.Parent and os.clock()<deadline do
+    setStatus("Quick Dinosaur Bones sweep","BONES")
+
+    local deadline = os.clock()+CONFIG.BONES.SWEEP_SECONDS
+    local tried = {}
+    local quiet = os.clock()
+
+    while current(token)
+    and island.Parent
+    and os.clock() < deadline do
         local found = false
+
         for _,v in ipairs(island:GetDescendants()) do
-            if not tried[v] and string.lower(v.Name):find("bone",1,true) then
-                local hasInteract = v:FindFirstChildWhichIsA("ProximityPrompt", true)
-                    or v:FindFirstChildWhichIsA("ClickDetector", true)
-                    or v:FindFirstChildWhichIsA("TouchTransmitter", true)
+            if not tried[v]
+            and normalize(v.Name):find("bone",1,true) then
+                local hasInteract =
+                    v:FindFirstChildWhichIsA("ProximityPrompt",true)
+                    or v:FindFirstChildWhichIsA("ClickDetector",true)
+                    or v:FindFirstChildWhichIsA("TouchTransmitter",true)
+
                 if hasInteract then
                     tried[v] = true
                     found = true
-                    quietSince = os.clock()
-                    interactCollectible(v, token)
+                    quiet = os.clock()
+                    interactCollectible(v,token)
                 end
             end
         end
+
         if not found then
-            if os.clock()-quietSince > .55 then break end
+            if os.clock()-quiet > .55 then
+                break
+            end
             task.wait(.08)
         end
     end
+
+    return true
 end
 
+local function slaveWaitForIsland(token)
+    local lastPortalAttempt = 0
 
-function PHX.dragonVariantFromText(value)
-    local s = string.lower(tostring(value or ""))
-    if s:find("east",1,true) then return "East" end
-    if s:find("west",1,true) then return "West" end
-    return nil
-end
-
--- Physical reward identity is strict: an actual Tool named Dragon Fruit (the normal
--- physical-fruit runtime name used by auto-store scripts), or an explicitly East/West
--- Blox Fruit label. Dragon Talon / Dragon Scale / Dragon Hunter never pass this check.
-function PHX.isDragonFruitTool(tool)
-    if not tool or not tool:IsA("Tool") then return false end
-    local name = string.lower(tostring(tool.Name or "")):gsub("%s+"," ")
-    if name == "dragon fruit" or name == "blox fruit dragon (east)" or name == "blox fruit dragon (west)"
-        or name == "dragon (east)" or name == "dragon (west)" then
-        return true
-    end
-
-    local original = string.lower(tostring(tool:GetAttribute("OriginalName") or ""))
-    local fruitName = string.lower(tostring(tool:GetAttribute("FruitName") or ""))
-    local itemName = string.lower(tostring(tool:GetAttribute("ItemName") or ""))
-    local dragonId = original == "dragon-dragon" or fruitName == "dragon-dragon" or itemName == "dragon-dragon"
-    if not dragonId then return false end
-
-    -- Metadata-only Dragon-Dragon must still look like a fruit tool.
-    if tool:FindFirstChild("EatRemote", true) then return true end
-    local tip = string.lower(tostring(tool.ToolTip or ""))
-    return tip:find("fruit",1,true) ~= nil
-end
-
-function PHX.dragonVariantFromTool(tool)
-    if not PHX.isDragonFruitTool(tool) then return nil end
-    local variant = PHX.dragonVariantFromText(tool.Name)
-        or PHX.dragonVariantFromText(tool:GetAttribute("Variant"))
-        or PHX.dragonVariantFromText(tool:GetAttribute("Form"))
-        or PHX.dragonVariantFromText(tool:GetAttribute("Side"))
-        or PHX.dragonVariantFromText(tool:GetAttribute("FruitName"))
-        or PHX.dragonVariantFromText(tool:GetAttribute("ItemName"))
-    if variant then return variant end
-    for _,v in ipairs(tool:GetDescendants()) do
-        if v:IsA("StringValue") then
-            local x = PHX.dragonVariantFromText(v.Value)
-            if x then return x end
-        end
-    end
-    return nil
-end
-
-function PHX.findPhysicalDragonFruits()
-    local result, seen = {}, {}
-    for _,container in ipairs({LP.Backpack, char()}) do
-        if container then
-            for _,v in ipairs(container:GetDescendants()) do
-                if v:IsA("Tool") and PHX.isDragonFruitTool(v) and not seen[v] then
-                    seen[v] = true
-                    result[#result+1] = v
-                end
-            end
-        end
-    end
-    return result
-end
-
--- Kept for older call-sites. V2.7 intentionally has no fuzzy "unknown Dragon" alarm.
-function PHX.findUnknownDragonFruitTools()
-    return {}
-end
-
-function PHX.storedDragonTotal()
-    local ok, inv = pcall(function() return CommF:InvokeServer("getInventoryFruits") end)
-    if not ok or type(inv) ~= "table" then return nil end
-    local total = 0
-    for _,v in pairs(inv) do
-        if type(v) == "table" then
-            local nm = string.lower(tostring(v.Name or v.name or v.OriginalName or ""))
-            if nm == "dragon-dragon" or nm == "dragon" or nm == "dragon fruit"
-                or nm:find("dragon (east)",1,true) or nm:find("dragon (west)",1,true) then
-                total = total + (tonumber(v.Count or v.count or v.Amount or v.amount) or 1)
-            end
-        end
-    end
-    return total
-end
-
-function PHX.storeOneDragonFruit(tool)
-    if not PHX.isDragonFruitTool(tool) then return true end
-    local variant = PHX.dragonVariantFromTool(tool)
-    local label = variant and ("Dragon ("..variant..")") or "Dragon Fruit"
-    local before = PHX.storedDragonTotal()
-
-    setStatus("!!! PHYSICAL "..label.." -> STORE NOW")
-    logLine("DRAGON", "physical Blox Fruit detected | tool="..tostring(tool.Name).." variant="..tostring(variant))
-    sendWebhook("🐉 PHYSICAL DRAGON FRUIT DETECTED", "Immediate StoreFruit guard activated.", {
-        {name="Account", value=LP.Name, inline=true},
-        {name="Tool", value=tostring(tool.Name), inline=true},
-        {name="Variant", value=tostring(variant or "server/tool metadata"), inline=true},
-    })
-
-    for attempt=1,CONFIG.DRAGON_GUARD.STORE_RETRIES do
-        if not tool.Parent then
-            DRAGON_GUARD_STATE.LastStored = label
-            return true
+    while current(token) do
+        if not waitAuto(token) then
+            return nil,"STOPPED"
         end
 
-        local storeId = tostring(tool:GetAttribute("OriginalName") or "")
-        if storeId == "" or not string.lower(storeId):find("dragon",1,true) then storeId = "Dragon-Dragon" end
-        local ok, result = pcall(function()
-            return CommF:InvokeServer("StoreFruit", storeId, tool)
-        end)
-        task.wait(CONFIG.DRAGON_GUARD.RETRY_DELAY)
+        local island = prehistoricIsland()
 
-        local after = PHX.storedDragonTotal()
-        local disappeared = tool.Parent == nil
-        local countIncreased = before ~= nil and after ~= nil and after > before
-        logLine("DRAGON_STORE", "attempt="..attempt.." id="..tostring(storeId).." pcall="..tostring(ok).." result="..tostring(result).." disappeared="..tostring(disappeared).." storedBefore="..tostring(before).." storedAfter="..tostring(after))
+        if island then
+            local h = hum()
 
-        if disappeared or countIncreased then
-            DRAGON_GUARD_STATE.LastStored = label
-            setStatus(label.." STORED safely")
-            sendWebhook("✅ DRAGON FRUIT STORED", label.." secured before reset/teleport.", {
-                {name="Account", value=LP.Name, inline=true}, {name="Tool", value=tostring(tool.Name), inline=true},
-            })
-            return true
-        end
+            if h and h.SeatPart then
+                local ok,why =
+                    jumpOutOfSeat(token,"team reached Prehistoric")
 
-        local remaining = PHX.findPhysicalDragonFruits()
-        if #remaining == 0 then
-            DRAGON_GUARD_STATE.LastStored = label
-            return true
-        end
-        tool = remaining[1]
-    end
-
-    DRAGON_GUARD_STATE.Critical = true
-    _G.TeamConfig.StopReason = "DRAGON_STORE_FAIL"
-    _G.TeamConfig.IsRunning = false
-    setStatus("CRITICAL: PHYSICAL DRAGON still present -> STOPPED")
-    logLine("DRAGON_STORE_FAIL", "physical Dragon Fruit remained after retries")
-    sendWebhook("🚨 CRITICAL: DRAGON STORE FAILED", "Physical Dragon Fruit remains; reset/portal blocked.", {
-        {name="Account", value=LP.Name, inline=true},
-    })
-    return false
-end
-
-local function storeDragonFruitCritical()
-    if DRAGON_GUARD_STATE.Busy then
-        local deadline = os.clock() + 8
-        while DRAGON_GUARD_STATE.Busy and os.clock() < deadline do task.wait(.05) end
-        return #PHX.findPhysicalDragonFruits() == 0 and not DRAGON_GUARD_STATE.Critical
-    end
-
-    DRAGON_GUARD_STATE.Busy = true
-    local okAll = true
-    local safety = 0
-    while safety < 4 do
-        safety = safety + 1
-        local fruits = PHX.findPhysicalDragonFruits()
-        if #fruits == 0 then break end
-        if not PHX.storeOneDragonFruit(fruits[1]) then okAll = false break end
-        task.wait(.1)
-    end
-    DRAGON_GUARD_STATE.Busy = false
-    return okAll and #PHX.findPhysicalDragonFruits() == 0
-end
-
-function PHX.secureDragonWindow(seconds, token)
-    local untilAt = os.clock() + (tonumber(seconds) or 0)
-    while os.clock() < untilAt do
-        if token and not isRunning(token) then return false end
-        if #PHX.findPhysicalDragonFruits() > 0 then
-            if not storeDragonFruitCritical() then return false end
-        end
-        task.wait(.08)
-    end
-    if #PHX.findPhysicalDragonFruits() > 0 then return storeDragonFruitCritical() end
-    return not DRAGON_GUARD_STATE.Critical
-end
-
-function PHX.hookDragonContainer(container)
-    if not container then return end
-    container.ChildAdded:Connect(function(obj)
-        task.defer(function()
-            task.wait(.05)
-            if PHX.isDragonFruitTool(obj) then
-                logLine("DRAGON_WATCH", "physical Blox Fruit ChildAdded -> "..tostring(obj.Name))
-                storeDragonFruitCritical()
-            end
-        end)
-    end)
-end
-
-PHX.hookDragonContainer(LP.Backpack)
-if char() then PHX.hookDragonContainer(char()) end
-LP.CharacterAdded:Connect(function(c)
-    PHX.hookDragonContainer(c)
-    task.defer(function()
-        task.wait(.5)
-        storeDragonFruitCritical()
-    end)
-end)
-task.defer(function() storeDragonFruitCritical() end)
-
-local function eggPosition(obj)
-    local p = interactionPart(obj)
-    return p and p.Position
-end
-
-function PHX.collectDragonEggRemote()
-    local modules = ReplicatedStorage:FindFirstChild("Modules")
-    local net = modules and modules:FindFirstChild("Net")
-    local re = net and net:FindFirstChild("RE/CollectedDragonEgg")
-    if not re then return false end
-    local ok = pcall(function() re:FireServer() end)
-    return ok
-end
-
-local function collectAssignedEgg(island, token)
-    local core = island:FindFirstChild("Core")
-    local folder = core and core:FindFirstChild("SpawnedDragonEggs")
-    if not folder then
-        setStatus("Waiting Dragon Egg folder")
-        local waitUntil = os.clock() + CONFIG.EGG.SPAWN_WAIT_SECONDS
-        while isRunning(token) and os.clock() < waitUntil do
-            core = island:FindFirstChild("Core")
-            folder = core and core:FindFirstChild("SpawnedDragonEggs")
-            if folder then break end
-            task.wait(.10)
-        end
-        if not folder then
-            logLine("EGG_NONE", "SpawnedDragonEggs folder not found")
-            return true
-        end
-    end
-
-    local deadline = os.clock() + CONFIG.EGG.SPAWN_WAIT_SECONDS
-    while isRunning(token) and os.clock() < deadline do
-        local eggs = folder:GetChildren()
-        if #eggs > 0 then
-            table.sort(eggs, function(a,b)
-                local ap,bp = eggPosition(a),eggPosition(b)
-                if not ap then return false end
-                if not bp then return true end
-                if math.abs(ap.X-bp.X) > 1 then return ap.X < bp.X end
-                return ap.Z < bp.Z
-            end)
-
-            local ti = teamIndex(LP.Name) or 1
-            local islandPos = island:GetPivot().Position
-            local rotate = math.abs(math.floor(islandPos.X)) % #CONFIG.TEAM
-            local rank = ((ti + rotate - 1) % #CONFIG.TEAM) + 1
-
-            if rank > #eggs then
-                setStatus("No Dragon Egg assigned this run")
-                logLine("EGG", "rank="..rank.." eggs="..#eggs.." no assignment")
-                return true
-            end
-
-            local egg = eggs[rank]
-            local part = interactionPart(egg)
-            if not part then
-                logLine("EGG_FAIL", "assigned egg has no BasePart")
-                return false
-            end
-
-            setStatus("Dragon Egg "..rank.."/"..#eggs.." -> PC HOLD E")
-            highTween(part.CFrame * CFrame.new(0, 2.5, -CONFIG.EGG.APPROACH_DISTANCE), 380, token)
-            aimAt(part.Position)
-
-            local prompt = egg:FindFirstChildWhichIsA("ProximityPrompt", true)
-            local holdTime = CONFIG.EGG.HOLD_E_SECONDS
-            if prompt then
-                holdTime = math.max(holdTime, (tonumber(prompt.HoldDuration) or 0) + .12)
-            end
-
-            local picked = false
-            for attempt=1,CONFIG.EGG.RETRIES do
-                if not isRunning(token) then return false end
-                if not egg.Parent or not egg:IsDescendantOf(folder) then
-                    picked = true
-                    break
-                end
-
-                local ep = interactionPart(egg)
-                if ep then
-                    local rr = root()
-                    if rr and (rr.Position-ep.Position).Magnitude > 7 then
-                        highTween(ep.CFrame * CFrame.new(0, 2.5, -CONFIG.EGG.APPROACH_DISTANCE), 380, token)
-                    end
-                    aimAt(ep.Position)
-                end
-
-                setStatus("Dragon Egg HOLD E "..attempt.."/"..CONFIG.EGG.RETRIES.." | "..string.format("%.2fs", holdTime))
-                holdE(holdTime)
-                task.wait(CONFIG.EGG.RETRY_GAP)
-
-                if not egg.Parent or not egg:IsDescendantOf(folder) then
-                    picked = true
-                    break
+                if not ok then
+                    return nil,"UNSEAT_FAIL:"..tostring(why)
                 end
             end
 
-            -- Fallback only after physical PC-style Hold-E attempts. Never spam the
-            -- reward remote from range.
-            if not picked and egg.Parent and egg:IsDescendantOf(folder) then
-                logLine("EGG", "Hold-E not confirmed -> one remote fallback")
-                PHX.collectDragonEggRemote()
-                task.wait(.35)
-                picked = not egg.Parent or not egg:IsDescendantOf(folder)
-            end
-
-            if not picked then
-                setStatus("Dragon Egg pickup NOT confirmed -> staying on island")
-                logLine("EGG_FAIL", "rank="..rank.." holdE attempts exhausted")
-                return false
-            end
-
-            noteProgress("DRAGON_EGG_PICKED")
-            setStatus("Dragon Egg picked -> Dragon fruit guard 10s")
-            return PHX.secureDragonWindow(CONFIG.DRAGON_GUARD.POST_EGG_GUARD_SECONDS, token)
+            STATE.Boat = "ISLAND FOUND"
+            refreshUI()
+            return island,"ISLAND_FOUND"
         end
+
+        if not alive() then
+            if not waitForRespawnRecovery(token) then
+                return nil,"RESPAWN_TIMEOUT"
+            end
+        end
+
+        local boat = masterBoat()
+
+        if not boatAlive(boat) then
+            STATE.Boat = "WAIT MASTER BOAT"
+            STATE.TeamBoarded = 0
+            refreshUI()
+
+            local rr = root()
+
+            if rr
+            and (rr.Position-CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude > 3500
+            and os.clock()-lastPortalAttempt > 12 then
+                lastPortalAttempt = os.clock()
+
+                setStatus(
+                    "No MASTER boat -> portal route toward Tiki",
+                    "TEAM RENDEZVOUS"
+                )
+
+                routeToTiki(token)
+            else
+                setStatus(
+                    "Waiting MASTER Grand Brigade",
+                    "TEAM RENDEZVOUS"
+                )
+            end
+
+            task.wait(.5)
+            continue
+        end
+
+        teamBoardedCount(boat)
+
+        local h = hum()
+        if not h or not h.SeatPart
+        or not h.SeatPart:IsDescendantOf(boat) then
+            local ok,why = boardPassenger(boat,token)
+
+            if not ok then
+                setStatus(
+                    "Passenger board retry: "..tostring(why),
+                    "BOARD TEAM BOAT"
+                )
+                task.wait(CONFIG.TEAM.PASSENGER_BOARD_RETRY)
+                continue
+            end
+        end
+
+        STATE.Boat = "PASSENGER / HUNTING"
+        refreshUI()
+
+        -- Stay seated. MASTER moves the boat.
+        while current(token)
+        and autoOn()
+        and alive()
+        and boatAlive(boat)
+        and not prehistoricIsland()
+        and not prehistoricMarker() do
+            teamBoardedCount(boat)
+            task.wait(.20)
+        end
+    end
+
+    return nil,"STOPPED"
+end
+
+local function waitForMasterEvent(island,token)
+    setStatus(
+        "Island ready -> waiting MASTER to start Fossil",
+        "WAIT RAID"
+    )
+
+    while current(token)
+    and island
+    and island.Parent do
+        if eventActive() then
+            STATE.Raid = "ACTIVE"
+            refreshUI()
+            return true
+        end
+
+        if not alive() then
+            waitForRespawnRecovery(token)
+        end
+
         task.wait(.10)
     end
 
-    -- No egg can legitimately happen on a low-quality relic run. Do not freeze forever.
-    logLine("EGG_NONE", "no eggs spawned within wait window")
-    setStatus("No Dragon Egg spawned this run")
-    return true
-end
-
---==============================================================
--- DRAGON HUNTER DIALOGUE / QUESTS
---==============================================================
-
-local function visibleGui(o)
-    local p = o
-    while p and p ~= PG do
-        if p:IsA("GuiObject") and not p.Visible then return false end
-        p = p.Parent
-    end
-    return true
-end
-
-local function dialogueGui()
-    return PG:FindFirstChild("DialogueGui")
-end
-
-local function dialogueOptions()
-    local dg = dialogueGui()
-    if not dg then return {} end
-    local arr,seen = {},{}
-    for _,v in ipairs(dg:GetDescendants()) do
-        if v:IsA("TextButton") and visibleGui(v) and v.AbsoluteSize.X > 80 and v.AbsoluteSize.Y > 20 then
-            local pn = v.Parent and string.lower(v.Parent.Name) or ""
-            local fp = string.lower(v:GetFullName())
-            if pn:find("option",1,true) or fp:find(":option",1,true) then
-                if not seen[v] then
-                    seen[v]=true
-                    table.insert(arr,v)
-                end
-            end
-        end
-    end
-    table.sort(arr,function(a,b) return a.AbsolutePosition.Y < b.AbsolutePosition.Y end)
-    return arr
-end
-
-local function fireButton(btn)
-    if not btn then return false end
-    local function trySignal(sig)
-        if getconnections then
-            local ok,cons = pcall(function() return getconnections(sig) end)
-            if ok then
-                for _,c in ipairs(cons) do
-                    if c.Fire then pcall(function() c:Fire() end)
-                    elseif c.Function then pcall(function() c.Function() end) end
-                end
-            end
-        end
-        if firesignal then pcall(function() firesignal(sig) end) end
-    end
-    pcall(function() trySignal(btn.Activated) end)
-    pcall(function() trySignal(btn.MouseButton1Click) end)
-    task.wait(.12)
-    return true
-end
-
--- Dragon Hunter interaction is intentionally screen-click free.
--- V2.7.1 used VirtualInputManager on the NPC's projected screen position; that could
--- accidentally hit this script's STOP button and was also unreliable on mobile UI layers.
-function PHX.dragonHunterRemote()
-    local modules = ReplicatedStorage:FindFirstChild("Modules") or ReplicatedStorage:WaitForChild("Modules", 5)
-    local net = modules and (modules:FindFirstChild("Net") or modules:WaitForChild("Net", 5))
-    return net and (net:FindFirstChild("RF/DragonHunter") or net:WaitForChild("RF/DragonHunter", 5))
-end
-
-function PHX.dragonHunterCheckRaw()
-    local rf = PHX.dragonHunterRemote()
-    if not rf then return nil end
-    local ok, response = pcall(function()
-        return rf:InvokeServer({Context="Check"})
-    end)
-    if not ok then return nil end
-    return response
-end
-
-PHX.ActiveQuestKind = PHX.ActiveQuestKind or "NONE"
-PHX.ActiveQuestText = PHX.ActiveQuestText or ""
-
-function PHX.questTextFromValue(response)
-    if response == nil then return "" end
-    local found = ""
-    local seen = {}
-    local function walk(v, depth)
-        if found ~= "" or depth > 10 then return end
-        if type(v) == "string" then
-            local l = string.lower(v)
-            if l:find("hydra enforcer",1,true)
-                or l:find("venomous assailant",1,true)
-                or (l:find("destroy",1,true) and l:find("tree",1,true)) then
-                found = v
-            end
-        elseif type(v) == "table" and not seen[v] then
-            seen[v] = true
-            for k,x in pairs(v) do
-                walk(k, depth + 1)
-                walk(x, depth + 1)
-            end
-        end
-    end
-    walk(response,0)
-    return found
-end
-
-function PHX.questKindFromText(text)
-    local l = string.lower(tostring(text or ""))
-    if l:find("hydra enforcer",1,true) then return "HYDRA" end
-    if l:find("venomous assailant",1,true) then return "VENOM" end
-    if l:find("destroy",1,true) and l:find("tree",1,true) then return "TREE" end
-    return "NONE"
-end
-
-function PHX.questTextFromVisibleGui()
-    for _,v in ipairs(PG:GetDescendants()) do
-        if (v:IsA("TextLabel") or v:IsA("TextButton")) and visibleGui(v) then
-            local t = tostring(v.Text or "")
-            if PHX.questKindFromText(t) ~= "NONE" then return t end
-        end
-    end
-    return ""
-end
-
-function PHX.latchQuest(text, source)
-    local kind = PHX.questKindFromText(text)
-    if kind == "NONE" then return false end
-    PHX.ActiveQuestKind = kind
-    PHX.ActiveQuestText = tostring(text or kind)
-    PHX.LastQuestAcceptedAt = os.clock()
-    PHX.QuestCompletedAt = -math.huge
-    PHX.QuestCompletedText = ""
-    local msg = tostring(source or "QUEST").." | QUEST "..kind.." | "..PHX.ActiveQuestText
-    setStatus(msg)
-    logLine("DRAGON_HUNTER_QUEST", msg)
-    noteProgress("QUEST_ACCEPTED:"..kind)
-    return true
-end
-
-function PHX.dragonHunterCheckText()
-    return PHX.questTextFromValue(PHX.dragonHunterCheckRaw())
-end
-
-local function questText()
-    if PHX.ActiveQuestKind and PHX.ActiveQuestKind ~= "NONE"
-        and (PHX.QuestCompletedAt or -math.huge) < (PHX.LastQuestAcceptedAt or -math.huge) then
-        return PHX.ActiveQuestText or PHX.ActiveQuestKind
-    end
-
-    local direct = PHX.dragonHunterCheckText()
-    if direct ~= "" then return direct end
-    return PHX.questTextFromVisibleGui()
-end
-
-local function questKind()
-    if PHX.ActiveQuestKind and PHX.ActiveQuestKind ~= "NONE"
-        and (PHX.QuestCompletedAt or -math.huge) < (PHX.LastQuestAcceptedAt or -math.huge) then
-        return PHX.ActiveQuestKind
-    end
-    return PHX.questKindFromText(questText())
-end
-
-function PHX.questStatusText()
-    local kind = questKind()
-    local text = questText()
-    if kind == "NONE" then return "No active Dragon Hunter quest" end
-    if text == "" then text = kind end
-    return "QUEST "..kind.." | "..text
-end
-
-PHX.QuestCompletedAt = -math.huge
-PHX.QuestCompletedText = ""
-PHX.LastQuestAcceptedAt = -math.huge
-
-function PHX.markQuestCompleteText(text)
-    local raw = tostring(text or ""):gsub("<.->", ""):gsub("^%s+",""):gsub("%s+$","")
-    local l = string.lower(raw)
-    -- Do not use substring matching: our own status/help text contains the words
-    -- "Quest Completed", which caused false positives in the probe.
-    local exact = (l == "task completed" or l == "task completed!"
-        or l == "quest completed" or l == "quest completed!")
-    if exact then
-        PHX.QuestCompletedAt = os.clock()
-        PHX.QuestCompletedText = raw
-        logLine("QUEST_POPUP", PHX.QuestCompletedText)
-        noteProgress("QUEST_COMPLETED_POPUP")
-        return true
-    end
-    return false
-end
-
-function PHX.questCompleteVisible()
-    local dg = dialogueGui()
-    local roots = {dg, PG:FindFirstChild("Notifications"), PG:FindFirstChild("Main")}
-    for _,base in ipairs(roots) do
-        if base then
-            for _,v in ipairs(base:GetDescendants()) do
-                if (v:IsA("TextLabel") or v:IsA("TextButton")) and visibleGui(v) then
-                    if PHX.markQuestCompleteText(v.Text) then return true end
-                end
-            end
-        end
-    end
-    return false
-end
-
-function PHX.questCompleteSince(since)
-    if PHX.QuestCompletedAt >= (since or -math.huge) then return true end
-    return PHX.questCompleteVisible() and PHX.QuestCompletedAt >= (since or -math.huge)
-end
-
-function PHX.watchQuestPopupObject(obj)
-    if not (obj:IsA("TextLabel") or obj:IsA("TextButton")) then return end
-    local function inspect()
-        if visibleGui(obj) then PHX.markQuestCompleteText(obj.Text) end
-    end
-    obj:GetPropertyChangedSignal("Text"):Connect(inspect)
-    obj:GetPropertyChangedSignal("Visible"):Connect(inspect)
-    inspect()
-end
-
-for _,obj in ipairs(PG:GetDescendants()) do pcall(PHX.watchQuestPopupObject, obj) end
-PG.DescendantAdded:Connect(function(obj) pcall(PHX.watchQuestPopupObject, obj) end)
-
-function PHX.fireDragonHunterWorldInteract()
-    local npcPos = CONFIG.DRAGON_HUNTER.NPC.Position
-    local candidates = {}
-
-    local function ancestryText(inst)
-        local parts = {}
-        local p = inst
-        local hops = 0
-        while p and p ~= workspace and hops < 8 do
-            parts[#parts+1] = string.lower(tostring(p.Name or ""))
-            p = p.Parent
-            hops = hops + 1
-        end
-        return table.concat(parts, "/")
-    end
-
-    local function worldPos(inst)
-        local p = inst.Parent
-        if p and p:IsA("BasePart") then return p.Position end
-        if p and p:IsA("Model") then
-            local pp = p.PrimaryPart or p:FindFirstChildWhichIsA("BasePart", true)
-            return pp and pp.Position or nil
-        end
-        if p then
-            local m = p:FindFirstAncestorOfClass("Model")
-            if m then
-                local pp = m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart", true)
-                return pp and pp.Position or nil
-            end
-        end
-        return nil
-    end
-
-    for _,v in ipairs(workspace:GetDescendants()) do
-        if v:IsA("ProximityPrompt") or v:IsA("ClickDetector") then
-            local pos = worldPos(v)
-            if pos then
-                local d = (pos - npcPos).Magnitude
-                if d <= 26 then
-                    local path = ancestryText(v)
-                    local bad = path:find("uzoth",1,true)
-                        or path:find("dragon talon",1,true)
-                        or path:find("talon trainer",1,true)
-                        or path:find("draco",1,true)
-                    local positive = path:find("dragon hunter",1,true) or path:find("dragonhunter",1,true)
-                    local score = d
-                    if positive then score = score - 1000 end
-                    if bad then score = score + 5000 end
-                    if v:IsA("ProximityPrompt") then
-                        local action = string.lower(tostring(v.ActionText or ""))
-                        local object = string.lower(tostring(v.ObjectText or ""))
-                        if object:find("dragon hunter",1,true) or object:find("dragonhunter",1,true) then score = score - 800 end
-                        if object:find("uzoth",1,true) or object:find("talon",1,true) then score = score + 5000 end
-                        if action:find("interact",1,true) or action:find("talk",1,true) then score = score - 5 end
-                    end
-                    candidates[#candidates+1] = {obj=v, score=score, d=d, path=path}
-                end
-            end
-        end
-    end
-
-    table.sort(candidates, function(a,b) return a.score < b.score end)
-    local pick = candidates[1]
-    if not pick or pick.score > 1000 then
-        logLine("DRAGON_HUNTER_INTERACT", "STRICT target not found | candidates="..tostring(#candidates))
-        return false, "NO_STRICT_DRAGON_HUNTER_INTERACT"
-    end
-
-    logLine("DRAGON_HUNTER_INTERACT", "STRICT pick="..pick.obj:GetFullName().." d="..string.format("%.1f",pick.d).." score="..string.format("%.1f",pick.score))
-    if pick.obj:IsA("ProximityPrompt") then
-        if fireproximityprompt then
-            local ok = pcall(function() fireproximityprompt(pick.obj) end)
-            return ok, "STRICT_PROXIMITY_PROMPT"
-        end
-        local ok = pcall(function()
-            pick.obj:InputHoldBegin()
-            task.wait(math.max(.05, tonumber(pick.obj.HoldDuration) or 0))
-            pick.obj:InputHoldEnd()
-        end)
-        if ok then return true, "STRICT_PROMPT_HOLD" end
-    end
-    if pick.obj:IsA("ClickDetector") and fireclickdetector then
-        local ok = pcall(function() fireclickdetector(pick.obj) end)
-        return ok, "STRICT_CLICK_DETECTOR"
-    end
-    return false, "EXECUTOR_NO_WORLD_INTERACT"
-end
-
-local function openDragonHunter(token)
-    -- V2.9.5: NO screen-space mouse click. We only use the NPC's world
-    -- interaction object (ProximityPrompt/ClickDetector) so the click cannot
-    -- accidentally open Uzoth/Dragon-Talon lore panels or hit our own UI.
-    if not safeTween(CONFIG.DRAGON_HUNTER.STAND, 260, token) then return false end
-    task.wait(.20)
-
-    local dg = dialogueGui()
-    if dg and dg:IsA("ScreenGui") and PHX.DialogueLocallyHidden then
-        pcall(function() dg.Enabled = true end)
-        PHX.DialogueLocallyHidden = false
-    end
-
-    for attempt=1,10 do
-        if not isRunning(token) then return false end
-        local opts = dialogueOptions()
-        if #opts >= 3 then
-            logLine("DRAGON_HUNTER_INTERACT", "dialogue already open | options="..#opts)
-            return true
-        end
-
-        local worldOK, worldMode = PHX.fireDragonHunterWorldInteract()
-        logLine("DRAGON_HUNTER_INTERACT", "world interact="..tostring(worldMode).." ok="..tostring(worldOK).." | attempt="..attempt)
-        if worldOK then
-            local deadline = os.clock() + .75
-            while os.clock() < deadline do
-                if #dialogueOptions() >= 3 then return true end
-                task.wait(.03)
-            end
-        end
-        task.wait(.08)
-    end
-    return #dialogueOptions() >= 3
-end
-
--- After Hunt -> Sure the game may leave one last NPC speech bubble open.
--- The user's recording shows that one more Interact closes it. Do that with
--- the world prompt, not a screen click. Close-like GUI controls are a secondary
--- fallback, and hiding DialogueGui is UI cleanup only after the quest was accepted.
-function PHX.dismissDragonHunterFinalBubble()
-    -- V2.9.5: never press the world interact again to close a bubble.
-    -- The Hunt path is remote-only; if stale DialogueGui exists, hide it locally.
-    local dg = dialogueGui()
-    if not dg then return true end
-    if dg:IsA("ScreenGui") then
-        pcall(function() dg.Enabled = false end)
-        PHX.DialogueLocallyHidden = true
-    elseif dg:IsA("GuiObject") then
-        pcall(function() dg.Visible = false end)
-        PHX.DialogueLocallyHidden = true
-    end
-    logLine("DRAGON_HUNTER_DISMISS", "local dialogue cleanup only; no world click")
-    return true
-end
-
-function PHX.closeDragonHunterDialogue()
-    local opts = dialogueOptions()
-    -- Only close the four-option root menu. Never fire the second option in
-    -- the two-option confirmation stage because that could reject a Hunt.
-    if #opts >= 4 then
-        pcall(function() fireButton(opts[#opts]) end) -- Nevermind / close
-        task.wait(.05)
-    end
-end
-
-
-function PHX.acceptHuntViaDialogue(token)
-    setStatus("Dragon Hunter fallback -> signal Hunt/Sure")
-    if not openDragonHunter(token) then
-        logLine("DRAGON_HUNTER_DIALOG", "open failed")
-        return false
-    end
-
-    local opts = dialogueOptions()
-    if #opts >= 4 then
-        fireButton(opts[1]) -- Hunt
-    end
-
-    local deadline = os.clock() + 1.4
-    while isRunning(token) and os.clock() < deadline do
-        opts = dialogueOptions()
-        if #opts == 2 then break end
-        local guiText = PHX.questTextFromVisibleGui()
-        if guiText ~= "" and PHX.latchQuest(guiText, "DIALOG QUEST ACCEPTED") then
-            PHX.dismissDragonHunterFinalBubble()
-            return true
-        end
-        task.wait(.04)
-    end
-
-    opts = dialogueOptions()
-    if #opts >= 2 then
-        fireButton(opts[1]) -- Sure
-    end
-
-    deadline = os.clock() + 1.8
-    while isRunning(token) and os.clock() < deadline do
-        local t = PHX.dragonHunterCheckText()
-        if t == "" then t = PHX.questTextFromVisibleGui() end
-        if t ~= "" and PHX.latchQuest(t, "DIALOG QUEST ACCEPTED") then
-            PHX.dismissDragonHunterFinalBubble()
-            return true
-        end
-        task.wait(.05)
-    end
-
-    PHX.dismissDragonHunterFinalBubble()
-    logLine("DRAGON_HUNTER_DIALOG", "Hunt/Sure fired but no quest text confirmed")
-    return false
-end
-
-local function receiveDragonHunterQuest(token)
-    local existingText = PHX.dragonHunterCheckText()
-    if existingText == "" then existingText = PHX.questTextFromVisibleGui() end
-    if existingText ~= "" then
-        return PHX.latchQuest(existingText, "EXISTING QUEST")
-    end
-
-    local rf = PHX.dragonHunterRemote()
-    if not rf then
-        setStatus("Dragon Hunter RF missing -> dialogue fallback")
-        return PHX.acceptHuntViaDialogue(token)
-    end
-
-    -- Probe recorded the exact manual acceptance call:
-    -- RF/DragonHunter InvokeServer({Context="RequestQuest"}), then Check.
-    -- Try that exact sequence from anywhere first.
-    for attempt=1,4 do
-        if not isRunning(token) then return false end
-        setStatus("Dragon Hunter DIRECT HUNT ["..attempt.."/4]")
-
-        local okReq, response = pcall(function()
-            return rf:InvokeServer({Context="RequestQuest"})
-        end)
-        local fromReq = okReq and PHX.questTextFromValue(response) or ""
-        logLine("DRAGON_HUNTER_RF", "RequestQuest attempt="..attempt.." ok="..tostring(okReq).." responseType="..typeof(response))
-
-        if fromReq ~= "" and PHX.latchQuest(fromReq, "REMOTE RESPONSE") then
-            return true
-        end
-
-        local deadline = os.clock() + .85
-        while isRunning(token) and os.clock() < deadline do
-            local t = PHX.dragonHunterCheckText()
-            if t == "" then t = PHX.questTextFromVisibleGui() end
-            if t ~= "" and PHX.latchQuest(t, "REMOTE QUEST ACCEPTED") then
-                return true
-            end
-            task.wait(.05)
-        end
-        task.wait(.12)
-    end
-
-    -- If the server build requires a dialogue session flag, use the real Dragon
-    -- Hunter dialogue but still no physical/screen click: world prompt + GUI signals.
-    return PHX.acceptHuntViaDialogue(token)
-end
-
---==============================================================
--- DYNAMIC HYDRA TREE DETECTOR
---==============================================================
--- Hydra has several different tree/bamboo assets. We discover them at runtime,
--- dedupe their models, and prefer candidates around the known Hydra tree field.
--- CONFIG.TREES remains only as a last-resort fallback if the map changes names.
-PHX._HydraTreeCache = PHX._HydraTreeCache or {At=-math.huge, List={}}
-PHX._HydraTreeLastHit = PHX._HydraTreeLastHit or setmetatable({}, {__mode="k"})
-
-function PHX.hydraTreePart(obj)
-    if not obj or not obj.Parent then return nil end
-    if obj:IsA("BasePart") then return obj end
-    if not obj:IsA("Model") then return nil end
-
-    -- Some Hydra assets use Trunk as a MODEL, not a BasePart. V2.9 returned
-    -- that Model directly and later read .Position, which crashed the state
-    -- machine (e.g. WaterfallIslandModel.TallTree1.Trunk). Always resolve
-    -- the tree to a real BasePart before any spatial math.
-    if obj.PrimaryPart and obj.PrimaryPart:IsA("BasePart") then
-        return obj.PrimaryPart
-    end
-
-    local trunk = obj:FindFirstChild("Trunk", true)
-    if trunk then
-        if trunk:IsA("BasePart") then
-            return trunk
-        elseif trunk:IsA("Model") then
-            if trunk.PrimaryPart and trunk.PrimaryPart:IsA("BasePart") then
-                return trunk.PrimaryPart
-            end
-            local trunkPart = trunk:FindFirstChildWhichIsA("BasePart", true)
-            if trunkPart then return trunkPart end
-        end
-    end
-
-    return obj:FindFirstChildWhichIsA("BasePart", true)
-end
-
-function PHX.hydraTreeCanonical(obj)
-    if not obj then return nil end
-    local cur = obj
-    local best = obj:IsA("Model") and obj or nil
-    for _=1,6 do
-        if not cur then break end
-        local l = string.lower(cur.Name)
-        if cur:IsA("Model") and (l:find("tree",1,true) or l:find("bamboo",1,true)) then
-            best = cur
-        end
-        cur = cur.Parent
-    end
-    return best or obj
-end
-
-function PHX.hydraTreeHealthSignal(obj)
-    if not obj then return false end
-    local function healthish(x)
-        local n = string.lower(x.Name)
-        if n == "health" or n == "hp" or n == "hitpoints" or n == "hitpoint" then
-            if x:IsA("IntValue") or x:IsA("NumberValue") then return true end
-        end
-        return false
-    end
-    if healthish(obj) then return true end
-    if obj:IsA("Model") then
-        for _,d in ipairs(obj:GetDescendants()) do
-            if healthish(d) then return true end
-        end
-    end
-    for _,name in ipairs({"Health","HP","Hitpoints","HitPoints"}) do
-        if obj:GetAttribute(name) ~= nil then return true end
-    end
-    return false
-end
-
-function PHX.hydraTreeCandidate(obj)
-    if not obj or not obj.Parent then return false end
-    if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
-
-    local l = string.lower(obj.Name)
-    local named = l:find("tree",1,true) or l:find("bamboo",1,true) or l:find("trunk",1,true) or l:find("stem",1,true)
-    local healthSignal = PHX.hydraTreeHealthSignal(obj)
-    if not named and not healthSignal then return false end
-    if l:find("leaf",1,true) or l:find("leaves",1,true) or l:find("foliage",1,true) or l:find("canopy",1,true) then
-        return false
-    end
-
-    local canon = PHX.hydraTreeCanonical(obj)
-    local p = PHX.hydraTreePart(canon)
-    if not p then return false end
-    local pos = p.Position
-
-    -- Broad Hydra tree zone. The nearest-reference gate prevents unrelated map
-    -- vegetation from being mistaken for quest trees.
-    if pos.X < 4850 or pos.X > 5950 or pos.Y < 930 or pos.Y > 1325 or pos.Z < -100 or pos.Z > 1250 then
-        return false
-    end
-
-    local nearest = math.huge
-    for _,cf in ipairs(CONFIG.TREES) do
-        local d = (pos - cf.Position).Magnitude
-        if d < nearest then nearest = d end
-    end
-    return nearest <= 720
-end
-
-function PHX.scanHydraTrees(force)
-    local cache = PHX._HydraTreeCache
-    if not force and os.clock() - cache.At < .65 and #cache.List > 0 then
-        return cache.List
-    end
-
-    local out, seen = {}, {}
-
-    -- Spatial query instead of workspace.Map:GetDescendants() every cycle.
-    -- This is much cheaper for multi-account/SaveCPU setups and only inspects
-    -- objects physically inside the Hydra tree field.
-    local params = OverlapParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = {LP.Character}
-    params.MaxParts = 1200
-
-    local zoneCF = CFrame.new(5400, 1125, 560)
-    local zoneSize = Vector3.new(1250, 430, 1400)
-    local ok, parts = pcall(function()
-        return workspace:GetPartBoundsInBox(zoneCF, zoneSize, params)
-    end)
-    if not ok then parts = {} end
-
-    for _,part in ipairs(parts) do
-        local probes = {part}
-        local cur = part.Parent
-        for _=1,5 do
-            if not cur then break end
-            probes[#probes+1] = cur
-            cur = cur.Parent
-        end
-
-        for _,obj in ipairs(probes) do
-            local okCandidate, isCandidate = pcall(PHX.hydraTreeCandidate, obj)
-            if okCandidate and isCandidate then
-                local canon = PHX.hydraTreeCanonical(obj)
-                local p = PHX.hydraTreePart(canon)
-                if canon and p and p:IsA("BasePart") and not seen[canon] then
-                    seen[canon] = true
-                    out[#out+1] = canon
-                end
-                break
-            elseif not okCandidate then
-                logLine("TREE_SCAN_SKIP", tostring(obj:GetFullName()).." | "..tostring(isCandidate))
-            end
-        end
-    end
-
-    local rr = root()
-    table.sort(out, function(a,b)
-        local ap = PHX.hydraTreePart(a)
-        local bp = PHX.hydraTreePart(b)
-        if not ap then return false end
-        if not bp then return true end
-
-        local ah = PHX._HydraTreeLastHit[a] or -math.huge
-        local bh = PHX._HydraTreeLastHit[b] or -math.huge
-        local aFresh = os.clock() - ah > .8
-        local bFresh = os.clock() - bh > .8
-        if aFresh ~= bFresh then return aFresh end
-        if rr then
-            return (ap.Position-rr.Position).Magnitude < (bp.Position-rr.Position).Magnitude
-        end
-        return ah < bh
-    end)
-
-    cache.At = os.clock()
-    cache.List = out
-
-    local sigParts = {}
-    for i=1,math.min(#out,8) do
-        local t = out[i]
-        local p = PHX.hydraTreePart(t)
-        sigParts[#sigParts+1] = t.Name..(p and string.format("@%.0f,%.0f,%.0f", p.Position.X,p.Position.Y,p.Position.Z) or "")
-    end
-    local sig = table.concat(sigParts, " | ")
-    if cache.LastSig ~= sig then
-        cache.LastSig = sig
-        logLine("TREE_SCAN", "detected="..#out.." | "..sig)
-    end
-
-    return out
-end
-
-function PHX.pickHydraTree()
-    local trees = PHX.scanHydraTrees(false)
-    local now = os.clock()
-    for _,tree in ipairs(trees) do
-        local p = PHX.hydraTreePart(tree)
-        local last = PHX._HydraTreeLastHit[tree] or -math.huge
-        if p and p.Parent and now - last > .55 then
-            return tree, p, #trees
-        end
-    end
-    if #trees > 0 then
-        local tree = trees[1]
-        return tree, PHX.hydraTreePart(tree), #trees
-    end
-    return nil, nil, 0
-end
-
-local function farmTreeQuest(token)
-    local i = 1
-    local questStartedAt = PHX.LastQuestAcceptedAt
-    if not questStartedAt or questStartedAt == -math.huge then questStartedAt = os.clock() end
-
-    -- Fixed seven user-provided Hydra CFrames. Do not re-check Dragon Hunter while
-    -- the tree quest is active. Keep cycling/spamming straight upward until the
-    -- real Task Completed / Quest Completed popup is observed.
-    while isRunning(token) and not PHX.questCompleteSince(questStartedAt) do
-        local cf = CONFIG.TREES[i]
-        local qtxt = PHX.ActiveQuestText ~= "" and PHX.ActiveQuestText or "Destroy 10 trees on Hydra Island."
-        setStatus("QUEST TREE | "..qtxt.." | CFrame "..i.."/"..#CONFIG.TREES.." | XCVF UP")
-
-        if not highTween(cf * CFrame.new(0,10,0), 340, token) then return false end
-        local rr = root()
-        local upTarget = rr and (rr.Position + Vector3.new(0, 2500, 0)) or (cf.Position + Vector3.new(0,2500,0))
-
-        -- Two complete XCVF passes per weapon are performed by useXCVF().
-        useXCVF(upTarget)
-
-        PHX.pulseBlazeCollectRemote()
-        PHX.touchVisibleBlaze(token, false)
-
-        if PHX.questCompleteSince(questStartedAt) then break end
-        i = i + 1
-        if i > #CONFIG.TREES then i = 1 end
-        task.wait(.04)
-    end
-
-    if PHX.questCompleteSince(questStartedAt) then
-        PHX.ActiveQuestKind = "NONE"
-        PHX.ActiveQuestText = ""
-        return true
-    end
-    return false
-end
-
-function PHX.pulseBlazeCollectRemote()
-    local re = PHX.blazeCollectRemote and PHX.blazeCollectRemote() or nil
-    if re and re.FireServer then
-        local ok = pcall(function() re:FireServer() end)
-        return ok
-    end
-    return false
-end
-
-function PHX.blazeCollectRemote()
-    local modules = ReplicatedStorage:FindFirstChild("Modules") or ReplicatedStorage:WaitForChild("Modules", 3)
-    local net = modules and (modules:FindFirstChild("Net") or modules:WaitForChild("Net", 3))
-    return net and (net:FindFirstChild("RE/DragonDojoEmber") or net:FindFirstChild("RE/DragonDojoEmber", true))
-end
-
-function PHX.findBlazeParts()
-    local out, seen = {}, {}
-    local function addObj(obj)
-        if not obj then return end
-        local p = interactionPart(obj)
-        if p and p:IsA("BasePart") and not seen[p] then
-            -- Blaze Ember lives on Hydra; reject obviously unrelated Azure/Kitsune objects.
-            local fp = string.lower(p:GetFullName())
-            if not fp:find("azure",1,true) and not fp:find("kitsune",1,true) then
-                seen[p] = true
-                out[#out+1] = p
-            end
-        end
-    end
-
-    for _,name in ipairs({"AttachedBlazeEmber","BlazeEmber","FireFlowers","EmberTemplate"}) do
-        local obj = workspace:FindFirstChild(name)
-        if obj then
-            addObj(obj)
-            for _,d in ipairs(obj:GetDescendants()) do
-                local l = string.lower(d.Name)
-                if d:IsA("BasePart") and (l:find("ember",1,true) or l:find("fire",1,true) or name == "EmberTemplate") then
-                    addObj(d)
-                end
-            end
-        end
-    end
-
-    -- Some builds parent the moving pickup under a differently named container.
-    -- Scan only direct workspace children and their immediate children, not the whole map tree.
-    for _,obj in ipairs(workspace:GetChildren()) do
-        local l = string.lower(obj.Name)
-        if (l:find("blaze",1,true) and l:find("ember",1,true)) or l == "fireflowers" then
-            addObj(obj)
-            for _,d in ipairs(obj:GetChildren()) do addObj(d) end
-        end
-    end
-    return out
-end
-
-function PHX.touchVisibleBlaze(token, allowTween)
-    local r = root()
-    if not r then return 0 end
-    local count = 0
-    local parts = PHX.findBlazeParts()
-    table.sort(parts, function(a,b)
-        return (a.Position-r.Position).Magnitude < (b.Position-r.Position).Magnitude
-    end)
-    for _,p in ipairs(parts) do
-        if not isRunning(token) or not p.Parent then break end
-        local rr = root()
-        if not rr then break end
-        local d = (p.Position - rr.Position).Magnitude
-        if firetouchinterest and d <= 220 then
-            pcall(function()
-                firetouchinterest(rr, p, 0)
-                firetouchinterest(rr, p, 1)
-            end)
-            count = count + 1
-        elseif allowTween and d <= 2800 then
-            safeTween(p.CFrame * CFrame.new(0,1.5,0), 900, token)
-            rr = root()
-            if rr and firetouchinterest and p.Parent then
-                pcall(function()
-                    firetouchinterest(rr, p, 0)
-                    firetouchinterest(rr, p, 1)
-                end)
-            end
-            count = count + 1
-        end
-    end
-    return count
-end
-
-local function farmHunterQuest(token)
-    local kind = questKind()
-    if kind == "NONE" then return false end
-    local questStartedAt = PHX.LastQuestAcceptedAt
-    if not questStartedAt or questStartedAt == -math.huge then questStartedAt = os.clock() end
-    logLine("QUEST", "start | "..PHX.questStatusText())
-
-    if kind == "TREE" then
-        farmTreeQuest(token)
-    elseif kind == "HYDRA" then
-        while isRunning(token) and not PHX.questCompleteSince(questStartedAt) do
-            setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15 | wait Quest Completed popup")
-            farmNamedMob("Hydra Enforcer", CONFIG.MOB_CAMPS.HydraEnforcer, token)
-            PHX.pulseBlazeCollectRemote()
-            PHX.touchVisibleBlaze(token, false)
-            task.wait(.02)
-        end
-    elseif kind == "VENOM" then
-        while isRunning(token) and not PHX.questCompleteSince(questStartedAt) do
-            setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15 | wait Quest Completed popup")
-            farmNamedMob("Venomous Assailant", CONFIG.MOB_CAMPS.VenomousAssailant, token)
-            PHX.pulseBlazeCollectRemote()
-            PHX.touchVisibleBlaze(token, false)
-            task.wait(.02)
-        end
-    end
-
-    local completed = PHX.questCompleteSince(questStartedAt)
-    logLine("QUEST", "popup-complete="..tostring(completed).." | previous="..kind.." | text="..tostring(PHX.QuestCompletedText))
-    return completed
-end
-
-function PHX.collectBlazeEmberDrops(token, seconds)
-    local before = inventoryCount("Blaze Ember", true)
-    local maxUntil = os.clock() + (seconds or 2.4)
-    local lastSeenAt = os.clock()
-    setStatus("Quest complete -> FAST collecting Blaze Embers")
-
-    while isRunning(token) and os.clock() < maxUntil and inventoryCount("Blaze Ember") < 15 do
-        PHX.pulseBlazeCollectRemote()
-        local touched = PHX.touchVisibleBlaze(token, true)
-        if touched > 0 then lastSeenAt = os.clock() end
-
-        local now = inventoryCount("Blaze Ember", true)
-        if now >= before + 3 then break end
-        -- Once no pickup is visible for a short grace window, immediately move on.
-        if touched == 0 and os.clock() - lastSeenAt > .16 then break end
-        task.wait(.02)
-    end
-
-    local after = inventoryCount("Blaze Ember", true)
-    logLine("BLAZE_COLLECT", "before="..tostring(before).." after="..tostring(after).." fastWindow="..tostring(seconds or 2.4))
-    return after > before
-end
-
-local function farmBlazeEmbers(token)
-    while isRunning(token) and inventoryCount("Blaze Ember", true) < 15 do
-        if not goHydra(token) then
-            setStatus("Hydra portal failed - NOT flying across sea")
-            task.wait(.35)
-        else
-            local completedPrevious = PHX.QuestCompletedAt >= (PHX.LastQuestAcceptedAt or -math.huge)
-            local kind = questKind()
-
-            if kind == "NONE" or completedPrevious then
-                setStatus("Returning Dragon Hunter NPC -> receive next Hunt")
-                if not receiveDragonHunterQuest(token) then
-                    task.wait(.15)
-                    kind = "NONE"
-                else
-                    kind = questKind()
-                    if kind == "NONE" then
-                        -- Dialogue acceptance can replicate a fraction later.
-                        local untilAt = os.clock() + 1.4
-                        repeat
-                            task.wait(.04)
-                            kind = questKind()
-                        until kind ~= "NONE" or os.clock() >= untilAt or not isRunning(token)
-                    end
-                end
-            end
-
-            if kind ~= "NONE" and isRunning(token) then
-                setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
-                local before = inventoryCount("Blaze Ember", true)
-                local collectorAlive = true
-                task.spawn(function()
-                    while collectorAlive and isRunning(token) do
-                        PHX.pulseBlazeCollectRemote()
-                        PHX.touchVisibleBlaze(token, false)
-                        task.wait(.045)
-                    end
-                end)
-
-                local completed = farmHunterQuest(token)
-                collectorAlive = false
-
-                if completed and isRunning(token) then
-                    PHX.collectBlazeEmberDrops(token, 2.0)
-                    local after = inventoryCount("Blaze Ember", true)
-                    setStatus("Quest Completed popup confirmed | Blaze Ember "..tostring(after).."/15")
-                    logLine("QUEST", "cycle done | emberBefore="..tostring(before).." emberAfter="..tostring(after))
-                    if after < 15 then
-                        -- Next loop is allowed to return to Dragon Hunter only now.
-                        task.wait(.04)
-                    end
-                elseif isRunning(token) then
-                    setStatus("Quest popup not detected -> stay on current quest")
-                    task.wait(.08)
-                end
-            end
-        end
-    end
-    return inventoryCount("Blaze Ember", true) >= 15
-end
-
--- Forest Pirate/Scrap Metal farming is intentionally island-local.
--- V2.5 keeps the player hovering smoothly and hard-locks the mob cluster every Heartbeat.
-local function isForestPirate(m)
-    if not m or not m:IsA("Model") then return false end
-    return string.find(string.lower(m.Name), "forest pirate", 1, true) ~= nil
-end
-
-local function isForestGhost(m)
-    return FOREST_GHOST_BLACKLIST[m] == true
-end
-
-local function boostSimulationRadius()
-    pcall(function()
-        if setsimulationradius then setsimulationradius(math.huge, math.huge) end
-    end)
-    pcall(function()
-        if sethiddenproperty then sethiddenproperty(LP, "SimulationRadius", math.huge) end
-    end)
-end
-
-local function forestHumRoot(m)
-    if not m or not m.Parent or not m:IsA("Model") then return nil, nil end
-    local h = m:FindFirstChildOfClass("Humanoid")
-    local rr = m:FindFirstChild("HumanoidRootPart")
-    if not h or not rr or h.Health <= 0 or (h.MaxHealth and h.MaxHealth <= 0) then return nil, nil end
-    return h, rr
-end
-
-local function updateForestDamageTrack(m, countedAttack)
-    local h = m and m:FindFirstChildOfClass("Humanoid")
-    if not h or h.Health <= 0 then return false end
-    local now = os.clock()
-    local t = FOREST_DAMAGE_TRACK[m]
-    if not t then
-        t = {lastHealth=h.Health, lastDamageAt=now, attacks=0}
-        FOREST_DAMAGE_TRACK[m] = t
-        return false
-    end
-
-    if h.Health < (t.lastHealth - 0.05) then
-        t.lastHealth = h.Health
-        t.lastDamageAt = now
-        t.attacks = 0
-        FOREST_DAMAGE_PROVEN = true
-        return false
-    end
-
-    if countedAttack then t.attacks = t.attacks + 1 end
-    t.lastHealth = h.Health
-
-    -- Never classify a mob as immortal until this farming session has already
-    -- observed real HP loss on at least one Forest Pirate. This prevents a
-    -- temporary attack/backend miss from blacklisting a perfectly valid mob.
-    if FOREST_DAMAGE_PROVEN
-        and ACTIVE_FOREST_MAGNET.Locked[m]
-        and t.attacks >= CONFIG.FOREST_GHOST_MIN_ATTACKS
-        and (now - t.lastDamageAt) >= CONFIG.FOREST_GHOST_TIMEOUT then
-        FOREST_GHOST_BLACKLIST[m] = true
-        ACTIVE_FOREST_MAGNET.Locked[m] = nil
-        -- Hide stale/immortal duplicate models locally so they do not stay mixed into the real stack.
-        pcall(function()
-            for _,bp in ipairs(m:GetDescendants()) do
-                if bp:IsA("BasePart") then
-                    bp.CanCollide = false
-                    bp.LocalTransparencyModifier = 1
-                    bp.AssemblyLinearVelocity = Vector3.zero
-                    bp.AssemblyAngularVelocity = Vector3.zero
-                end
-            end
-        end)
-        logLine("FOREST_GHOST", "blacklisted+hidden immortal/stale model="..m:GetFullName().." hp="..tostring(h.Health).." attempts="..tostring(t.attacks))
-        return true
-    end
-    return false
-end
-
-local function aliveForestPirates(centerPos, radius)
-    local decorated = {}
-    local enemies = workspace:FindFirstChild("Enemies")
-    if not enemies then return {} end
-
-    for _,m in ipairs(enemies:GetChildren()) do
-        if isForestPirate(m) and not isForestGhost(m) then
-            local h, rr = forestHumRoot(m)
-            if h and rr then
-                updateForestDamageTrack(m, false)
-                local d = (rr.Position - centerPos).Magnitude
-                if d <= radius then
-                    decorated[#decorated+1] = {model=m, distance=d}
-                end
-            end
-        end
-    end
-
-    table.sort(decorated, function(a,b) return a.distance < b.distance end)
-    local result = {}
-    for _,entry in ipairs(decorated) do result[#result+1] = entry.model end
-    return result
-end
-
-local function hardLockForestMob(m, anchorCF)
-    if isForestGhost(m) then return false end
-    local h, rr = forestHumRoot(m)
-    if not h or not rr then return false end
-
-    pcall(function()
-        -- Move the whole model, not only HumanoidRootPart. Moving only HRP lets
-        -- joints/server correction fling the visible body out of the stack.
-        m:PivotTo(anchorCF)
-        rr.CFrame = anchorCF
-        rr.Size = Vector3.new(CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE, CONFIG.FOREST_HITBOX_SIZE)
-        rr.Transparency = 1
-        rr.CanCollide = false
-        rr.CanTouch = false
-        rr.AssemblyLinearVelocity = Vector3.zero
-        rr.AssemblyAngularVelocity = Vector3.zero
-        h.WalkSpeed = 0
-        h.JumpPower = 0
-        h.JumpHeight = 0
-        h.AutoRotate = false
-        pcall(function() h:ChangeState(Enum.HumanoidStateType.Physics) end)
-        for _,bp in ipairs(m:GetDescendants()) do
-            if bp:IsA("BasePart") then
-                bp.CanCollide = false
-                bp.AssemblyLinearVelocity = Vector3.zero
-                bp.AssemblyAngularVelocity = Vector3.zero
-            end
-        end
-    end)
-    return true
-end
-
-local function setForestMagnet(enabled, anchorCF, radius)
-    enabled = enabled and true or false
-    if not enabled then
-        ACTIVE_FOREST_MAGNET.Enabled = false
-        ACTIVE_FOREST_MAGNET.Anchor = nil
-        ACTIVE_FOREST_MAGNET.Locked = setmetatable({}, {__mode="k"})
-        return
-    end
-
-    local resetLocked = not ACTIVE_FOREST_MAGNET.Enabled
-    if ACTIVE_FOREST_MAGNET.Anchor and anchorCF then
-        resetLocked = resetLocked or ((ACTIVE_FOREST_MAGNET.Anchor.Position - anchorCF.Position).Magnitude > 4)
-    end
-    if resetLocked then
-        ACTIVE_FOREST_MAGNET.Locked = setmetatable({}, {__mode="k"})
-    end
-    ACTIVE_FOREST_MAGNET.Enabled = true
-    ACTIVE_FOREST_MAGNET.Anchor = anchorCF
-    ACTIVE_FOREST_MAGNET.Radius = radius or CONFIG.FOREST_MAGNET_RADIUS
-end
-
--- Once a Forest Pirate enters the stack it is CLAIMED. Keep the exact models
--- pinned both before and after physics so knockback cannot visibly throw them out.
-local function maintainForestMagnet()
-    if not ACTIVE_FOREST_MAGNET.Enabled or not ACTIVE_FOREST_MAGNET.Anchor then return end
-    boostSimulationRadius()
-    local enemies = workspace:FindFirstChild("Enemies")
-    if not enemies then return end
-    local anchorCF = ACTIVE_FOREST_MAGNET.Anchor
-    local radius = ACTIVE_FOREST_MAGNET.Radius
-
-    for m in pairs(ACTIVE_FOREST_MAGNET.Locked) do
-        if not m.Parent or isForestGhost(m) then
-            ACTIVE_FOREST_MAGNET.Locked[m] = nil
-        else
-            hardLockForestMob(m, anchorCF)
-        end
-    end
-
-    local rp = root()
-    for _,m in ipairs(enemies:GetChildren()) do
-        if isForestPirate(m) and not isForestGhost(m) and not ACTIVE_FOREST_MAGNET.Locked[m] then
-            local h, rr = forestHumRoot(m)
-            if h and rr then
-                local nearAnchor = (rr.Position - anchorCF.Position).Magnitude <= radius
-                local nearPlayer = rp and (rr.Position - rp.Position).Magnitude <= radius or false
-                if nearAnchor or nearPlayer then
-                    ACTIVE_FOREST_MAGNET.Locked[m] = true
-                    hardLockForestMob(m, anchorCF)
-                end
-            end
-        end
-    end
-end
-
-RunService.Stepped:Connect(maintainForestMagnet)
-RunService.Heartbeat:Connect(maintainForestMagnet)
-
-local function stopStableHover()
-    local h = ACTIVE_HOVER.Humanoid
-    local rr = ACTIVE_HOVER.Root
-    if h and h.Parent then
-        pcall(function()
-            h.AutoRotate = true
-            h.PlatformStand = false
-            h:ChangeState(Enum.HumanoidStateType.GettingUp)
-        end)
-    end
-    if rr and rr.Parent then
-        pcall(function()
-            rr.AssemblyLinearVelocity = Vector3.zero
-            rr.AssemblyAngularVelocity = Vector3.zero
-        end)
-    end
-    for _,obj in ipairs({ACTIVE_HOVER.Position, ACTIVE_HOVER.Gyro, ACTIVE_HOVER.Attachment}) do
-        if obj and obj.Parent then pcall(function() obj:Destroy() end) end
-    end
-    ACTIVE_HOVER.Root = nil
-    ACTIVE_HOVER.Humanoid = nil
-    ACTIVE_HOVER.Attachment = nil
-    ACTIVE_HOVER.Position = nil
-    ACTIVE_HOVER.Gyro = nil
-    ACTIVE_HOVER.Target = nil
-end
-
-local function startStableHover(targetCF)
-    stopStableHover()
-    local rr, h = root(), hum()
-    if not rr or not h or h.Health <= 0 then return false end
-    rr.CFrame = targetCF
-    rr.AssemblyLinearVelocity = Vector3.zero
-    rr.AssemblyAngularVelocity = Vector3.zero
-    h.AutoRotate = false
-    h.PlatformStand = true
-
-    local att = Instance.new("Attachment")
-    att.Name = "PH_RigidHoverAttachment"
-    att.Parent = rr
-
-    local ap = Instance.new("AlignPosition")
-    ap.Name = "PH_RigidHoverPosition"
-    ap.Mode = Enum.PositionAlignmentMode.OneAttachment
-    ap.Attachment0 = att
-    ap.ApplyAtCenterOfMass = true
-    ap.Position = targetCF.Position
-    ap.MaxForce = 1e9
-    ap.MaxVelocity = 1e9
-    ap.Responsiveness = 200
-    ap.RigidityEnabled = true
-    ap.Parent = rr
-
-    local ao = Instance.new("AlignOrientation")
-    ao.Name = "PH_RigidHoverOrientation"
-    ao.Mode = Enum.OrientationAlignmentMode.OneAttachment
-    ao.Attachment0 = att
-    ao.CFrame = targetCF
-    ao.MaxTorque = 1e9
-    ao.MaxAngularVelocity = 1e9
-    ao.Responsiveness = 200
-    ao.RigidityEnabled = true
-    ao.Parent = rr
-
-    ACTIVE_HOVER.Root = rr
-    ACTIVE_HOVER.Humanoid = h
-    ACTIVE_HOVER.Attachment = att
-    ACTIVE_HOVER.Position = ap
-    ACTIVE_HOVER.Gyro = ao
-    ACTIVE_HOVER.Target = targetCF
-    return true
-end
-
-local function maintainStableHover(targetCF)
-    local rr = root()
-    if not rr or ACTIVE_HOVER.Root ~= rr or not ACTIVE_HOVER.Position or not ACTIVE_HOVER.Position.Parent then
-        return startStableHover(targetCF)
-    end
-    ACTIVE_HOVER.Target = targetCF
-    ACTIVE_HOVER.Position.Position = targetCF.Position
-    ACTIVE_HOVER.Gyro.CFrame = targetCF
-    rr.AssemblyLinearVelocity = Vector3.zero
-    rr.AssemblyAngularVelocity = Vector3.zero
-    if (rr.Position - targetCF.Position).Magnitude > CONFIG.HOVER_SNAP_DISTANCE then
-        rr.CFrame = targetCF
-    end
-    return true
-end
-
-local function magnetForestPirates(anchorCF, radius)
-    setForestMagnet(true, anchorCF, radius)
-    boostSimulationRadius()
-    local enemies = workspace:FindFirstChild("Enemies")
-    if not enemies then return 0 end
-
-    for _,m in ipairs(enemies:GetChildren()) do
-        if isForestPirate(m) and not isForestGhost(m) then
-            local h, rr = forestHumRoot(m)
-            if h and rr and (rr.Position - anchorCF.Position).Magnitude <= radius then
-                ACTIVE_FOREST_MAGNET.Locked[m] = true
-                hardLockForestMob(m, anchorCF)
-            end
-        end
-    end
-
-    local count = 0
-    for m in pairs(ACTIVE_FOREST_MAGNET.Locked) do
-        local h, rr = forestHumRoot(m)
-        if h and rr and not isForestGhost(m) then
-            count = count + 1
-            hardLockForestMob(m, anchorCF)
-        else
-            ACTIVE_FOREST_MAGNET.Locked[m] = nil
-        end
-    end
-    return count
-end
-
-local function farmScrap(token)
-    -- Force a real inventory read before deciding whether Scrap farming is needed.
-    PHX.clearOptimisticCount("Scrap Metal")
-    local camp = CONFIG.MOB_CAMPS.ForestPirate
-    local scanRadius = CONFIG.FOREST_SCAN_RADIUS
-    local magnetRadius = CONFIG.FOREST_MAGNET_RADIUS
-    local patrol = {
-        CFrame.new(0,0,0),
-        CFrame.new(170,0,0),
-        CFrame.new(-170,0,0),
-        CFrame.new(0,0,170),
-        CFrame.new(0,0,-170),
-        CFrame.new(240,0,180),
-        CFrame.new(-240,0,180),
-        CFrame.new(240,0,-180),
-        CFrame.new(-240,0,-180),
-    }
-    local patrolIndex = 1
-
-    while isRunning(token) and inventoryCount("Scrap Metal") < 10 do
-        if not waitAlive(token) then break end
-        local scrap = inventoryCount("Scrap Metal")
-        setStatus("Scrap Metal "..scrap.."/10 | route -> Floating Turtle")
-
-        -- Delta parse-safe iteration guard: use repeat/break instead of Luau `continue`.
-        repeat
-        if not goTurtle(token) then
-            setStatus("Turtle portal failed - retrying portal only")
-            task.wait(1)
-            break
-        end
-
-        -- Hard guard: never start Forest Pirate farming unless the portal destination
-        -- was actually confirmed as Floating Turtle.
-        if getRegion() ~= "TURTLE" then
-            setStatus("Not on Floating Turtle -> abort Scrap farm cycle")
-            task.wait(.8)
-            break
-        end
-
-        -- Move only to the user-captured safe point beside the Forest Pirate area.
-        highTween(camp * CFrame.new(0,18,0), CONFIG.PLAYER_TWEEN_SPEED, token)
-        if not isRunning(token) then break end
-        if getRegion() ~= "TURTLE" then
-            setStatus("Left Turtle unexpectedly -> stop local farm")
-            task.wait(.8)
-            break
-        end
-
-        local noMobPasses = 0
-        while isRunning(token)
-            and getRegion() == "TURTLE"
-            and inventoryCount("Scrap Metal") < 10 do
-
-            -- Scan around the CURRENT player first. Older builds scanned around the static
-            -- camp coordinate only, so mobs could literally be hitting us while the UI
-            -- still said "scanning Forest Pirates". Fall back to a wider camp scan.
-            local rpNow = root()
-            local scanCenter = rpNow and rpNow.Position or camp.Position
-            local mobs = aliveForestPirates(scanCenter, scanRadius)
-            if #mobs == 0 then
-                mobs = aliveForestPirates(camp.Position, scanRadius * 1.75)
-            end
-
-            if #mobs == 0 then
-                noMobPasses = noMobPasses + 1
-                local off = patrol[patrolIndex]
-                patrolIndex = patrolIndex + 1
-                if patrolIndex > #patrol then patrolIndex = 1 end
-
-                setStatus("Scrap Metal "..inventoryCount("Scrap Metal").."/10 | scanning Forest Pirates")
-                highTween(camp * off * CFrame.new(0,18,0), 260, token)
-                task.wait(noMobPasses >= #patrol and 1.2 or .45)
-            else
-                noMobPasses = 0
-
-                -- Pull the local wave into one point, enlarge hitboxes, fly above it,
-                -- force-equip Melee, then spam Tool:Activate() M1.
-                local firstRoot = mobs[1] and mobs[1]:FindFirstChild("HumanoidRootPart")
-                local anchorPos = firstRoot and firstRoot.Position or (root() and root().Position) or camp.Position
-                local anchor = CFrame.new(anchorPos)
-                local farmCF = anchor * CFrame.new(0, CONFIG.FOREST_FARM_HEIGHT, 0)
-                local _,_,_,waveEpoch = waitAlive(token)
-                if not waveEpoch then break end
-
-                if not safeTween(farmCF, 300, token) then
-                    -- Death/respawn or movement interruption: exit local loop so outer
-                    -- route logic can re-confirm Turtle before farming again.
-                    break
-                end
-
-                startStableHover(farmCF)
-                setForestMagnet(true, anchor, magnetRadius)
-                task.wait(.12)
-
-                local tool = equipTooltip("Melee")
-                local ac = buffMeleeHitbox()
-                logLine("FOREST_WAVE", "mobs="..#mobs.." tool="..tostring(tool and tool.Name or "nil").." controller="..tostring(ac ~= nil).." hitbox="..tostring(ac and ac.hitboxMagnitude or "nil").." bodyHitbox="..tostring(CONFIG.FOREST_HITBOX_SIZE))
-                local waveDeadline = os.clock() + 22
-                while isRunning(token)
-                    and getRegion() == "TURTLE"
-                    and inventoryCount("Scrap Metal") < 10
-                    and os.clock() < waveDeadline do
-
-                    if CHARACTER_EPOCH ~= waveEpoch or not hum() or hum().Health <= 0 then
-                        setStatus("Died during Scrap farm -> waiting respawn, then rerouting")
-                        waitAlive(token)
-                        break
-                    end
-
-                    local alive = magnetForestPirates(anchor, magnetRadius)
-                    if alive <= 0 then break end
-
-                    -- BodyPosition/BodyGyro hold the local character at one exact hover point.
-                    -- We no longer rewrite HRP.CFrame every attack tick, which caused the visible jitter.
-                    maintainStableHover(farmCF)
-
-                    tool = equipTooltip("Melee") or tool
-                    buffMeleeHitbox()
-                    if tool and tool.Parent == char() then
-                        local attackModels = aliveForestPirates(anchor.Position, magnetRadius)
-                        local okAttack, backend, hitCount = virtualToolClick(tool, attackModels)
-                        for _,m in ipairs(attackModels) do
-                            updateForestDamageTrack(m, okAttack)
-                        end
-                        if not okAttack then
-                            logLine("ATTACK_FAIL", "backend="..tostring(backend).." hits="..tostring(hitCount).." models="..tostring(#attackModels))
-                        elseif hitCount and hitCount > 0 and not AttackSuccessLogged then
-                            AttackSuccessLogged = true
-                            logLine("ATTACK_OK", "backend="..tostring(backend).." hits="..tostring(hitCount).." models="..tostring(#attackModels))
-                        end
-                    end
-                    task.wait(CONFIG.MELEE_ATTACK_INTERVAL)
-                end
-
-                setForestMagnet(false)
-                stopStableHover()
-                task.wait(.35)
-                local remaining = #aliveForestPirates(anchor.Position, magnetRadius)
-                if remaining > 0 then
-                    setStatus("Scrap Metal "..inventoryCount("Scrap Metal").."/10 | attack stalled, retrying "..remaining.." mobs")
-                    logLine("ATTACK_STALLED", "remaining="..remaining.." tool="..tostring(tool and tool.Name or "nil"))
-                else
-                    setStatus("Scrap Metal "..inventoryCount("Scrap Metal").."/10 | Forest Pirate wave cleared")
-                end
-            end
-        end
-        until true
-    end
-
-    setForestMagnet(false)
-    stopStableHover()
-    if inventoryCount("Scrap Metal") >= 10 then
-        setStatus("Scrap Metal ready: "..inventoryCount("Scrap Metal").."/10")
-        return true
-    end
-    return false
-end
-
-local function findTextObject(textNeedle)
-    local needle = string.lower(textNeedle)
-    for _,v in ipairs(PG:GetDescendants()) do
-        if (v:IsA("TextButton") or v:IsA("TextLabel")) and visibleGui(v) then
-            if string.lower(tostring(v.Text or "")):find(needle,1,true) then
-                return v
-            end
-        end
-    end
-end
-
-local function clickRecipeByText(textNeedle)
-    local o = findTextObject(textNeedle)
-    if not o then return false end
-    if o:IsA("TextButton") then fireButton(o) return true end
-    local p=o.Parent
-    for _=1,6 do
-        if not p then break end
-        if p:IsA("TextButton") then fireButton(p) return true end
-        p=p.Parent
-    end
-    return false
-end
-
-local function findCraftButton()
-    for _,v in ipairs(PG:GetDescendants()) do
-        if v:IsA("TextButton") and visibleGui(v) then
-            local t = string.lower(tostring(v.Text or "")):gsub("%s+","")
-            if t == "craft" then return v end
-        end
-    end
-end
-
-local function openCraftMenu(token)
-    if not openDragonHunter(token) then return false end
-    local opts = dialogueOptions()
-    if #opts < 2 then
-        PHX.closeDragonHunterDialogue()
-        return false
-    end
-    fireButton(opts[2]) -- Craft from Hunt/Craft/Gacha/Nevermind menu
-    task.wait(.5)
-    local opened = findTextObject("volcanic magnet") ~= nil or findTextObject("select a recipe") ~= nil
-    if not opened then
-        -- Do not leave the four-option NPC menu covering the screen/state machine.
-        PHX.closeDragonHunterDialogue()
-    end
-    return opened
-end
-
-local function craftVolcanicMagnet(token)
-    if not goHydra(token) then
-        setStatus("Hydra portal failed - craft cancelled")
-        return false
-    end
-    if not openCraftMenu(token) then
-        setStatus("Craft menu failed to open")
-        return false
-    end
-
-    clickRecipeByText("volcanic magnet")
-    task.wait(.35)
-    PHX.syncCraftMaterialCounts()
-
-    local btn = findCraftButton()
-    if not btn then
-        setStatus("Craft button absent -> materials still insufficient")
-        return false
-    end
-
-    fireButton(btn)
-    task.wait(1)
-    local crafted = hasVolcanicMagnet()
-    if crafted then
-        -- Scrap/Ember were consumed by crafting; discard short-lived popup optimism
-        -- so every counter immediately returns to authoritative post-craft values.
-        PHX.consumeKnownMaterial("Scrap Metal", 10)
-        PHX.consumeKnownMaterial("Blaze Ember", 15)
-        PHX.setKnownMaterial("Volcanic Magnet", 1, "CRAFT_LOCAL")
-        PHX.clearOptimisticCount("Volcanic Magnet")
-    end
-    return crafted
-end
-
-local function recoverMagnet(token)
-    -- V2.7.1: never require three unrelated material counters to be readable before progressing.
-    -- Decide phase-by-phase: Scrap -> craft probe -> Blaze Ember -> craft.
-    PHX.forceCounterSync()
-    PHX.warmMaterialInventory(1.0)
-
-    if hasVolcanicMagnet() then return true end
-
-    local masterOnline = Players:FindFirstChild(_G.TeamConfig.MasterName) ~= nil
-    local scrap, scrapSource = PHX.materialCountInfo("Scrap Metal", true)
-    local ember, emberSource = PHX.materialCountInfo("Blaze Ember", true)
-    local scrapKnown = scrapSource ~= "UNAVAILABLE" and scrapSource ~= "INIT"
-    local emberKnown = emberSource ~= "UNAVAILABLE" and emberSource ~= "INIT"
-
-    setStatus("RECOVERY scan | MASTER="..(masterOnline and "ONLINE" or "OFFLINE").." | Scrap="..tostring(scrap).."/10["..tostring(scrapSource).."] | Ember="..tostring(ember).."/15["..tostring(emberSource).."]")
-    logLine("PREFLIGHT", "recover magnet | masterOnline="..tostring(masterOnline).." region="..tostring(getRegion()).." scrap="..tostring(scrap).." src="..tostring(scrapSource).." ember="..tostring(ember).." emberSrc="..tostring(emberSource))
-
-    -- Only farm Scrap when we positively know it is below 10.
-    -- If Scrap is unknown, first probe the Dragon Hunter craft menu instead of blindly teleporting Turtle.
-    if scrapKnown and scrap < 10 then
-        if not farmScrap(token) then return false end
-        if not isRunning(token) then return false end
-        scrap, scrapSource = PHX.materialCountInfo("Scrap Metal", true)
-        scrapKnown = scrapSource ~= "UNAVAILABLE" and scrapSource ~= "INIT"
-    end
-
-    -- If Scrap is ready (or unknown), Hydra is the smartest next stop: a visible Craft button proves
-    -- both ingredients are already sufficient. This fixes the old 38 Scrap -> PREFLIGHT_WAIT loop.
-    setStatus("Material phase -> Hydra craft probe")
-    if craftVolcanicMagnet(token) then
-        setStatus("Volcanic Magnet crafted")
-        logLine("MAGNET", "crafted on pre-Blaze probe")
-        return true
-    end
-    if not isRunning(token) then return false end
-
-    -- Craft failed. If Scrap was unknown, re-check it now; only go Turtle if we can positively
-    -- establish that Scrap is actually below 10. Otherwise continue to Blaze Ember farming.
-    scrap, scrapSource = PHX.materialCountInfo("Scrap Metal", true)
-    scrapKnown = scrapSource ~= "UNAVAILABLE" and scrapSource ~= "INIT"
-    if scrapKnown and scrap < 10 then
-        setStatus("Craft probe failed | Scrap "..scrap.."/10 -> Floating Turtle")
-        if not farmScrap(token) then return false end
-        if not isRunning(token) then return false end
-    end
-
-    ember, emberSource = PHX.materialCountInfo("Blaze Ember", true)
-    emberKnown = emberSource ~= "UNAVAILABLE" and emberSource ~= "INIT"
-
-    -- Unknown Ember is treated as "needs verification/farm", not as a reason to stop the state machine.
-    -- If Ember is already sufficient but unreadable, the craft probe above would have succeeded.
-    if (not emberKnown) or ember < 15 then
-        setStatus("Scrap ready -> Blaze Ember phase | Ember="..tostring(ember).."/15["..tostring(emberSource).."]")
-        if not farmBlazeEmbers(token) then return false end
-    end
-    if not isRunning(token) then return false end
-
-    for attempt=1,4 do
-        if craftVolcanicMagnet(token) then
-            setStatus("Volcanic Magnet crafted")
-            logLine("MAGNET", "crafted after Blaze phase")
-            return true
-        end
-        if not isRunning(token) then return false end
-        local s, ss = PHX.materialCountInfo("Scrap Metal", true)
-        local e, es = PHX.materialCountInfo("Blaze Ember", true)
-        setStatus("Craft retry "..attempt.."/4 | Scrap="..tostring(s).."["..tostring(ss).."] Ember="..tostring(e).."["..tostring(es).."]")
-        if ss ~= "UNAVAILABLE" and ss ~= "INIT" and s < 10 then
-            farmScrap(token)
-        else
-            farmBlazeEmbers(token)
-        end
-    end
-
-    setStatus("RECOVERY FAILED: no Volcanic Magnet")
     return false
 end
 
 --==============================================================
--- COMPLETE EVENT FLOW
+-- LOOP / RESET
 --==============================================================
 
-local function runPrehistoricEvent(island, token)
-    if not island or not island.Parent then return end
+local function resetCharacter(token)
+    setStatus("Reset -> respawn for next hunt","RESET")
 
-    local key = tostring(math.floor(island:GetPivot().Position.X))..":"..tostring(math.floor(island:GetPivot().Position.Z))
-    if lastIslandWebhookKey ~= key then
-        lastIslandWebhookKey = key
-        sendWebhook("🌋 PREHISTORIC ISLAND FOUND", "Team is moving to Fossil Relic.", {
-            {name="Server", value=tostring(game.JobId), inline=false},
-            {name="Account", value=LP.Name, inline=true},
-            {name="Role", value=roleText(), inline=true},
-        })
-    end
-
-    setStatus("Prehistoric found -> Fossil Relic")
-    moveToRelic(island, token)
-
-    if isMaster() then
-        startEventAsMaster(island, token)
-    else
-        while isRunning(token) and island.Parent and island:GetAttribute("IsMinigameActive") ~= true do
-            moveToRelic(island, token)
-            task.wait(.4)
-        end
-    end
-
-    if not isRunning(token) or not island.Parent then return end
-    if island:GetAttribute("IsMinigameActive") ~= true then
-        setStatus("Event failed to start")
-        return
-    end
-
-    if isMaster() then
-        masterPressureLoop(island, token)
-    else
-        slaveGolemLoop(island, token)
-    end
-
-    if not isRunning(token) then return end
-
-    setStatus("Event ended -> Dragon Egg priority")
-    task.wait(.35)
-
-    -- Egg first: it is the time-sensitive/high-value reward and may create a
-    -- physical Dragon Fruit that must be stored before any reset or portal.
-    if not collectAssignedEgg(island, token) then return end
-    if not isRunning(token) then return end
-    collectBones(island, token)
-    if not isRunning(token) then return end
-
-    -- Final hard gate before ANY reset/portal. Reward replication is sometimes late;
-    -- if a Dragon fruit appears here it must be stored first. On failure the account
-    -- stops in place and never resets/leaves.
-    setStatus("Reward safety check -> Dragon guard before reset")
-    if not PHX.secureDragonWindow(CONFIG.DRAGON_GUARD.PRE_RESET_GUARD_SECONDS, token) then return end
-    if not isRunning(token) then return end
-
-    task.wait(.5)
-
-    -- User requirement: after the Volcano rewards are collected, every account
-    -- resets and ends up back at Tiki before deciding whether Magnet recovery is needed.
-    if resetBackToTiki then
-        resetBackToTiki(token)
-    end
-    if not isRunning(token) then return end
-
-    if not hasVolcanicMagnet() then
-        recoverMagnet(token)
-    end
-end
-
---==============================================================
--- SMART PREFLIGHT
---==============================================================
-
-local function scanTeamPreflight(token)
-    pcall(ensureMarines)
-    local masterPlayer = Players:FindFirstChild(_G.TeamConfig.MasterName)
-    local boat = getMasterBoat()
-    local island = findPrehistoric()
-    local magnet = hasVolcanicMagnet()
-    local state = {
-        MasterPlayer = masterPlayer,
-        MasterOnline = masterPlayer ~= nil,
-        Boat = boat,
-        Island = island,
-        Magnet = magnet,
-        Region = getRegion(),
-    }
-    logLine("PREFLIGHT", "master="..tostring(_G.TeamConfig.MasterName).." online="..tostring(state.MasterOnline).." magnet="..tostring(magnet).." boat="..tostring(boat ~= nil).." island="..tostring(island ~= nil).." region="..tostring(state.Region))
-    return state
-end
-
-local function waitForMasterOnline(token)
-    while isRunning(token) do
-        local p = Players:FindFirstChild(_G.TeamConfig.MasterName)
-        if p then return p end
-        setStatus("MASTER "..tostring(_G.TeamConfig.MasterName).." offline -> waiting, no teleport")
-        task.wait(1)
-    end
-end
-
---==============================================================
--- MASTER / SLAVE CYCLES
---==============================================================
-
-local function masterCycle(token)
-    local pre = scanTeamPreflight(token)
-    if pre.Island then
-        runPrehistoricEvent(pre.Island, token)
-        return
-    end
-
-    -- Check the actual Magnet state before any Tiki teleport.
-    if not pre.Magnet then
-        if not recoverMagnet(token) then return end
-        pre = scanTeamPreflight(token)
-    end
-
-    -- Re-use an existing owned boat. Only go to Tiki when MASTER really needs to buy one.
-    local boat = pre.Boat or getMasterBoat()
-    if not boat then
-        setStatus("MASTER preflight OK | Magnet=YES | no boat -> Tiki")
-        if not goTiki(token) then return end
-        boat = buyGrandBrigade(token)
-    else
-        setStatus("MASTER preflight | existing boat found -> skip Tiki purchase route")
-    end
-
-    if not boat then
-        setStatus("MASTER: boat spawn failed")
-        task.wait(2)
-        return
-    end
-
-    boardBoat(boat, token)
-    setStatus("MASTER: waiting all 5 aboard")
-
-    while isRunning(token) and boat.Parent and not findPrehistoric() do
-        local n = countTeamAboard(boat)
-        if n >= #CONFIG.TEAM then break end
-        setStatus("Waiting passengers "..n.."/"..#CONFIG.TEAM)
-        task.wait(.5)
-    end
-
-    if not isRunning(token) then return end
-    local island = findPrehistoric()
-    if not island and boat.Parent then island = searchSeaUntilIsland(boat, token) end
-    if island then runPrehistoricEvent(island, token) end
-end
-
-local function slaveCycle(token)
-    local pre = scanTeamPreflight(token)
-    if pre.Island then
-        runPrehistoricEvent(pre.Island, token)
-        return
-    end
-
-    -- Do not teleport anywhere while the configured MASTER is offline.
-    if not pre.MasterOnline then
-        if not waitForMasterOnline(token) then return end
-        pre = scanTeamPreflight(token)
-    end
-
-    -- Each slave verifies its own Magnet before deciding on travel.
-    if not pre.Magnet then
-        if not recoverMagnet(token) then return end
-        pre = scanTeamPreflight(token)
-    end
-
-    -- If MASTER already owns a live boat, board it immediately from the current state.
-    local boat = pre.Boat or getMasterBoat()
-    if not boat then
-        setStatus("SLAVE preflight OK | Magnet=YES | waiting MASTER boat, no Tiki teleport")
-        while isRunning(token) do
-            local island = findPrehistoric()
-            if island then
-                runPrehistoricEvent(island, token)
-                return
-            end
-            if not Players:FindFirstChild(_G.TeamConfig.MasterName) then
-                waitForMasterOnline(token)
-            end
-            boat = getMasterBoat()
-            if boat then break end
-            task.wait(.5)
-        end
-    end
-
-    if not isRunning(token) or not boat then return end
-    if not boardBoat(boat, token) then
-        setStatus("SLAVE: seat failed, retry")
-        task.wait(.5)
-        return
-    end
-
-    setStatus("SLAVE: seated, waiting island")
-    while isRunning(token) and boat.Parent do
-        local island = findPrehistoric()
-        if island then
-            runPrehistoricEvent(island, token)
-            return
-        end
-        task.wait(.3)
-    end
-end
-
-local function mainLoop(token)
-    if not isTeamName(LP.Name) then
-        setStatus("This account is not in CONFIG.TEAM")
-        _G.TeamConfig.StopReason = "NOT_IN_TEAM"
-        _G.TeamConfig.IsRunning = false
-        return
-    end
-
-    ensureMarines()
-
-    while isRunning(token) do
-        pcall(ensureMarines)
-
-        local island = findPrehistoric()
-        if island then
-            local ok,err = pcall(runPrehistoricEvent, island, token)
-            if not ok then setStatus("EVENT ERROR: "..tostring(err)) task.wait(1) end
-        else
-            if isMaster() then
-                local ok,err = pcall(masterCycle, token)
-                if not ok then setStatus("MASTER ERROR: "..tostring(err)) task.wait(1) end
-            else
-                local ok,err = pcall(slaveCycle, token)
-                if not ok then setStatus("SLAVE ERROR: "..tostring(err)) task.wait(1) end
-            end
-        end
-
-        task.wait(.5)
-    end
-end
-
-
---==============================================================
--- NIGHT SNAPSHOT + WATCHDOG
---==============================================================
-
-local function debugInventoryOnce()
-    return {
-        Scrap = inventoryCount("Scrap Metal"),
-        Ember = inventoryCount("Blaze Ember"),
-        Magnet = inventoryCount("Volcanic Magnet"),
-        Bones = inventoryCount("Dinosaur Bones"),
-    }
-end
-
-local function equippedToolName()
-    local c = char()
-    if not c then return "nil" end
-    local t = c:FindFirstChildOfClass("Tool")
-    return t and t.Name or "nil"
-end
-
-local function eventUiText(name)
-    local main = PG:FindFirstChild("Main")
-    local list = main and main:FindFirstChild("TopHUDList")
-    local o = list and list:FindFirstChild(name)
-    if o and pcall(function() return o.Text end) then
-        return tostring(o.Text)
-    end
-    return ""
-end
-
-local function debugRuntimeSnapshot()
-    local r = root()
     local h = hum()
-    local region,regionD = getRegion()
-    local inv = debugInventoryOnce()
-    local island = findPrehistoric()
-    local active = island and island:GetAttribute("IsMinigameActive") == true or false
-    local relicHp,relicMax = -1,-1
-    if island then
-        local relic = getRelic(island)
-        local hv = relic and relic:FindFirstChild("Health")
-        local mv = relic and relic:FindFirstChild("MaxHealth")
-        relicHp = hv and hv.Value or -1
-        relicMax = mv and mv.Value or -1
+    if h then
+        pcall(function() h.Health = 0 end)
     end
 
-    local enemies = workspace:FindFirstChild("Enemies")
-    local forestCount,forestHp = 0,0
-    local golemHp = -1
-    if enemies then
-        for _,m in ipairs(enemies:GetChildren()) do
-            local mh = m:FindFirstChildOfClass("Humanoid")
-            if mh and mh.Health > 0 then
-                if string.find(string.lower(m.Name), "forest pirate", 1, true) then
-                    forestCount = forestCount + 1
-                    forestHp = forestHp + math.floor(mh.Health)
-                elseif string.find(string.lower(m.Name), "lava golem", 1, true) then
-                    golemHp = math.floor(mh.Health)
-                end
+    local deadline = os.clock()+15
+    repeat
+        task.wait(.20)
+        if alive() then
+            task.wait(1.2)
+            return true
+        end
+    until os.clock() >= deadline or not current(token)
+
+    return alive()
+end
+
+local function runMasterCycle(token)
+    if not waitAuto(token) then
+        return false
+    end
+
+    STATE.Cycle += 1
+    STATE.Egg = "WAIT"
+    STATE.HuntRetry = 0
+    STATE.Raid = "OFF"
+    refreshUI()
+
+    if not ensureMarines() then
+        setStatus("Could not confirm Marines team","TEAM")
+        task.wait(2)
+        return true
+    end
+
+    -- MASTER is the only client that touches Stash/Magnet.
+    if STATE.MagnetNeedsRefresh then
+        local magnetOk = ensureMagnetBaseline(
+            STATE.MagnetChecked and "post-event" or "startup"
+        )
+
+        if not magnetOk then
+            if STATE.Magnet ~= nil and STATE.Magnet <= 0 then
+                STATE.Running = false
+                refreshUI()
+                return false
             end
+
+            task.wait(3)
+            return true
         end
     end
 
-    local state = resolveCombatState()
-    local ac = state and state.activeController
-    local hb = ac and ac.hitboxMagnitude or "nil"
-    local boat = getMasterBoat()
-    local aboard = boat and countTeamAboard(boat) or 0
+    local island,searchWhy = huntPrehistoricWithRecovery(token)
 
-    local line = table.concat({
-        "status="..tostring(NIGHT.LastStatus),
-        "region="..tostring(region).."("..string.format("%.0f", tonumber(regionD) or -1)..")",
-        "pos="..tostring(r and r.Position or "nil"),
-        "hp="..tostring(h and math.floor(h.Health) or -1),
-        "tool="..equippedToolName(),
-        "hitbox="..tostring(hb),
-        "scrap="..inv.Scrap,
-        "ember="..inv.Ember,
-        "magnet="..inv.Magnet,
-        "bones="..tostring(inv.Bones or 0),
-        "invScrapSource="..tostring((ITEM_TRACK[PHX.normalizeItemName("Scrap Metal")] or {}).Source or "?"),
-        "dragonLoose="..tostring(#PHX.findPhysicalDragonFruits()),
-        "dragonStored="..tostring(DRAGON_GUARD_STATE.LastStored or "none"),
-        "island="..tostring(island ~= nil),
-        "event="..tostring(active),
-        "relic="..tostring(relicHp).."/"..tostring(relicMax),
-        "pressure="..eventUiText("PrehistoricRaidTimer"),
-        "forest="..forestCount..":"..forestHp,
-        "golemHp="..golemHp,
-        "boat="..tostring(boat ~= nil)..":"..aboard,
-    }, " | ")
-
-    -- Signature deliberately excludes exact player position so tiny movement cannot hide a stall.
-    local sig = table.concat({
-        tostring(NIGHT.LastStatus), tostring(region), tostring(inv.Scrap), tostring(inv.Ember), tostring(inv.Magnet),
-        tostring(active), tostring(relicHp), eventUiText("PrehistoricRaidTimer"), tostring(forestCount),
-        tostring(math.floor(forestHp/100)), tostring(math.floor(math.max(golemHp,0)/100)), tostring(aboard), tostring(hb)
-    }, ":")
-    return sig,line,active
-end
-
-local function restartNightStateMachine(reason)
-    if not _G.TeamConfig.IsRunning then return end
-    RUN_TOKEN = RUN_TOKEN + 1
-    local token = RUN_TOKEN
-    NIGHT.RecoveryCount = NIGHT.RecoveryCount + 1
-    NIGHT.LastProgressAt = os.clock()
-    NIGHT.LastProgressSignature = "WATCHDOG_RESTART:"..NIGHT.RecoveryCount
-    logLine("WATCHDOG_RECOVER", "count="..NIGHT.RecoveryCount.." reason="..tostring(reason).." | re-entering mainLoop without killing character")
-    task.spawn(function()
-        mainLoop(token)
-    end)
-end
-
-task.spawn(function()
-    local nextSnapshot = 0
-    while true do
-        task.wait(5)
-        if CONFIG.DEBUG.ENABLED and _G.TeamConfig.IsRunning then
-            local sig,line,eventActive = debugRuntimeSnapshot()
-            if sig ~= NIGHT.RuntimeSignature then
-                NIGHT.RuntimeSignature = sig
-                noteProgress("RUNTIME:"..sig)
-            end
-
-            if os.clock() >= nextSnapshot then
-                nextSnapshot = os.clock() + (CONFIG.DEBUG.SNAPSHOT_INTERVAL or 15)
-                logLine("SNAP", line)
-                flushNightLog()
-            end
-
-            local stalled = os.clock() - NIGHT.LastProgressAt
-            if stalled >= (CONFIG.DEBUG.WATCHDOG_SECONDS or 120) then
-                logLine("WATCHDOG", string.format("STALL %.0fs | %s", stalled, line))
-                if CONFIG.DEBUG.WEBHOOK_ERRORS then
-                    sendWebhook("⚠️ PREHISTORIC WATCHDOG", "Automation appears stalled on "..LP.Name, {
-                        {name="State", value=tostring(NIGHT.LastStatus), inline=false},
-                        {name="Stalled", value=string.format("%.0fs", stalled), inline=true},
-                        {name="Region", value=tostring(getRegion()), inline=true},
-                    })
-                end
-
-                -- During an active Volcano event, do not reset/restart state automatically;
-                -- preserving relic/event participation is safer. Log it for morning analysis.
-                if eventActive then
-                    NIGHT.LastProgressAt = os.clock()
-                    logLine("WATCHDOG", "Active Volcano event -> logging only, no forced restart")
-                elseif CONFIG.DEBUG.WATCHDOG_RESTART then
-                    restartNightStateMachine("no meaningful progress for "..math.floor(stalled).."s")
-                else
-                    NIGHT.LastProgressAt = os.clock()
-                end
-            end
-        else
-            nextSnapshot = 0
-        end
-    end
-end)
-
---==============================================================
--- UI: MASTER SELECTION + START / STOP
---==============================================================
-
--- Delta-safe: always parent the real controls to PlayerGui.
--- gethui/CoreGui are only cleaned up so an older invisible copy cannot interfere.
-local guiParent = PG
-
-pcall(function()
-    local x = CoreGui:FindFirstChild("PrehistoricTeamV1")
-    if x then x:Destroy() end
-end)
-
-if gethui then
-    pcall(function()
-        local h = gethui()
-        if h then
-            local x = h:FindFirstChild("PrehistoricTeamV1")
-            if x then x:Destroy() end
-        end
-    end)
-end
-
-local old = guiParent:FindFirstChild("PrehistoricTeamV1")
-if old then old:Destroy() end
-
-local SG = Instance.new("ScreenGui")
-SG.Name = "PrehistoricTeamV1"
-SG.ResetOnSpawn = false
-SG.IgnoreGuiInset = false
-SG.DisplayOrder = 999999
-SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-SG.Enabled = true
-SG.Parent = guiParent
-
-local F = Instance.new("Frame")
-F.Parent = SG
-F.Size = UDim2.fromOffset(385, 360)
-F.Position = UDim2.new(0.5,-192,0.12,0)
-F.BackgroundColor3 = Color3.fromRGB(20,20,26)
-F.BorderSizePixel = 1
-F.BorderColor3 = Color3.fromRGB(0,150,255)
-F.Active = true
-F.Draggable = true
-
-local TITLE = Instance.new("TextLabel")
-TITLE.Parent = F
-TITLE.Size = UDim2.new(1,0,0,32)
-TITLE.BackgroundColor3 = Color3.fromRGB(30,30,40)
-TITLE.TextColor3 = Color3.new(1,1,1)
-TITLE.Font = Enum.Font.SourceSansBold
-TITLE.TextSize = 15
-TITLE.Text = "🌋 PREHISTORIC TEAM V2.10.1 TREE7/STASH FIX | DELTA"
-
-local MASTER_BOX = Instance.new("TextBox")
-MASTER_BOX.Parent = F
-MASTER_BOX.Size = UDim2.new(1,-20,0,32)
-MASTER_BOX.Position = UDim2.fromOffset(10,42)
-MASTER_BOX.BackgroundColor3 = Color3.fromRGB(38,38,48)
-MASTER_BOX.TextColor3 = Color3.new(1,1,1)
-MASTER_BOX.PlaceholderText = "MASTER / BUY BOAT username"
-MASTER_BOX.Text = CONFIG.MASTER_NAME
-MASTER_BOX.ClearTextOnFocus = false
-
-local APPLY = Instance.new("TextButton")
-APPLY.Parent = F
-APPLY.Size = UDim2.new(1,-20,0,30)
-APPLY.Position = UDim2.fromOffset(10,80)
-APPLY.BackgroundColor3 = Color3.fromRGB(55,100,155)
-APPLY.TextColor3 = Color3.new(1,1,1)
-APPLY.Font = Enum.Font.SourceSansBold
-APPLY.Text = "SET MASTER FOR THIS CLIENT"
-
-local ROLE = Instance.new("TextLabel")
-ROLE.Parent = F
-ROLE.Size = UDim2.new(1,-20,0,35)
-ROLE.Position = UDim2.fromOffset(10,116)
-ROLE.BackgroundTransparency = 1
-ROLE.TextColor3 = Color3.fromRGB(100,220,255)
-ROLE.Font = Enum.Font.SourceSansBold
-ROLE.TextWrapped = true
-
-COUNTER_LABEL = Instance.new("TextLabel")
-COUNTER_LABEL.Parent = F
-COUNTER_LABEL.Size = UDim2.new(1,-20,0,30)
-COUNTER_LABEL.Position = UDim2.fromOffset(10,148)
-COUNTER_LABEL.BackgroundTransparency = 1
-COUNTER_LABEL.TextColor3 = Color3.fromRGB(120,235,170)
-COUNTER_LABEL.Font = Enum.Font.SourceSansBold
-COUNTER_LABEL.TextSize = 13
-COUNTER_LABEL.TextWrapped = true
-COUNTER_LABEL.Text = "Scrap SYNC/10 | Ember SYNC/15 | Magnet SYNC | Bones SYNC | DragonGuard ARMED"
-
-STATUS_LABEL = Instance.new("TextLabel")
-STATUS_LABEL.Parent = F
-STATUS_LABEL.Size = UDim2.new(1,-20,0,78)
-STATUS_LABEL.Position = UDim2.fromOffset(10,180)
-STATUS_LABEL.BackgroundColor3 = Color3.fromRGB(14,14,19)
-STATUS_LABEL.TextColor3 = Color3.fromRGB(255,210,80)
-STATUS_LABEL.Font = Enum.Font.SourceSansSemibold
-STATUS_LABEL.TextWrapped = true
-STATUS_LABEL.Text = "READY"
-
-local START = Instance.new("TextButton")
-START.Parent = F
-START.Size = UDim2.new(1,-20,0,42)
-START.Position = UDim2.fromOffset(10,268)
-START.BackgroundColor3 = Color3.fromRGB(45,150,70)
-START.TextColor3 = Color3.new(1,1,1)
-START.Font = Enum.Font.SourceSansBold
-START.TextSize = 16
-START.Text = "▶ START FULL AUTO"
-
-local NOTE = Instance.new("TextLabel")
-NOTE.Parent = F
-NOTE.Size = UDim2.new(1,-20,0,38)
-NOTE.Position = UDim2.fromOffset(10,316)
-NOTE.BackgroundTransparency = 1
-NOTE.TextColor3 = Color3.fromRGB(180,180,190)
-NOTE.TextSize = 12
-NOTE.Text = "Night log: "..NIGHT.LogPath.." | file="..tostring(NIGHT.FileReady or type(appendfile)=="function").." | SaveCPU="..tostring(CONFIG.SAVE_CPU.ENABLED)
-
-local function refreshRole()
-    _G.TeamConfig.IsMaster = LP.Name == _G.TeamConfig.MasterName
-    ROLE.Text = "LOCAL: "..LP.Name.."\nROLE: "..roleText().." | MASTER: ".._G.TeamConfig.MasterName
-end
-
-local function refreshCounters()
-    if not COUNTER_LABEL or not COUNTER_LABEL.Parent then return end
-    local scrap, scrapSource, scrapKnown = PHX.materialCountInfo("Scrap Metal")
-    local ember, emberSource, emberKnown = PHX.materialCountInfo("Blaze Ember")
-    PHX.ensureInventoryProbeIfUnknown()
-    local magnet = inventoryCount("Volcanic Magnet")
-    local bones = inventoryCount("Dinosaur Bones")
-    local dragons = PHX.findPhysicalDragonFruits()
-    local dragonText = "DragonGuard ARMED | physical:"..tostring(#dragons)
-    if #dragons > 0 then
-        local variant = PHX.dragonVariantFromTool(dragons[1])
-        dragonText = "DRAGON PHYSICAL"..(variant and (" "..variant) or "").." -> STORE"
-    elseif DRAGON_GUARD_STATE.Critical then
-        dragonText = "DRAGON STORE CRITICAL"
-    end
-
-    local function srcTag(source)
-        if source == "REMOTE_EXACT" then return "R" end
-        if source == "STASH_GUI" or source == "STASH_GUI_AUTO" then return "G" end
-        if source == "REMOTE_DEEP" then return "D" end
-        if source == "CRAFT_GUI" then return "C" end
-        if source == "MEMORY" then return "M" end
-        if source == "CRAFT_LOCAL" then return "L" end
-        return "?"
-    end
-    if (not scrapKnown or not emberKnown) and not PHX.CounterSyncBusy then
-        task.spawn(function() PHX.forceCounterSync() end)
-    end
-    local scrapText = scrapKnown and tostring(scrap) or "SYNC"
-    local emberText = emberKnown and tostring(ember) or "SYNC"
-    COUNTER_LABEL.Text = "Scrap "..scrapText.."/10["..srcTag(scrapSource).."] | Ember "..emberText.."/15["..srcTag(emberSource).."] | Magnet "..(magnet > 0 and "YES" or "NO").." | Bones "..tostring(bones).." | "..dragonText
-end
-
-APPLY.MouseButton1Click:Connect(function()
-    pcall(ensureMarines)
-    local n = MASTER_BOX.Text:gsub("%s+","")
-    if n ~= "" then
-        _G.TeamConfig.MasterName = n
-        CONFIG.MASTER_NAME = n
-        refreshRole()
-        setStatus("Master set locally: "..n)
-    end
-end)
-
-START.MouseButton1Click:Connect(function()
-    if _G.TeamConfig.IsRunning then
-        _G.TeamConfig.StopReason = "USER_BUTTON"
-        _G.TeamConfig.IsRunning = false
-        RUN_TOKEN = RUN_TOKEN + 1
-        START.Text = "▶ START FULL AUTO"
-        START.BackgroundColor3 = Color3.fromRGB(45,150,70)
-        disableLavaProtection()
-        setForestMagnet(false)
-        stopStableHover()
-        logLine("RUN", "STOP pressed")
-        flushNightLog()
-        setStatus("STOPPED")
-        return
-    end
-
-    -- Marine team is established before role/master selection is committed.
-    ensureMarines()
-    local n = MASTER_BOX.Text:gsub("%s+","")
-    if n ~= "" then
-        _G.TeamConfig.MasterName = n
-        CONFIG.MASTER_NAME = n
-    end
-    refreshRole()
-
-    RUN_TOKEN = RUN_TOKEN + 1
-    local token = RUN_TOKEN
-    _G.TeamConfig.StopReason = nil
-    _G.TeamConfig.IsRunning = true
-    START.Text = "⏹ STOP FULL AUTO"
-    START.BackgroundColor3 = Color3.fromRGB(160,55,55)
-    logLine("RUN", "START | role="..roleText().." master="..tostring(_G.TeamConfig.MasterName))
-    setStatus("STARTED | "..roleText())
-
-    task.spawn(function()
-        while token == RUN_TOKEN and _G.TeamConfig.IsRunning do
-            local ok, err = pcall(mainLoop, token)
-            if not ok then
-                logLine("RUN_FATAL", tostring(err))
-                setStatus("RUN ERROR: "..tostring(err).." | retrying state machine")
-                task.wait(.35)
-            elseif token == RUN_TOKEN and _G.TeamConfig.IsRunning then
-                -- Transient route/quest failures must NEVER flip the button back to START.
-                logLine("RUN_RESTART", "mainLoop returned while still armed -> restart")
-                setStatus("State machine returned -> auto retry")
-                task.wait(.30)
-            end
+    if not island then
+        if searchWhy == "STOPPED" then
+            return false
         end
 
-        if token == RUN_TOKEN then
-            logLine("RUN_END", "reason="..tostring(_G.TeamConfig.StopReason))
-            START.Text = "▶ START FULL AUTO"
-            START.BackgroundColor3 = Color3.fromRGB(45,150,70)
+        setStatus(
+            "MASTER hunt recovery: "..tostring(searchWhy),
+            "RECOVERY"
+        )
+        task.wait(1)
+        return true
+    end
+
+    setStatus("Prehistoric Island found","PREHISTORIC")
+
+    if not alive() then
+        waitForRespawnRecovery(token)
+        return true
+    end
+
+    if not startEvent(island,token) then
+        if not alive() then
+            waitForRespawnRecovery(token)
+            return true
         end
-    end)
-end)
 
-refreshRole()
+        setStatus(
+            "MASTER could not confirm raid HUD",
+            "START EVENT"
+        )
+        task.wait(1)
+        return true
+    end
 
--- The real UI exists now, remove the boot banner.
-if BOOT_GUI and BOOT_GUI.Parent then
-    BOOT_GUI:Destroy()
+    if eventActive() then
+        runTeamVolcano(island,token)
+    else
+        setStatus(
+            "Fossil interaction sent but raid HUD never appeared",
+            "START EVENT"
+        )
+        return true
+    end
+
+    if not alive() then
+        waitForRespawnRecovery(token)
+        return true
+    end
+
+    setStatus("TEAM event ended -> rewards","REWARD")
+    collectDragonEgg(island,token)
+    collectBones(island,token)
+
+    STATE.CompletedEvents += 1
+
+    if CONFIG.MAGNET_CHECK.RECHECK_AFTER_EVENT then
+        STATE.MagnetNeedsRefresh = true
+    end
+
+    if not CONFIG.LOOP_AFTER_EVENT then
+        STATE.Running = false
+        setStatus("MASTER cycle complete","DONE")
+        return false
+    end
+
+    resetCharacter(token)
+    task.wait(2.0)
+
+    return true
 end
-setStatus("UI READY | "..roleText().." | press START FULL AUTO")
-logLine("UI", "READY | log="..NIGHT.LogPath)
-flushNightLog()
 
--- Live counter panel: one cached inventory fetch feeds every displayed material,
--- while pickup popups provide an immediate optimistic increment until the server catches up.
-task.spawn(function()
-    while SG.Parent do
-        pcall(refreshCounters)
+local function runSlaveCycle(token)
+    if not waitAuto(token) then
+        return false
+    end
+
+    STATE.Cycle += 1
+    STATE.Egg = "WAIT"
+    STATE.Raid = "OFF"
+    STATE.Magnet = nil
+    refreshUI()
+
+    if not ensureMarines() then
+        setStatus("Could not confirm Marines team","TEAM")
+        task.wait(2)
+        return true
+    end
+
+    local island,why = slaveWaitForIsland(token)
+
+    if not island then
+        if why == "STOPPED" then
+            return false
+        end
+
+        setStatus(
+            "Slave rendezvous retry: "..tostring(why),
+            "RECOVERY"
+        )
+        task.wait(1)
+        return true
+    end
+
+    if not waitForMasterEvent(island,token) then
         task.wait(.5)
+        return true
     end
-end)
 
--- Keep Marine team alive even before START so the initial team picker cannot leave
--- one of the five clients on Pirates while the user is configuring MASTER.
+    if eventActive() then
+        runTeamVolcano(island,token)
+    end
+
+    if not alive() then
+        waitForRespawnRecovery(token)
+        return true
+    end
+
+    setStatus("TEAM event ended -> personal rewards","REWARD")
+    collectDragonEgg(island,token)
+    collectBones(island,token)
+
+    STATE.CompletedEvents += 1
+
+    if not CONFIG.LOOP_AFTER_EVENT then
+        STATE.Running = false
+        setStatus("Slave cycle complete","DONE")
+        return false
+    end
+
+    resetCharacter(token)
+    task.wait(2.0)
+
+    return true
+end
+
+local function runCycle(token)
+    if isMaster() then
+        return runMasterCycle(token)
+    end
+
+    return runSlaveCycle(token)
+end
+
 task.spawn(function()
-    while SG.Parent do
-        pcall(ensureMarines)
-        task.wait(10)
+    if type(setfpscap) == "function" then
+        pcall(function() setfpscap(30) end)
+    end
+
+    task.wait(.5)
+
+    while current(STATE.Token) do
+        if not STATE.AutoVolcano then
+            setStatus(
+                "AUTO TEAM OFF - waiting",
+                "PAUSED"
+            )
+            waitAuto(STATE.Token)
+        end
+
+        local keepGoing = runCycle(STATE.Token)
+
+        if not keepGoing then
+            break
+        end
+
+        task.wait(.5)
     end
 end)
