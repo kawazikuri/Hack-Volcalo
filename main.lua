@@ -338,7 +338,7 @@ local CONFIG = {
         LAVA_CYLINDER = {
             SAMPLE_DEATH = Vector3.new(-61423.93359375, 786.7953491210938, 12642.5341796875),
             SAMPLE_FOSSIL_PLAYER = Vector3.new(-60632.46875, 55.007808685302734, 12520.9111328125),
-            CORE_RADIUS = 30,
+            CORE_RADIUS = 46,
             ROUTE_RADIUS = 60, -- core plus 30-stud margin
             HEIGHT = 150, -- from death-sample Y downward
             WAYPOINT_OUTSET = 10, -- arc chords must stay outside R=60
