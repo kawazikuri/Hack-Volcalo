@@ -1,3 +1,8 @@
+-- PX PREHISTORIC V2.17.16 | Golem-only local Humanoid.Health=0 (EXPERIMENT, server kill UNVERIFIED).
+-- Forest Pirate, Dragon Hunter, idle NPC combat retain V2.17.15 Recovery NET unchanged.
+-- The client can hide a Golem without removing it from the SERVER or protecting Fossil Relic.
+-- PX PREHISTORIC V2.17.15 | Tiki first -> Fast Direct BuyBoat after Magnet craft or character reset.
+-- Fast Direct uses ONE CommF_ BuyBoat RPC without tweening to Boat Dealer; fallback only after proven rejection.
 -- PX PREHISTORIC V2.17.11 | Original Bring + verified-in-test Recovery NET; Egg unchanged
 -- NET_HEAD default mirrors isolated PX KillAura Recovery Test V1 (35 studs / 0.30 s).
 -- Modes selectable in Settings: NET_HEAD / NET_ROOT / NET_HEAD_0.
@@ -477,6 +482,11 @@ local CONFIG = {
         BRING_ENABLED = true, -- shared by TEAM and SOLO; no additional attack worker
         STALL_SECONDS = 4,
     },
+    GOLEM_LOCAL_KILL = {
+        Enabled = true, -- Golem ONLY: client Humanoid.Health=0, NOT a proven server kill
+        Range = 48, -- must physically approach; no remote / cross-map targeting
+        RetryGap = 1.5, -- minimum delay to retry an unsuccessful local write
+    },
 
     FOSSIL = {
         PLAYER_RELATIVE_TO_RELIC = CFrame.new(
@@ -645,9 +655,9 @@ function PHX.sanitizeUserConfig(settings)
     local clean={masterRole=false,selectedMaster="",automationMode="TEAM",desiredRunning=false,
         debugEnabled=true,watchdogRestart=true,returnToTiki=true,randomFruit=false,autoStore=true,
         mapHidden=false,fpsCap=30,webhookURL="",webhookUserId="",gachaNextReadyEpoch=0,gachaLastAttemptEpoch=0,
-        auraEnabled=true,auraIdle=false,netMode="NET_HEAD",removeLava=true,boatNoclip=true,fastBoatBuy=true,golemBring=true,questBring=true}
+        auraEnabled=true,auraIdle=false,netMode="NET_HEAD",removeLava=true,boatNoclip=true,fastBoatBuy=true,golemBring=true,golemLocalKill=true,questBring=true}
     if type(settings)~="table" then return clean end
-    for _,key in ipairs({"masterRole","desiredRunning","debugEnabled","watchdogRestart","returnToTiki","randomFruit","autoStore","mapHidden","auraEnabled","auraIdle","removeLava","boatNoclip","fastBoatBuy","golemBring","questBring"}) do
+    for _,key in ipairs({"masterRole","desiredRunning","debugEnabled","watchdogRestart","returnToTiki","randomFruit","autoStore","mapHidden","auraEnabled","auraIdle","removeLava","boatNoclip","fastBoatBuy","golemBring","golemLocalKill","questBring"}) do
         if type(settings[key])=="boolean" then clean[key]=settings[key] end
     end
     if settings.automationMode=="TEAM" or settings.automationMode=="SOLO" then clean.automationMode=settings.automationMode end
@@ -691,7 +701,8 @@ function PHX.userConfigSnapshot()
         netMode=CONFIG.KILL_AURA.NetMode,
         removeLava=CONFIG.REMOVE_LAVA.Enabled,boatNoclip=CONFIG.BOAT_NOCLIP.Enabled,
         fastBoatBuy=CONFIG.BOAT_FAST_BUY.Enabled,
-        golemBring=CONFIG.GOLEM_AURA.BRING_ENABLED,questBring=CONFIG.FARM_COMBAT.QuestBringEnabled})}
+        golemBring=CONFIG.GOLEM_AURA.BRING_ENABLED,golemLocalKill=CONFIG.GOLEM_LOCAL_KILL.Enabled,
+        questBring=CONFIG.FARM_COMBAT.QuestBringEnabled})}
 end
 
 function PHX.applyUserConfig(settings)
@@ -710,6 +721,7 @@ function PHX.applyUserConfig(settings)
     CONFIG.BOAT_NOCLIP.Enabled=clean.boatNoclip
     CONFIG.BOAT_FAST_BUY.Enabled=clean.fastBoatBuy
     CONFIG.GOLEM_AURA.BRING_ENABLED=clean.golemBring
+    CONFIG.GOLEM_LOCAL_KILL.Enabled=clean.golemLocalKill
     CONFIG.FARM_COMBAT.QuestBringEnabled=clean.questBring
     ENV.__PH_DIRECT_GACHA_NEXT_READY=math.max(tonumber(ENV.__PH_DIRECT_GACHA_NEXT_READY) or 0,clean.gachaNextReadyEpoch)
     ENV.__PH_DIRECT_GACHA_LAST_SENT=math.max(tonumber(ENV.__PH_DIRECT_GACHA_LAST_SENT) or 0,clean.gachaLastAttemptEpoch)
@@ -4901,6 +4913,44 @@ local function nearestNativeBoatDealer()
     return best,part,best and "NPC_FOUND" or "NO_TIKI_MARINE_BOAT_DEALER"
 end
 
+-- V2.17.15: Return to the Tiki REGION only for purchasing a boat.
+-- Buying through CommF_ does not require walking/tweening to the Boat Dealer.
+-- Keep this separate from returnToDealer: that NPC approach is only a verified
+-- rejection fallback, not the normal route after crafting a Magnet/respawning.
+function PHX.returnToTikiForBoat(token,reason)
+    if not PHX.travelAlive(token) then return false end
+    reason=tostring(reason or "BOAT_PURCHASE")
+    local region=getRegion()
+    if region=="TIKI" then
+        logLine("BOAT_TIKI_READY",reason.." already=TIKI noDealerTween=true")
+        return true
+    end
+    logLine("BOAT_TIKI_ROUTE",reason.." from="..tostring(region).." to=TIKI noDealerTween=true")
+    if region=="UNKNOWN" then
+        -- Existing offshore safety path: reset only after Dragon/item guard.
+        setStatus("BOAT: offshore -> secure inventory and return to Tiki spawn")
+        if PHX.secureDragonWindow and not PHX.secureDragonWindow(1.0,token) then return false end
+        if not resetCharacter(token) then
+            logLine("BOAT_TIKI_FAILED",reason.." offshore reset blocked")
+            return false
+        end
+    end
+    if not PHX.travelAlive(token) then return false end
+    if getRegion()~="TIKI" then
+        setStatus("BOAT: using portals to Tiki; no Boat Dealer tween")
+        if not goTiki(token) then
+            logLine("BOAT_TIKI_FAILED",reason.." portal route failed region="..tostring(getRegion()))
+            return false
+        end
+    end
+    if not PHX.travelAlive(token) or getRegion()~="TIKI" then
+        logLine("BOAT_TIKI_FAILED",reason.." Tiki region not verified after travel")
+        return false
+    end
+    logLine("BOAT_TIKI_READY",reason.." region=TIKI noDealerTween=true")
+    return true
+end
+
 function PHX.returnToDealer(token)
     if getRegion()=="UNKNOWN" then
         setStatus("RECOVERY offshore -> respawn at saved Tiki spawn")
@@ -5183,10 +5233,17 @@ local function buyGrandBrigade(token)
         if boat then return boat end
     end
     if os.clock()<(PHX.NextBoatBuyAt or 0) then return nil end
+    if not PHX.returnToTikiForBoat(token,PHX.BoatRebuyPending and "RESPAWN_REBUY" or "PRE_BUY") then
+        PHX.BoatState="TIKI_RETURN_REQUIRED"
+        setStatus("Boat purchase waiting for confirmed Tiki arrival")
+        return nil
+    end
+    if not PHX.travelAlive(token) or PHX.BoatPurchasePending or PHX.isMovementLocked() then return nil end
     local rr=root()
     if not rr then return nil end
     local fastDirect=CONFIG.BOAT_FAST_BUY.Enabled and not PHX.BoatFastForceDealer
-    local npc,part=nearestNativeBoatDealer()
+    local npc,part=nil,nil
+    if not fastDirect then npc,part=nearestNativeBoatDealer() end
     local distance=part and (rr.Position-part.Position).Magnitude or math.huge
     if fastDirect then
         -- Borrow the user's fast test: BuyBoat can be attempted without opening
@@ -5217,7 +5274,7 @@ local function buyGrandBrigade(token)
         logLine("BUY_FAILED",tostring(why))
         return nil
     end
-    npc,part=nearestNativeBoatDealer()
+    if not fastDirect then npc,part=nearestNativeBoatDealer() end
     if not fastDirect then
         local settled,why=settleBoatMovement(lease,part,token)
         if not settled then return abort("SETTLE:"..tostring(why)) end
@@ -5707,6 +5764,9 @@ PHX.CompletedIslands = setmetatable({}, {__mode="k"})
 PHX.GolemPrepared = setmetatable({}, {__mode="k"})
 PHX.GolemLastBring = setmetatable({}, {__mode="k"})
 PHX.GolemDamage = setmetatable({}, {__mode="k"})
+PHX.GolemLocalHpState = {Writes=0,LocalZero=0,Errors=0,LastAt=0,LastMessage="READY",
+    Written=setmetatable({}, {__mode="k"}), LastTry=setmetatable({}, {__mode="k"}),
+    IslandMarkers=setmetatable({}, {__mode="k"})}
 PHX.GolemOriginal = setmetatable({}, {__mode="k"})
 
 function PHX.raidGuiVisible(obj)
@@ -6845,6 +6905,67 @@ PHX.spawn(function()
     end
 end)
 
+-- GOLEM-ONLY local HP experiment. This mirrors the standalone diagnostic,
+-- NOT a server-authorized kill: client HP=0 can remove a model locally without
+-- stopping server-side attacks, crediting a kill, or protecting Fossil Relic.
+-- Never run this on Forest Pirate, Dragon Hunter targets, players or generic NPCs.
+function PHX.golemLocalHpStep(models, island, token)
+    local cfg=CONFIG.GOLEM_LOCAL_KILL
+    local state=PHX.GolemLocalHpState
+    if not cfg or cfg.Enabled~=true or not PHX.generationAlive() then return false,0 end
+    if token and not isRunning(token) then return false,0 end
+    if not island or not island.Parent or not PHX.eventActive(island) then return false,0 end
+    local actor,actorHum=root(),hum()
+    local folder=workspace:FindFirstChild("Enemies")
+    if not actor or not actorHum or actorHum.Health<=0 or not folder then return false,0 end
+    local range=math.clamp(tonumber(cfg.Range) or 48,12,60)
+    local wrote=0
+    for _,g in ipairs(models or {}) do
+        if g and g.Parent==folder and g:IsA("Model") and g.Name=="Lava Golem" then
+            local h=g:FindFirstChildOfClass("Humanoid")
+            local gp=g:FindFirstChild("HumanoidRootPart") or g:FindFirstChild("Head")
+            if h and h.Parent==g and h.Health>0 and gp and gp:IsA("BasePart")
+                and (gp.Position-actor.Position).Magnitude<=range
+                and not state.Written[h] and os.clock()-(state.LastTry[h] or -math.huge)>=(tonumber(cfg.RetryGap) or 1.5) then
+                state.LastTry[h]=os.clock()
+                local before=h.Health
+                local dist=(gp.Position-actor.Position).Magnitude
+                local ok,err=pcall(function() h.Health=0 end)
+                local after=h.Parent==g and h.Health or nil
+                state.Writes+=1
+                state.LastAt=os.clock()
+                if ok and type(after)=="number" and after<=0 then
+                    state.Written[h]=true
+                    state.LocalZero+=1
+                    wrote+=1
+                    state.IslandMarkers[island]=true
+                    state.LastMessage="LOCAL_HP_ZERO_UNVERIFIED"
+                    logLine("GOLEM_LOCAL_HP_ZERO",string.format("before=%.0f after=%.0f distance=%.1f total=%d | CLIENT ONLY / SERVER KILL UNVERIFIED / REWARD UNVERIFIED",before,after,dist,state.LocalZero))
+                else
+                    state.Errors+=1
+                    state.LastMessage="LOCAL_WRITE_FAILED: "..tostring(err or after)
+                    logLine("GOLEM_LOCAL_HP_FAIL", "before="..tostring(before).." after="..tostring(after).." error="..tostring(err))
+                end
+            end
+        end
+    end
+    return wrote>0,wrote
+end
+function PHX.golemLocalHpStatus()
+    local s=PHX.GolemLocalHpState
+    return {Enabled=CONFIG.GOLEM_LOCAL_KILL.Enabled,Writes=s.Writes,LocalZero=s.LocalZero,
+        Errors=s.Errors,LastAt=s.LastAt,Message=s.LastMessage,
+        Warning="CLIENT ONLY, server kill / Relic protection NOT VERIFIED"}
+end
+
+function PHX.setGolemLocalHpEnabled(enabled)
+    CONFIG.GOLEM_LOCAL_KILL.Enabled=enabled==true
+    PHX.GolemLocalHpState.LastMessage=enabled and "ENABLED_UNVERIFIED" or "DISABLED_USE_RECOVERY_NET"
+    logLine("GOLEM_LOCAL_HP_TOGGLE",PHX.GolemLocalHpState.LastMessage)
+    if PHX.saveUserConfig then PHX.saveUserConfig() end
+    return true
+end
+
 function PHX.golemClusterBurst(island, token)
     local golems = PHX.liveGolems()
     if #golems == 0 then return true end
@@ -6868,7 +6989,15 @@ function PHX.golemClusterBurst(island, token)
     local deadline = os.clock()+CONFIG.GOLEM_AURA.BURST_SECONDS
     while isRunning(token) and island.Parent and PHX.eventActive(island) and os.clock() < deadline do
         golems = PHX.liveGolems()
-        if #golems == 0 then noteProgress("GOLEM_CLUSTER_CLEAR") return true end
+        if #golems == 0 then
+            if PHX.GolemLocalHpState.IslandMarkers[island] then
+                noteProgress("GOLEM_LOCAL_CLEAR_UNVERIFIED")
+                logLine("GOLEM_LOCAL_CLEAR_UNVERIFIED","no live golem visible on THIS CLIENT; server status unknown")
+            else
+                noteProgress("GOLEM_CLUSTER_CLEAR")
+            end
+            return true
+        end
         PHX.bringGolemCluster(island,golems)
         local total, damaged = PHX.totalGolemHP(golems), false
         for _,g in ipairs(golems) do
@@ -6879,18 +7008,29 @@ function PHX.golemClusterBurst(island, token)
         end
         if damaged then PHX.ClusterProgressAt = os.clock() noteProgress("GOLEM_DAMAGE:"..math.floor(total)) end
         PHX.eventStatus(roleText().." | GOLEM FIRST: "..#golems.." | HP "..math.floor(total), "GOLEM")
-        equipTooltip("Melee")
-        PHX.killAuraDispatch(golems,"NET")
-        if os.clock()-(PHX.ClusterProgressAt or os.clock()) >= CONFIG.GOLEM_AURA.STALL_SECONDS then
-            PHX.eventStatus("Golem stalled -> reposition + donor NET retry", "GOLEM_RECOVERY")
+        if CONFIG.GOLEM_LOCAL_KILL.Enabled then
+            -- No Melee tool or NET packet required by the donor HP=0 experiment.
+            PHX.golemLocalHpStep(golems,island,token)
+        else
+            equipTooltip("Melee")
+            PHX.killAuraDispatch(golems,"NET")
+        end
+        if os.clock()-(PHX.ClusterProgressAt or os.clock()) >=
+            (CONFIG.GOLEM_LOCAL_KILL.Enabled and 1.5 or CONFIG.GOLEM_AURA.STALL_SECONDS) then
+            PHX.eventStatus(CONFIG.GOLEM_LOCAL_KILL.Enabled and "Golem HP=0 test: approach target" or "Golem stalled -> reposition + donor NET retry", "GOLEM_RECOVERY")
             local firstPart = golems[1] and (golems[1]:FindFirstChild("HumanoidRootPart") or golems[1]:FindFirstChild("Head"))
             local currentRoot = root()
             if firstPart and currentRoot and (currentRoot.Position-firstPart.Position).Magnitude > CONFIG.GOLEM_AURA.APPROACH_DISTANCE then
                 if not safeTween(CFrame.new(firstPart.Position+Vector3.new(0,CONFIG.GOLEM_AURA.HOVER_Y,0)),165,token) then return false end
             end
             if firstPart then aimAt(firstPart.Position) end
-            PHX.killAuraDispatch(golems,"NET")
-            logLine("GOLEM_NET_RETRY", "TEAM | NET request sent; await HP delta")
+            if CONFIG.GOLEM_LOCAL_KILL.Enabled then
+                PHX.golemLocalHpStep(golems,island,token)
+                logLine("GOLEM_LOCAL_RETRY", "TEAM | nearby HP=0 attempt; local effect only")
+            else
+                PHX.killAuraDispatch(golems,"NET")
+                logLine("GOLEM_NET_RETRY", "TEAM | NET request sent; await HP delta")
+            end
             PHX.ClusterProgressAt = os.clock()
             task.wait(.2)
         end
@@ -6971,16 +7111,21 @@ function PHX.soloGolemRushBurst(island, token)
             if not soloGuardApproach(gp.Position,settings.GOLEM_HOVER_Y,token,settings.GOLEM_BASE_TWEEN_SPEED,"GOLEM",island) then break end
         end
         if PHX.maintainFarmHover then pcall(PHX.maintainFarmHover,holdCF) end
-        equipTooltip("Melee")
         local hits={target}
         for _,other in ipairs(PHX.liveGolems()) do if other~=target then hits[#hits+1]=other end end
-        if PHX.killAuraDispatch(hits,"NET") then attackSent+=1 end
+        if CONFIG.GOLEM_LOCAL_KILL.Enabled then
+            local _,count=PHX.golemLocalHpStep(hits,island,token)
+            attackSent+=count
+        else
+            equipTooltip("Melee")
+            if PHX.killAuraDispatch(hits,"NET") then attackSent+=1 end
+        end
         task.wait(settings.ATTACK_INTERVAL)
         local hp=th.Health
         if hp < last or hp < state.LastHP then
             damageSeen=true
             state.LastDamageAt=os.clock()
-            noteProgress("SOLO_GOLEM_HP_DROP:"..math.floor(hp))
+            noteProgress((CONFIG.GOLEM_LOCAL_KILL.Enabled and "SOLO_GOLEM_CLIENT_HP_DROP_UNVERIFIED:" or "SOLO_GOLEM_HP_DROP:")..math.floor(hp))
             PHX.ClusterProgressAt=state.LastDamageAt
         end
         state.LastHP=hp
@@ -6992,9 +7137,14 @@ function PHX.soloGolemRushBurst(island, token)
             fallbackUsed=true
             state.LastFallbackAt=os.clock()
             aimAt(gp.Position)
-            local sentNative=PHX.killAuraDispatch(hits,"NET")
-            logLine("SOLO_NET_RETRY","donor NET stall retry | sent="..tostring(sentNative).." | stalled="..
-                string.format("%.1f",os.clock()-state.LastDamageAt).."s")
+            if CONFIG.GOLEM_LOCAL_KILL.Enabled then
+                local attempted,count=PHX.golemLocalHpStep(hits,island,token)
+                logLine("SOLO_LOCAL_HP_RETRY", "localWrites="..tostring(count).." | attempted="..tostring(attempted))
+            else
+                local sentNative=PHX.killAuraDispatch(hits,"NET")
+                logLine("SOLO_NET_RETRY","donor NET stall retry | sent="..tostring(sentNative).." | stalled="..
+                    string.format("%.1f",os.clock()-state.LastDamageAt).."s")
+            end
         end
     end
     if PHX.stopFarmHover then PHX.stopFarmHover() end
@@ -7003,8 +7153,13 @@ function PHX.soloGolemRushBurst(island, token)
     if dead then
         PHX.SoloGolemStallUntil[target]=nil
         PHX.SoloGolemProgress[target]=nil
-        noteProgress("SOLO_GOLEM_KILL_CONFIRMED")
-        logLine("SOLO_GUARD","KILL_CONFIRMED | hitRequests="..attackSent)
+        if PHX.GolemLocalHpState.Written[th] then
+            noteProgress("SOLO_GOLEM_LOCAL_HP_ZERO_UNVERIFIED")
+            logLine("SOLO_GUARD","LOCAL HP=0 ONLY | server kill UNVERIFIED | localWrites="..attackSent)
+        else
+            noteProgress("SOLO_GOLEM_KILL_CONFIRMED")
+            logLine("SOLO_GUARD","KILL_CONFIRMED_BY_LOCAL_STATE | netRequests="..attackSent)
+        end
         return true
     end
     if damageSeen or final<initial then
@@ -9482,7 +9637,14 @@ local function recoverMagnet(token)
     if not isRunning(token) then return false end
     if ember<15 and not farmBlazeEmbers(token) then return false end
     if not isRunning(token) then return false end
-    return craftVolcanicMagnet(token)
+    local crafted=craftVolcanicMagnet(token)
+    if not crafted or not PHX.travelAlive(token) then return false end
+    logLine("BOAT_AFTER_CRAFT","MAGNET_VERIFIED -> TIKI_PORTAL_ONLY -> FAST_DIRECT_RPC_ON_NEXT_CYCLE")
+    if not PHX.returnToTikiForBoat(token,"MAGNET_CRAFT") then
+        setStatus("Magnet crafted; waiting for Tiki return before boat purchase")
+        return false
+    end
+    return true
 end
 
 PHX.EventFinishedIslands = PHX.EventFinishedIslands or setmetatable({}, {__mode="k"})
@@ -9753,7 +9915,7 @@ local function masterCycle(token)
                     PHX.RejectedBoats[boat]=true
                     PHX.TeamPhase="RECOVERY"; PHX.BoatState="TEAM_RESPAWN_RENDEZVOUS"
                     setStatus("Team respawn far offshore -> rebuy/reboard at Tiki; keep Magnet cache")
-                    if not PHX.returnToDealer(token) then return end
+                    if not PHX.returnToTikiForBoat(token,"TEAM_RENDEZVOUS") then return end
                     return
                 end
             end
@@ -12126,7 +12288,7 @@ function PHX.buildUI()
     toggle(switches, 31, "Nhật ký chẩn đoán", "Lưu trạng thái thật và lỗi vào log.", function() return CONFIG.DEBUG.ENABLED end, function(value) CONFIG.DEBUG.ENABLED = value end)
     toggle(switches, 83, "Tự phục hồi khi bị kẹt", "Giữ an toàn khi sự kiện Volcano đang chạy.", function() return CONFIG.DEBUG.WATCHDOG_RESTART end, function(value) CONFIG.DEBUG.WATCHDOG_RESTART = value end)
     toggle(switches, 135, "Trở về Tiki", "Trở về sau reward và kiểm tra Dragon storage.", function() return CONFIG.RESET_TO_TIKI_AFTER_EVENT end, function(value) CONFIG.RESET_TO_TIKI_AFTER_EVENT = value end)
-    local pxModules = card(settingsPage, 399, 1.5, "recovery net kill aura mode head root dragon hunter quest bring golem remove lava cache")
+    local pxModules = card(settingsPage, 456, 1.5, "recovery net kill aura mode head root dragon hunter quest bring golem local health zero remove lava cache")
     text(pxModules, "PX NET COMBAT / QUEST BRING / LAVA", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
     toggle(pxModules, 30, "NET Kill Aura hỗ trợ farm", "Donor NET cho Scrap / Hunter Quest / Golem; không click vào Inventory.",
         function() return CONFIG.KILL_AURA.Enabled end,
@@ -12140,15 +12302,19 @@ function PHX.buildUI()
     toggle(pxModules, 183, "Bring Golem xa Fossil Relic", "TEAM + SOLO: đẩy Golem ra >=165 studs theo chiều ngang; client/network-owned only.",
         function() return CONFIG.GOLEM_AURA.BRING_ENABLED end,
         function(value) CONFIG.GOLEM_AURA.BRING_ENABLED=value==true end)
-    toggle(pxModules, 234, "Bring Dragon Hunter Quest", "Hydra/Venom: Bring gốc V2.16.38 + Kill Aura NET.",
+    toggle(pxModules, 234, "GOLEM LOCAL HP=0 (THỬ NGHIỆM)",
+        "Chỉ Lava Golem trong 48 studs: xóa HP local; KHÔNG xác nhận chết server, Relic vẫn có nguy cơ bị tấn công.",
+        function() return CONFIG.GOLEM_LOCAL_KILL.Enabled end,
+        function(value) return PHX.setGolemLocalHpEnabled(value) end)
+    toggle(pxModules, 285, "Bring Dragon Hunter Quest", "Hydra/Venom: Bring gốc V2.16.38 + Kill Aura NET.",
         function() return CONFIG.FARM_COMBAT.QuestBringEnabled end,
         function(value) CONFIG.FARM_COMBAT.QuestBringEnabled=value==true end)
-    text(pxModules, "RECOVERY NET: Khớp test V1 / 35 studs / 0.30s; RPC không bảo đảm HP giảm.", 9, C.Cyan,
-        UDim2.fromOffset(11, 284), UDim2.new(1, -22, 0, 22))
-    text(pxModules, "Chọn đúng NET mode đã gây damage trong bản Recovery Test.", 10, C.Muted,
-        UDim2.fromOffset(11, 310), UDim2.new(1, -22, 0, 18))
+    text(pxModules, "Golem HP=0: client only / server kill chưa xác minh. Quái thường giữ NET.", 9, C.Cyan,
+        UDim2.fromOffset(11, 338), UDim2.new(1, -22, 0, 22))
+    text(pxModules, "NET mode bên dưới áp dụng cho Scrap / Quest và Golem nếu tắt HP=0.", 10, C.Muted,
+        UDim2.fromOffset(11, 366), UDim2.new(1, -22, 0, 18))
     local netModeButton = button(pxModules, "NET MODE · "..CONFIG.KILL_AURA.NetMode,
-        UDim2.fromOffset(11, 336), UDim2.new(1, -22, 0, 34), C.Raised)
+        UDim2.fromOffset(11, 391), UDim2.new(1, -22, 0, 34), C.Raised)
     local netModes={"NET_HEAD","NET_ROOT","NET_HEAD_0"}
     PHX.connect(netModeButton.Activated, function()
         if U.PassThrough then return end
