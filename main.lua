@@ -1,4 +1,11 @@
--- Plesneviy Xyu CONFIG V2.16.38 | BuyBoat exclusive movement lease + direct RPC; full main
+-- PX PREHISTORIC V2.17.11 | Original Bring + verified-in-test Recovery NET; Egg unchanged
+-- NET_HEAD default mirrors isolated PX KillAura Recovery Test V1 (35 studs / 0.30 s).
+-- Modes selectable in Settings: NET_HEAD / NET_ROOT / NET_HEAD_0.
+-- No independent attack worker when main automation is running; no mouse clicks in combat.
+-- V2.17.05 FAST DIRECT BUY BOAT: avoids dealer travel on initial test; preserves one-RPC verification.
+-- Plesneviy Xyu CONFIG V2.17.10 | V2.17.08 Bring + Kill Aura donor NET; SOLO Golem first
+-- Integration: V2.16.38 main; donor PH_KILL_AURA_TEST_V1; PH_REMOVE_LAVA_TEST_V1; PX STASH TRACKER V4
+-- Real-time quantities are client-cache observations; absent records can mean zero OR not replicated.
 -- PX PREHISTORIC V2.16.34 | HYDRA/VENOM STABLE HOVER + GOLEM M1 | CLEAN TEST
 local SCRIPT_EXECUTED_AT = os.clock() -- deadline starts before PlayerGui or remotes can yield
 local Players = game:GetService("Players")
@@ -22,6 +29,18 @@ if ENV.__PH_GACHA_ACCOUNT and ENV.__PH_GACHA_ACCOUNT~=LP.UserId then
     ENV.__PH_GACHA_GLOBAL_PURCHASE_BUSY=false
 end
 ENV.__PH_GACHA_ACCOUNT=LP.UserId
+-- Retire standalone donor/recovery tests before their workers compete with main.
+for _,key in ipairs({"__PH_REMOVE_LAVA_TEST","__PH_KILL_AURA_TEST","__PX_KILL_AURA_RECOVERY_TEST_V1"}) do
+    local donor=ENV[key]
+    if type(donor)=="table" and type(donor.Stop)=="function" then
+        pcall(donor.Stop,"INTEGRATED_MAIN")
+    end
+end
+-- Remove old standalone stash GUI; its auto loop stops when its ScreenGui is destroyed.
+for _,name in ipairs({"PX_STASH_TRACKER_V2","PX_STASH_TRACKER_V3","PX_STASH_TRACKER_V4"}) do
+    local old=PG:FindFirstChild(name)
+    if old then pcall(function() old:Destroy() end) end
+end
 if type(ENV.BF_AutoStore_Stop)=="function" then pcall(ENV.BF_AutoStore_Stop) end
 if type(ENV.PXGachaV6Cleanup)=="function" then pcall(ENV.PXGachaV6Cleanup) end -- Retire old standalone UI
 if ENV.PH_FULL_SOLO_GENERATION~=nil then
@@ -173,6 +192,9 @@ function PHX.restoreMovement()
     if PHX.stopBoat then pcall(PHX.stopBoat) end
     if PHX.restoreTravel then pcall(PHX.restoreTravel) end
     if PHX.restoreGolemChanges then pcall(PHX.restoreGolemChanges) end
+    -- Remove Lava must NOT be stopped by routine movement restoration.
+    -- restoreMovement is also called by Auto OFF and TEAM/SOLO mode switches.
+    if PHX.killAuraRelease then pcall(PHX.killAuraRelease) end
     for pointer in pairs(PHX.Runtime.HeldPointers or {}) do pcall(pointer.release) end
     PHX.Runtime.HeldPointers = {}
     for button,pointer in pairs(PHX.Runtime.HeldMouse or {}) do
@@ -209,6 +231,8 @@ function PHX.destroy()
     PHX.Runtime.Alive = false
     if ENV.PH_VOLCANO_GENERATION == SCRIPT_GENERATION then ENV.PH_VOLCANO_KILL = true end
     PHX.restoreMovement()
+    -- Only full script unload is allowed to retire the independent Lava scanner.
+    if PHX.removeLavaStop then pcall(PHX.removeLavaStop) end
     for connection in pairs(PHX.Runtime.Connections) do pcall(function() connection:Disconnect() end) end
     local current = coroutine.running()
     for thread in pairs(PHX.Runtime.Tasks) do
@@ -262,7 +286,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.16.22\nLoading automation..."
+BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.12\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -279,7 +303,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.16.22\nLoaded core, building UI..."
+BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.12\nLoaded core, building UI..."
 
 local CONFIG = {
     MIN_SLAVES_TO_SAIL = 3, -- Master + at least three live passenger Slaves.
@@ -292,9 +316,11 @@ local CONFIG = {
         HitDistance=1500, BringRadius=2200, BringInterval=0.20, BringSize=90,
         HoverAboveMob=13, DamageTimeout=4.5, RecoveryTimeout=10,
         ScrapBringVerifyRadius=8,
+        -- V2.17.08: Restore original V2.16.38/V2.17.03 mob bring settings.
         ForestHitboxSize=40, ForestBringInterval=0.11, ForestRebringDrift=3,
         ForestAttackRange=55,
         QuestHitboxSize=16, QuestClusterRadius=3, QuestMobPickupRadius=135,
+        QuestScanRadius=600, QuestBringEnabled=true,
         QuestAttackRange=48, QuestHoverGap=18, QuestRebringDrift=4,
         QuestBringInterval=0.11,
         NativeClickGap=0.22, EquipSettle=0.18, MaxWaveSeconds=20,
@@ -308,6 +334,14 @@ local CONFIG = {
 
     BOAT_NAME = "MarineGrandBrigade",
     BOAT_BUY_NAME = "MarineGrandBrigade",
+    BOAT_FAST_BUY = {
+        Enabled = true,             -- try CommF_:InvokeServer("BuyBoat", ...) BEFORE dealer travel
+        RejectionObserveSeconds = 3.5, -- wait to rule out delayed Beli/boat replication before fallback
+    },
+    BOAT_NOCLIP = {
+        Enabled = true, -- continuous while on the boat (including idle throttle & passengers)
+        RefreshSeconds = 0.10, -- re-apply before physics periodically; dynamic parts use descendant signals
+    },
     MIN_TEAM_NEAR_RELIC = 4,
     RELIC_RADIUS = 40,
 
@@ -319,12 +353,14 @@ local CONFIG = {
         GOLEM_BASE_TWEEN_SPEED = 165,
         SAFE_APPROACH_CLEARANCE = 30, -- vertical approach above current and enemy Y; then descend to hover
         GOLEM_HOVER_Y = 20, -- keep the melee attacker above ordinary ground/lava height
-        THREAT_RADIUS = 220,          -- near Relic Golem preempts pressure
-        RELIC_ALARM_PERCENT = 95,     -- conservative: all Golems prioritized if Relic <=95
-        PRESSURE_WHILE_FAR_AT = 28,   -- begin pressure recovery earlier if all Golems are distant
-        PRESSURE_RECOVERY_EXIT = 13,  -- hysteresis: don't flip back at 27% while fixing a rock
+        -- V2.17.03: SOLO event scheduler ignores distance/pressure thresholds while any Golem lives.
+        -- Retained for compatibility with older saved profiles and stall target ordering.
+        THREAT_RADIUS = 220,
+        RELIC_ALARM_PERCENT = 95,
+        PRESSURE_WHILE_FAR_AT = 28,
+        PRESSURE_RECOVERY_EXIT = 13,
         PRESSURE_CRITICAL_AT = 80,
-        CRITICAL_GOLEM_RADIUS = 130,  -- never trade an immediate Relic threat for rock work
+        CRITICAL_GOLEM_RADIUS = 130,  -- still used in stalled-Golem target ordering
         STALL_PRIORITY_PENALTY = 65, -- de-prioritize a stalled distant target, not a close one
         PRESSURE_SKILL_GAP = 0.045,  -- shorter time between pressure skills in SOLO only
         PRESSURE_BURST_SECONDS = 1.10,
@@ -338,7 +374,7 @@ local CONFIG = {
         LAVA_CYLINDER = {
             SAMPLE_DEATH = Vector3.new(-61423.93359375, 786.7953491210938, 12642.5341796875),
             SAMPLE_FOSSIL_PLAYER = Vector3.new(-60632.46875, 55.007808685302734, 12520.9111328125),
-            CORE_RADIUS = 46,
+            CORE_RADIUS = 30,
             ROUTE_RADIUS = 60, -- core plus 30-stud margin
             HEIGHT = 150, -- from death-sample Y downward
             WAYPOINT_OUTSET = 10, -- arc chords must stay outside R=60
@@ -364,6 +400,27 @@ local CONFIG = {
     ITEM_COUNTER = {
         CACHE_SECONDS = 0.65,
         OPTIMISTIC_GAIN_SECONDS = 180,
+    },
+    DIRECT_CACHE = {
+        Enabled = true,
+        Interval = 3.0, -- do not open the Stash UI or perform an inventory remote call
+    },
+    REMOVE_LAVA = {
+        Enabled = true, -- runs before island spawns; client-only, no guaranteed server damage protection
+        Interval = .5,
+        Debug = true, -- print on transitions; do not spam each 0.5s scan
+    },
+    KILL_AURA = {
+        Enabled = true, -- shared melee backend inside existing FARM / GOLEM loops
+        IdleEnabled = false, -- optional nearby-NPC NET when Auto Volcano is OFF
+        IdleMode = "NET", -- Recovery NET only, no native click or Tool:Activate()
+        Radius = 35,
+        Interval = .20,
+        EquipWait = .12,
+        MouseHold = .04, -- legacy setting; NET does not use the mouse
+        NetMode = "NET_HEAD", -- Recovery Test V1 default; choose proven mode in Settings
+        NetRange = 35, -- Recovery Test V1 verified-radius profile
+        NetGap = .30, -- Recovery Test V1 verified-send cadence
     },
 
     STASH_UI = {
@@ -412,10 +469,12 @@ local CONFIG = {
         ATTACK_INTERVAL = 0.09,
         BURST_SECONDS = 1.0,
         HITBOX_SIZE = 72,
-        BRING_DISTANCE_FROM_RELIC = 145,
-        CLUSTER_RADIUS = 3,
-        BRING_INTERVAL = 0.25,
-        REBRING_DRIFT = 12,
+        BRING_DISTANCE_FROM_RELIC = 195, -- horizontal distance, not distance to player
+        MIN_RELIC_DISTANCE = 165, -- hard leash if a Golem approaches the Relic
+        CLUSTER_RADIUS = 4,
+        BRING_INTERVAL = 0.15,
+        REBRING_DRIFT = 8,
+        BRING_ENABLED = true, -- shared by TEAM and SOLO; no additional attack worker
         STALL_SECONDS = 4,
     },
 
@@ -505,48 +564,27 @@ local CONFIG = {
         ),
     },
 
+    -- 2026-10-11: Three quest-tree teleports from player-provided CFrame screenshots.
+    -- Screenshot text truncates the last two matrix components, recovered with
+    -- row 3 = row 1 x row 2 (orthonormal rotation matrix; display-precision approximation).
     TREES = {
         CFrame.new(
-            5431.108398, 1253.348877, 965.289429,
-            0.295610, -0.000000, 0.955309,
-            -0.000000, 1.000000, 0.000000,
-            -0.955309, -0.000000, 0.295610
+            5347.57959, 1004.18365, 360.519379,
+            0.633187354, -1.04531308e-08, -0.773998559,
+            -6.83341668e-08, 1, -6.94077045e-08,
+            0.773998559, 9.68386274e-08, 0.633187354
         ),
         CFrame.new(
-            4976.212891, 1144.915039, 623.489624,
-            -0.078839, 0.000000, -0.996887,
-            0.000000, 1.000000, 0.000000,
-            0.996887, 0.000000, -0.078839
+            5238.90723, 1004.18365, 431.421295,
+            0.109169416, 9.01457753e-08, -0.994023144,
+            -2.92081577e-08, 1, 8.74799895e-08,
+            0.994023144, 1.94834454e-08, 0.109169416
         ),
         CFrame.new(
-            5569.339355, 1264.950562, 702.382935,
-            -0.431751, 0.000000, -0.901993,
-            0.000000, 1.000000, 0.000000,
-            0.901993, 0.000000, -0.431751
-        ),
-        CFrame.new(
-            5312.936523, 1159.892822, 0.588688,
-            -0.862379, 0.000000, -0.506264,
-            0.000000, 1.000000, 0.000000,
-            0.506264, 0.000000, -0.862379
-        ),
-        CFrame.new(
-            5043.579590, 1149.748535, 180.001953,
-            -0.936677, -0.000000, -0.350194,
-            -0.000000, 1.000000, -0.000000,
-            0.350194, -0.000000, -0.936677
-        ),
-        CFrame.new(
-            4477.374023, 1356.148926, 26.291494,
-            0.614400, 0.000000, 0.788995,
-            -0.000000, 1.000000, -0.000000,
-            -0.788995, 0.000000, 0.614400
-        ),
-        CFrame.new(
-            4410.110840, 1384.577026, 306.693695,
-            0.503457, 0.000000, 0.864020,
-            -0.000000, 1.000000, -0.000000,
-            -0.864020, 0.000000, 0.503457
+            5260.65918, 1004.18365, 346.302185,
+            0.125847995, -1.65535923e-08, -0.992049515,
+            -5.53681225e-08, 1, -2.3710065e-08,
+            0.992049515, 5.79117832e-08, 0.125847995
         ),
     },
 }
@@ -573,15 +611,15 @@ local ACTIVE_FOREST_MAGNET = {Enabled=false, Anchor=nil, Radius=0, Locked=setmet
 local FOREST_DAMAGE_PROVEN = false
 local ACTIVE_HOVER = {Root=nil, Humanoid=nil, Attachment=nil, Position=nil, Gyro=nil, Target=nil}
 local lastIslandWebhookKey = nil
-local lavaConnection = nil
-local SOLO_LAVA_PARTS = setmetatable({}, {__mode="k"}) -- tracked during each active volcano
 local CHARACTER_EPOCH = 0
 PHX.BoatLifeCharacter = LP.Character
 PHX.BoatRebuyPending = false
 PHX.BoatPurchaseInFlight = false
 PHX.BoatPurchasePending = nil -- per-session pending receipt, never persist across respawns
+PHX.BoatFastForceDealer = false -- reset after respawn; only fallback after verified fast rejection
 PHX.BoatRespawnEpoch = 0
 PHX.RejectedBoats = setmetatable({}, {__mode="k"})
+PHX.VerifiedSpawnBoats = setmetatable({}, {__mode="k"})
 local lastPortalSuccessAt = -math.huge
 local boundHumanoids = {}
 
@@ -606,12 +644,16 @@ end
 function PHX.sanitizeUserConfig(settings)
     local clean={masterRole=false,selectedMaster="",automationMode="TEAM",desiredRunning=false,
         debugEnabled=true,watchdogRestart=true,returnToTiki=true,randomFruit=false,autoStore=true,
-        mapHidden=false,fpsCap=30,webhookURL="",webhookUserId="",gachaNextReadyEpoch=0,gachaLastAttemptEpoch=0}
+        mapHidden=false,fpsCap=30,webhookURL="",webhookUserId="",gachaNextReadyEpoch=0,gachaLastAttemptEpoch=0,
+        auraEnabled=true,auraIdle=false,netMode="NET_HEAD",removeLava=true,boatNoclip=true,fastBoatBuy=true,golemBring=true,questBring=true}
     if type(settings)~="table" then return clean end
-    for _,key in ipairs({"masterRole","desiredRunning","debugEnabled","watchdogRestart","returnToTiki","randomFruit","autoStore","mapHidden"}) do
+    for _,key in ipairs({"masterRole","desiredRunning","debugEnabled","watchdogRestart","returnToTiki","randomFruit","autoStore","mapHidden","auraEnabled","auraIdle","removeLava","boatNoclip","fastBoatBuy","golemBring","questBring"}) do
         if type(settings[key])=="boolean" then clean[key]=settings[key] end
     end
     if settings.automationMode=="TEAM" or settings.automationMode=="SOLO" then clean.automationMode=settings.automationMode end
+    if settings.netMode=="NET_HEAD" or settings.netMode=="NET_ROOT" or settings.netMode=="NET_HEAD_0" then
+        clean.netMode=settings.netMode
+    end
     local fps=tonumber(settings.fpsCap)
     if type(settings.fpsCap)=="number" and fps==fps and fps~=math.huge and fps~=-math.huge then
         clean.fpsCap=math.clamp(math.floor(fps),15,120)
@@ -644,7 +686,12 @@ function PHX.userConfigSnapshot()
         randomFruit=CONFIG.FRUIT_AUTO.Enabled,autoStore=CONFIG.FRUIT_AUTO.AutoStore,mapHidden=PHX.MapVisualHidden,
         fpsCap=CONFIG.SAVE_CPU.FPS_CAP,webhookURL=CONFIG.WEBHOOK_URL,webhookUserId=CONFIG.WEBHOOK_USER_ID,
         gachaNextReadyEpoch=tonumber(ENV.__PH_DIRECT_GACHA_NEXT_READY) or 0,
-        gachaLastAttemptEpoch=tonumber(ENV.__PH_DIRECT_GACHA_LAST_SENT) or 0})}
+        gachaLastAttemptEpoch=tonumber(ENV.__PH_DIRECT_GACHA_LAST_SENT) or 0,
+        auraEnabled=CONFIG.KILL_AURA.Enabled, auraIdle=CONFIG.KILL_AURA.IdleEnabled,
+        netMode=CONFIG.KILL_AURA.NetMode,
+        removeLava=CONFIG.REMOVE_LAVA.Enabled,boatNoclip=CONFIG.BOAT_NOCLIP.Enabled,
+        fastBoatBuy=CONFIG.BOAT_FAST_BUY.Enabled,
+        golemBring=CONFIG.GOLEM_AURA.BRING_ENABLED,questBring=CONFIG.FARM_COMBAT.QuestBringEnabled})}
 end
 
 function PHX.applyUserConfig(settings)
@@ -656,6 +703,14 @@ function PHX.applyUserConfig(settings)
     CONFIG.RESET_TO_TIKI_AFTER_EVENT=clean.returnToTiki
     CONFIG.FRUIT_AUTO.Enabled=clean.randomFruit
     CONFIG.FRUIT_AUTO.AutoStore=clean.autoStore
+    CONFIG.KILL_AURA.Enabled=clean.auraEnabled
+    CONFIG.KILL_AURA.IdleEnabled=clean.auraIdle
+    CONFIG.KILL_AURA.NetMode=clean.netMode
+    CONFIG.REMOVE_LAVA.Enabled=clean.removeLava
+    CONFIG.BOAT_NOCLIP.Enabled=clean.boatNoclip
+    CONFIG.BOAT_FAST_BUY.Enabled=clean.fastBoatBuy
+    CONFIG.GOLEM_AURA.BRING_ENABLED=clean.golemBring
+    CONFIG.FARM_COMBAT.QuestBringEnabled=clean.questBring
     ENV.__PH_DIRECT_GACHA_NEXT_READY=math.max(tonumber(ENV.__PH_DIRECT_GACHA_NEXT_READY) or 0,clean.gachaNextReadyEpoch)
     ENV.__PH_DIRECT_GACHA_LAST_SENT=math.max(tonumber(ENV.__PH_DIRECT_GACHA_LAST_SENT) or 0,clean.gachaLastAttemptEpoch)
     CONFIG.SAVE_CPU.FPS_CAP=clean.fpsCap
@@ -1143,6 +1198,7 @@ function PHX.invalidatePreRespawnBoats(newCharacter)
     PHX.BoatRebuyPending=true
     PHX.BoatPurchaseInFlight=false
     PHX.BoatPurchasePending=nil -- old character cannot claim a late-arriving pre-respawn boat
+    PHX.BoatFastForceDealer=false -- try one fast direct attempt on new character
     PHX.NextBoatBuyAt=0 -- do not retain stale buy-backoff after a respawn
     PHX.BoatPurchaseAmbiguousUntil=nil
     PHX.BoatsBeforePurchase=nil
@@ -1229,6 +1285,15 @@ end
 PHX.TravelState = {Tween=nil, Parts=nil, BoatParts=nil, Boat=nil, BoatMoving=false}
 
 function PHX.restoreTravel()
+    -- V2.17.14: movement resets may run while the player is still in the boat.
+    -- Never flash CanCollide=true during a seat/auto-pilot transition.
+    local h=hum()
+    local seat=h and h.SeatPart
+    local seatedBoat=seat and PHX.boatForSeat and PHX.boatForSeat(seat)
+    local preserveBoatNoclip=seatedBoat and PHX.boatNoclipActive and PHX.boatNoclipActive(seatedBoat)
+    if PHX.restoreBoatNoclip and not preserveBoatNoclip then
+        pcall(PHX.restoreBoatNoclip,"RESTORE_TRAVEL")
+    end
     local state = PHX.TravelState
     if state.Cleanup then pcall(state.Cleanup) end
     if state.Tween then pcall(function() state.Tween:Cancel() end) end
@@ -1237,10 +1302,12 @@ function PHX.restoreTravel()
         if part.Parent then pcall(function() part.CanCollide = collidable end) end
     end
     state.Parts = nil
-    for part, collidable in pairs(state.BoatParts or {}) do
-        if part.Parent then pcall(function() part.CanCollide = collidable end) end
+    if not preserveBoatNoclip then
+        for part, collidable in pairs(state.BoatParts or {}) do
+            if part.Parent then pcall(function() part.CanCollide = collidable end) end
+        end
+        state.BoatParts = nil
     end
-    state.BoatParts = nil
     state.BoatMoving = false
 end
 
@@ -1267,19 +1334,13 @@ end
 
 function PHX.stopBoat(boat)
     boat = boat or PHX.TravelState.Boat
-    if not isMaster() then return false end
     PHX.TravelState.BoatMoving = false
-    local guard=PHX.BoatNoclipGuard
-    PHX.BoatNoclipGuard=nil
-    if guard then
-        for _,connection in ipairs(guard.Connections or {}) do
-            pcall(function() connection:Disconnect() end)
-        end
+    -- Keep collision disabled while still seated: hand off cleanup to seat-exit guard.
+    -- This prevents the next manual W press from crashing into a rock between re-arming passes.
+    if PHX.restoreBoatNoclip and not PHX.boatNoclipActive(boat) then
+        pcall(PHX.restoreBoatNoclip,"STOP_BOAT_NOT_SEATED")
     end
-    for part,collidable in pairs(PHX.TravelState.BoatParts or {}) do
-        if part.Parent then pcall(function() part.CanCollide=collidable end) end
-    end
-    PHX.TravelState.BoatParts=nil
+    if not isMaster() then return false end
     if not boat or not boat.Parent then return true end
     local driver = PHX.findDriverSeat(boat)
     if driver then
@@ -2830,93 +2891,110 @@ function PHX.readStashItemExact(itemName)
     return nil,"FILTER_RESULT_MISMATCH"
 end
 
-function PHX.authoritativeStash(force, reason)
-    if PHX.Runtime and PHX.Runtime.FruitGuiBusy then return false,"FRUIT_UI_BUSY" end
-    if not PHX.StashBaselineReady and PHX.Runtime and PHX.Runtime.UiReady~=nil
-        and PHX.startupStashReady and not PHX.startupStashReady() then return false,"STARTUP_UI_NOT_READY" end
+-- DIRECT CLIENT CACHE: replaces UI-driven opening / searching Stash.
+-- Commit all three items together only after successful GetItems().
+-- No network calls, no UI navigation, no implicit module hook.
+PHX.DirectCache = {Service=nil, IdMap=nil, LastReadAt=0, LastError=nil, ScanCount=0, Absent={}}
+function PHX.directMaterialSnapshot()
+    local reader=PHX.DirectCache
+    if not reader.Service then
+        local module=ReplicatedStorage:FindFirstChild("ItemReplicationService")
+        if not module or not module:IsA("ModuleScript") then return nil,"ItemReplicationService missing" end
+        reader.Service=require(module)
+    end
+    if not reader.IdMap then
+        local module=ReplicatedStorage:FindFirstChild("IdMap")
+        if not module or not module:IsA("ModuleScript") then return nil,"IdMap missing" end
+        reader.IdMap=require(module)
+    end
+    local service=reader.Service
+    if type(service)~="table" or not service.IsInitialized then return nil,"SERVICE_NOT_INITIALIZED" end
+    if not service.IS_CLIENT then return nil,"NOT_CLIENT_SERVICE" end
+    local quantityKey=service.KEYS and service.KEYS.QUANTITY
+    if quantityKey==nil then return nil,"QUANTITY_KEY_MISSING" end
+    local materials=reader.IdMap and reader.IdMap.Material
+    if type(materials)~="table" then return nil,"MATERIAL_MAP_MISSING" end
+
+    local ids,byID,counts,matches={},{},{},{}
+    local function normalized(name)
+        return tostring(name):lower():gsub("[%s_%-]+","")
+    end
+    for _,name in ipairs(PHX.MaterialNames) do
+        local id=materials[name]
+        if id==nil then
+            for key,value in pairs(materials) do
+                if type(key)=="string" and normalized(key)==normalized(name) then id=value;break end
+            end
+        end
+        if id==nil then return nil,"UNKNOWN_ITEM_ID: "..name end
+        ids[name]=id
+        byID[tostring(id)]=name
+        counts[name]=0
+        matches[name]=0
+    end
+    local records=service:GetItems(quantityKey)
+    if records==nil then return nil,"GETITEMS_RETURNED_NIL" end
+    local scanned=0
+    for _,record in records do
+        scanned+=1
+        if type(record)=="table" then
+            local name=byID[tostring(record.ItemId)]
+            if name then
+                matches[name]+=1
+                local number=tonumber(record.Value)
+                if number and number==number and number>=0 and number<math.huge then
+                    counts[name]+=number
+                end
+            end
+        end
+    end
+    return {Counts=counts,Matches=matches,IDs=ids,Scanned=scanned}
+end
+
+function PHX.authoritativeStash(force,reason)
+    local reader=PHX.DirectCache
+    if not PHX.generationAlive() then return false,"RUNTIME_RETIRED" end
     if PHX.StashSyncBusy then return false,"SYNC_BUSY" end
-    if PHX.StashBaselineReady and not force then return true,"STASH_CACHED" end
-    if not force then PHX.StashStartupAttempted=true end
-    local lock=nil
-    if PHX.acquireLock then
-        lock=PHX.acquireLock(PHX,"StashSyncBusy","stash")
-        if not lock then return false,"SYNC_BUSY" end
-    else PHX.StashSyncBusy=true end
-    local state,counts,sources=nil,{},{}
-    local success,why=false,"UNKNOWN"
-    local ok,err=xpcall(function()
-        local opened,uiState,openWhy=PHX.openStashPageExact()
-        state=uiState
-        if not opened then why=openWhy; return end
-        local unread={}
+    if not force and PHX.StashBaselineReady then return true,"DIRECT_CACHE_READY" end
+    if not CONFIG.DIRECT_CACHE.Enabled then return false,"DIRECT_CACHE_DISABLED" end
+    if os.clock()-(reader.LastReadAt or 0)<.2 and PHX.StashBaselineReady then return true,"DIRECT_CACHE_THROTTLED" end
+    local lock=PHX.acquireLock(PHX,"StashSyncBusy","stash")
+    if not lock then return false,"SYNC_BUSY" end
+    local ok,snapshot,why=pcall(PHX.directMaterialSnapshot)
+    local success=ok and type(snapshot)=="table"
+    local errorText=ok and tostring(why or "CACHE_UNAVAILABLE") or tostring(snapshot)
+    if success and PHX.generationAlive() then
+        reader.LastReadAt=os.clock()
+        reader.ScanCount+=1
+        reader.Absent={}
+        local sources={}
         for _,name in ipairs(PHX.MaterialNames) do
-            local count,source=PHX.readStashItemExact(name)
-            if count~=nil then
-                counts[name],sources[name]=count,source
-
-                if PHX.setKnownMaterial then
-                    PHX.setKnownMaterial(name,count,source)
-                end
-                if name=="Volcanic Magnet" and PHX.updateMagnetCache then
-                    PHX.updateMagnetCache(count,source)
-                end
-                if PHX.UI and PHX.UI.updateCounters then
-                    pcall(PHX.UI.updateCounters)
-                end
-
-                local liveMessage="Stash đã lưu "..tostring(name).." = "..tostring(math.floor(count))
-                PHX.Runtime.StartupStatus=liveMessage
-                if not ENV.TeamConfig.IsRunning then setStatus(liveMessage) end
-            else
-                unread[#unread+1]={Name=name,Reason=source}
+            local absent=(snapshot.Matches[name] or 0)==0
+            reader.Absent[name]=absent
+            sources[name]=absent and "DIRECT_CACHE_NO_RECORD" or "DIRECT_CACHE"
+            -- A missing record reads as 0, but is NOT proof of an empty Stash.
+            local previous=PHX.cachedMaterialCount(name)
+            if previous~=snapshot.Counts[name] or not PHX.StashBaselineReady then
+                PHX.setKnownMaterial(name,snapshot.Counts[name],sources[name])
             end
         end
-        if #unread>0 and PHX.stashCategoryConfirmed and PHX.stashCategoryConfirmed() then
-            for _,item in ipairs(unread) do
-                if item.Reason=="EMPTY_RESULT_CATEGORY_UNCONFIRMED" then
-                    local count,source=PHX.readStashItemExact(item.Name)
-                    if count~=nil then
-                        counts[item.Name],sources[item.Name]=count,source
-                        if PHX.setKnownMaterial then
-                            PHX.setKnownMaterial(item.Name,count,source)
-                        end
-                        if item.Name=="Volcanic Magnet" and PHX.updateMagnetCache then
-                            PHX.updateMagnetCache(count,source)
-                        end
-                        if PHX.UI and PHX.UI.updateCounters then
-                            pcall(PHX.UI.updateCounters)
-                        end
-                        local liveMessage="Stash đã lưu "..tostring(item.Name).." = "..tostring(math.floor(count))
-                        PHX.Runtime.StartupStatus=liveMessage
-                        if not ENV.TeamConfig.IsRunning then setStatus(liveMessage) end
-                    else
-                        item.Reason=source
-                    end
-                end
-            end
-        end
-        for _,item in ipairs(unread) do
-            if counts[item.Name]==nil then why=item.Name..":"..tostring(item.Reason);return end
-        end
-        if PHX.generationAlive and not PHX.generationAlive() then why="RUNTIME_RETIRED"; return end
-        for _,name in ipairs(PHX.MaterialNames) do PHX.setKnownMaterial(name,counts[name],sources[name]) end
-        if PHX.UI and PHX.UI.updateCounters then pcall(PHX.UI.updateCounters) end
         PHX.StashBaselineReady=true
-        if PHX.cacheStashSession then PHX.cacheStashSession(counts,sources) end
-        if PHX.updateMagnetCache then PHX.updateMagnetCache(counts["Volcanic Magnet"],"STASH_EXACT") end
         PHX.StashLastError=nil
-        if tostring(reason or ""):find("manual",1,true) then
-            PHX.CraftVerificationBlocked=false
-            PHX.CraftPendingVerification=nil
+        PHX.cacheStashSession(snapshot.Counts,sources)
+        if PHX.updateMagnetCache then PHX.updateMagnetCache(snapshot.Counts["Volcanic Magnet"],"DIRECT_CACHE") end
+        if PHX.UI and PHX.UI.updateCounters then pcall(PHX.UI.updateCounters) end
+        if reader.ScanCount==1 or reader.ScanCount%20==0 then
+            logLine("DIRECT_CACHE",string.format("scan=%d records=%d Scrap=%s Ember=%s Magnet=%s",reader.ScanCount,snapshot.Scanned,
+                tostring(snapshot.Counts["Scrap Metal"]),tostring(snapshot.Counts["Blaze Ember"]),tostring(snapshot.Counts["Volcanic Magnet"])))
         end
-        success,why=true,"STASH_VERIFIED"
-    end,function(e) return tostring(e) end)
-    if ok and success then pcall(function() PHX.restoreInventoryUiState(state) end) end
-    if lock then PHX.releaseLock(lock) else PHX.StashSyncBusy=false end
-    if not ok then why="ERROR:"..tostring(err); success=false end
-    if not success then PHX.StashLastError=why end
-    logLine(success and "STASH_SYNC" or "STASH_SYNC_FAIL",tostring(reason or "baseline").." | "..tostring(why))
-    return success,why
+        errorText="DIRECT_CACHE_OK"
+    else
+        success=false
+        reader.LastError=errorText
+        PHX.StashLastError=errorText
+    end
+    PHX.releaseLock(lock)
+    return success,errorText
 end
 
 function PHX.cachedMaterialCount(itemName)
@@ -3293,26 +3371,13 @@ function PHX.materialGameGuiReady()
 end
 
 function PHX.stashScanSafe()
-    if PHX.StashScanQueue.StartupPending and PHX.startupStashReady and not PHX.startupStashReady() then return false end
-    if PHX.CraftUiBusy and PHX.CraftUiOwner and coroutine.status(PHX.CraftUiOwner)=="dead" then
-        PHX.CraftUiBusy,PHX.CraftUiOwner=false,nil
-    end
-    if not PHX.generationAlive() or PHX.StashSyncBusy or PHX.StashScanQueue.Busy
-        or PHX.Runtime.StartBusy or PHX.Runtime.InteractionHold or PHX.Runtime.FruitGuiBusy
-        or PHX.CraftUiBusy or PHX.PortalTravel then return false end
-    if PHX.craftWindow and PHX.craftWindow() then return false end
-    if next(PHX.Runtime.Tweens or {})~=nil then return false end
-    local humanoid=hum()
-    if humanoid and humanoid.SeatPart then return false end
-    if PHX.PostRespawnStashPending and PHX.StashScanQueue.StartupPending then return true end
-    if not ENV.TeamConfig.IsRunning then return true end
-    local permit=PHX.StashScanPermit
-    return permit~=nil and isRunning(permit.Token)
+    return PHX.generationAlive() and not PHX.StashSyncBusy
+        and not PHX.StashScanQueue.Busy and CONFIG.DIRECT_CACHE.Enabled
 end
 
 function PHX.processStashScanQueue()
     local queue=PHX.StashScanQueue
-    if not PHX.stashScanSafe() or not PHX.materialGameGuiReady() then return false,"DEFERRED" end
+    if not PHX.stashScanSafe() then return false,"DEFERRED" end
     if not queue.StartupPending and #queue.Jobs==0 then return true,"IDLE" end
     local startup=queue.StartupPending
     local job=not startup and queue.Jobs[1] or nil
@@ -3450,9 +3515,19 @@ function PHX.startMaterialNotifications()
         if object.Name=="NotificationStack" and object.Parent and object.Parent.Name=="Notifications" then watchStack(object,false) end
     end)
     PHX.spawn(function()
+        local nextAutoAt=0
         while PHX.generationAlive() do
             PHX.processStashScanQueue()
-            task.wait(.12) -- waits for queued work; it never schedules a periodic Stash read
+            local now=os.clock()
+            if CONFIG.DIRECT_CACHE.Enabled and PHX.StashBaselineReady and now>=nextAutoAt
+                and not PHX.StashScanQueue.Busy and not PHX.StashSyncBusy then
+                nextAutoAt=now+math.max(1,tonumber(CONFIG.DIRECT_CACHE.Interval) or 3)
+                local ok,why=PHX.authoritativeStash(true,"auto-periodic")
+                if not ok and why~="SYNC_BUSY" then
+                    if PHX.DirectCache then PHX.DirectCache.LastError=tostring(why) end
+                end
+            end
+            task.wait(.12)
         end
     end)
 end
@@ -3730,31 +3805,15 @@ end
 
 function PHX.startupStashReady()
     local runtime=PHX.Runtime
-    local function waiting(message)
-        runtime.StartupStatus=message
-        return false,message
-    end
-    if not PHX.generationAlive() then return waiting("Phiên script đã dừng") end
-    if not runtime.UiReady or not PHX.UI then return waiting("Đang tải giao diện script...") end
-    if not runtime.MarinesReady or not LP.Team or LP.Team.Name~="Marines" then
-        return waiting("Đang chọn Marines...")
-    end
-    runtime.ExecutedAt=tonumber(runtime.ExecutedAt) or os.clock()
-    local delay=math.max(0,tonumber(CONFIG.STASH_UI and CONFIG.STASH_UI.STARTUP_DELAY_SECONDS) or 2.5)
-    local remain=runtime.ExecutedAt+delay-os.clock()
-    if remain>0 then
-        return waiting(string.format("Tự kiểm tra Stash sau %.1fs kể từ execute",remain))
-    end
-    local humanoid,part=hum(),root()
-    if not humanoid or humanoid.Health<=0 or not part then return waiting("Đợi nhân vật tải xong để kiểm tra Stash...") end
-    if not PHX.materialGameGuiReady() then return waiting("Đợi Menu / Items sẵn sàng để kiểm tra Stash...") end
+    if not PHX.generationAlive() then return false,"RUNTIME_RETIRED" end
+    if not CONFIG.DIRECT_CACHE.Enabled then return false,"DIRECT_CACHE_DISABLED" end
+    if not runtime.UiReady or not PHX.UI then return false,"WAIT_MAIN_UI" end
+    -- No need to join Marines or open Menu > Items > Stash for client cache.
     local queue=PHX.StashScanQueue
     if queue and queue.StartupPending and os.clock()<(queue.NextStartupAttemptAt or 0) then
-        local retryIn=queue.NextStartupAttemptAt-os.clock()
-        return waiting(string.format("Kho chưa đọc đủ · tự kiểm tra lại sau %.1fs\n%s",retryIn,tostring(PHX.StashLastError or "Đang chờ dữ liệu item")))
+        return false,"CACHE_RETRY: "..tostring(PHX.StashLastError or "WAITING")
     end
-    runtime.StartupStatus=queue and (queue.StartupFailures or 0)>0 and "Đang kiểm tra lại Stash..." or "Đang kiểm tra Stash lần đầu..."
-    return true,runtime.StartupStatus
+    return true,"Đang đọc ItemReplicationService · không mở Stash"
 end
 
 PHX.spawn(function()
@@ -3815,14 +3874,20 @@ local function aimAt(pos)
     end
 end
 
+-- V2.17.12: Weapon-specific skill allowlist. Never fire unavailable melee V/F.
+-- Fruit Z/C/V/F remains usable for Pressure Rocks and Quest Trees.
 local SKILL_KEYS = {
-    Enum.KeyCode.X,
-    Enum.KeyCode.C,
-    Enum.KeyCode.V,
-    Enum.KeyCode.F,
+    ["Melee"] = {Enum.KeyCode.X, Enum.KeyCode.C},
+    ["Blox Fruit"] = {Enum.KeyCode.Z, Enum.KeyCode.C, Enum.KeyCode.V, Enum.KeyCode.F},
 }
+local function skillKeysForTooltip(tooltip)
+    return SKILL_KEYS[tooltip] or {}
+end
+local function skillNamesForTooltip(tooltip)
+    return tooltip == "Melee" and "XC" or (tooltip == "Blox Fruit" and "ZCVF" or "NONE")
+end
 
-local function useXCVF(targetPos)
+local function useConfiguredSkills(targetPos)
     local function castSet(tooltip)
         local tool = equipTooltip(tooltip)
         if not tool then
@@ -3832,14 +3897,14 @@ local function useXCVF(targetPos)
         task.wait(.18)
 
         for pass=1,2 do
-            for _,k in ipairs(SKILL_KEYS) do
+            for _,k in ipairs(skillKeysForTooltip(tooltip)) do
                 if targetPos then aimAt(targetPos) end
                 pressKey(k, .11)
                 task.wait(.17)
             end
             task.wait(.06)
         end
-        logLine("SKILL_CAST", tostring(tooltip).." XCVF x2 | "..tostring(tool.Name))
+        logLine("SKILL_CAST", tostring(tooltip).." "..skillNamesForTooltip(tooltip).." x2 | "..tostring(tool.Name))
         return true
     end
 
@@ -3851,7 +3916,7 @@ end
 
 local CombatState = nil
 local NetAttackCache = { Net = nil, RegisterAttack = nil, RegisterHit = nil }
-PHX.FarmCombatDebug={LastDamageAt=os.clock(),LastNet="INIT",Hits=0,Mode="NET",FailStreak=0,NativeAt=0}
+PHX.FarmCombatDebug={LastDamageAt=os.clock(),LastNet="WAITING",Hits=0,Mode="NET",FailStreak=0,NativeAt=0}
 local function observedHealth(models)
     local total,n=0,0
     for _,model in ipairs(models or {}) do
@@ -3866,26 +3931,8 @@ local function networkOwned(part)
     if ok then return value==true end
     return nil
 end
-local function sendNativeM1()
-    local now=os.clock()
-    if now-(PHX.FarmCombatDebug.NativeAt or 0)<CONFIG.FARM_COMBAT.NativeClickGap then return false end
-    if game:GetService("UserInputService"):GetFocusedTextBox() then return false end
-    if PHX.Runtime and PHX.Runtime.FruitGuiBusy then return false end
-    local r=root()
-    if not r or not hum() or hum().Health<=0 or hum().SeatPart then return false end
-    if PHX.gachaSpinnerVisible and PHX.gachaSpinnerVisible() then return false end
-    local camera=workspace.CurrentCamera
-    local viewport=camera and camera.ViewportSize
-    if not viewport then return false end
-    local x,y=math.floor(viewport.X*0.50),math.floor(viewport.Y*0.60)
-    local ok=pcall(function()
-        PHX.mouseEvent(x,y,0,true,game,0)
-        task.wait(0.045)
-        PHX.mouseEvent(x,y,0,false,game,0)
-    end)
-    PHX.FarmCombatDebug.NativeAt=now
-    return ok
-end
+-- V2.17.10: No physical M1 in the combat dispatcher. UI/NPC interactions
+-- elsewhere in main remain unchanged.
 
 local function resolveCombatState()
     if type(CombatState) == "table" and CombatState.activeController then
@@ -4013,6 +4060,8 @@ function PHX.restoreForestGolemBring()
     PHX.ForestGolemLastBring=setmetatable({}, {__mode="k"})
 end
 
+-- Forest Pirate Bring reverted to V2.16.38 defaults.
+-- V2.17.08: Reverted Forest Pirate Bring from the original V2.16.38 lineage.
 function PHX.bringForestPiratesLikeGolem(models,anchor)
     if not anchor then return 0,0,0,{} end
     local playerRoot=root()
@@ -4073,7 +4122,7 @@ function PHX.bringForestPiratesLikeGolem(models,anchor)
         if (mr.Position-slot.Position).Magnitude<=CONFIG.FARM_COMBAT.ScrapBringVerifyRadius then
             near+=1
         end
-        -- The Golem M1 function is reused, but only pass nearby Pirate targets.
+        -- The shared NET dispatcher uses the same nearby Pirate targets.
         if (mr.Position-playerRoot.Position).Magnitude<=CONFIG.FARM_COMBAT.ForestAttackRange then
             attackTargets[#attackTargets+1]=mob
         end
@@ -4081,7 +4130,7 @@ function PHX.bringForestPiratesLikeGolem(models,anchor)
     PHX.FarmCombatDebug.Brought=moved
     PHX.FarmCombatDebug.Owned=owned
     PHX.FarmCombatDebug.Near=near
-    PHX.FarmCombatDebug.M1Targets=#attackTargets
+    PHX.FarmCombatDebug.NetTargets=#attackTargets
     return moved,near,owned,attackTargets
 end
 
@@ -4096,7 +4145,7 @@ function PHX.farmFixedScrapWave(camp,token,completed)
     local playerRoot=root()
     if not playerRoot or not hum() or hum().Health<=0 then return false end
     if not PHX.maintainFarmHover or not PHX.maintainFarmHover(playerHover) then
-        logLine("SCRAP_GOLEM_M1","HOVER_FAILED")
+        logLine("SCRAP_GOLEM_NET","HOVER_FAILED")
         return false
     end
     local ok,finished=pcall(function()
@@ -4109,10 +4158,10 @@ function PHX.farmFixedScrapWave(camp,token,completed)
             if #models>0 then break end
             task.wait(.2)
         until os.clock()>=spawnUntil
-        if #models==0 then logLine("SCRAP_GOLEM_M1","NO_MOBS"); return false end
-        if not equipTooltip("Melee") then logLine("SCRAP_GOLEM_M1","NO_MELEE"); return false end
+        if #models==0 then logLine("SCRAP_GOLEM_NET","NO_MOBS"); return false end
+        if not equipTooltip("Melee") then logLine("SCRAP_GOLEM_NET","NO_MELEE"); return false end
         farmV19BoostSim()
-        logLine("SCRAP_GOLEM_M1",string.format("START | hoverY=%.1f clusterY=%.1f gap=18 | forestHitbox=%.0f",playerHover.Position.Y,mobAnchor.Position.Y,CONFIG.FARM_COMBAT.ForestHitboxSize))
+        logLine("SCRAP_GOLEM_NET",string.format("START | hoverY=%.1f clusterY=%.1f gap=18 | forestHitbox=%.0f",playerHover.Position.Y,mobAnchor.Position.Y,CONFIG.FARM_COMBAT.ForestHitboxSize))
         local untilTime=os.clock()+CONFIG.FARM_COMBAT.MaxWaveSeconds
         local lastHP,damageAt=nil,os.clock()
         local lastDiag,lastBoost,lastFallback,lastStall=0,0,0,0
@@ -4129,11 +4178,11 @@ function PHX.farmFixedScrapWave(camp,token,completed)
             local now=os.clock()
             if now-lastBoost>=3 then farmV19BoostSim();lastBoost=now end
             local brought,near,owned,attackTargets=PHX.bringForestPiratesLikeGolem(models,mobAnchor)
-            -- Reuse Golem's M1 sender; not its oversized root hitbox.
+            -- Use shared NET dispatcher; Bring geometry remains original.
             local tool=equipTooltip("Melee")
             local hitOk=false
             if tool and tool.Parent==char() then
-                if #attackTargets>0 then hitOk=PHX.netHitGolemCluster(attackTargets) end
+                if #attackTargets>0 then hitOk=PHX.killAuraDispatch(attackTargets,"NET") end
                 if hitOk then sent+=1 end
             end
             local hp=observedHealth(models)
@@ -4142,21 +4191,20 @@ function PHX.farmFixedScrapWave(camp,token,completed)
                 PHX.FarmCombatDebug.LastDamageAt=now
             end
             lastHP=hp
-            if not hitOk and now-lastFallback>=.7 then
-                if tool and tool.Parent==char() then pcall(function() tool:Activate() end) end
-                sendNativeM1()
-                lastFallback=now
-            elseif now-damageAt>=CONFIG.FARM_COMBAT.DamageTimeout and now-lastFallback>=.7 then
-                if tool and tool.Parent==char() then pcall(function() tool:Activate() end) end
-                sendNativeM1()
+            -- NET dispatch sends RegisterAttack/RegisterHit; do not send
+            -- a second attack that would duplicate remote requests.
+            if (not hitOk or now-damageAt>=CONFIG.FARM_COMBAT.DamageTimeout)
+                and now-lastFallback>=2 then
+                logLine("SCRAP_NET_STALL", "NO_VERIFIED_DAMAGE_OR_INPUT_FAILED | targets="..tostring(#attackTargets)
+                    .." | hpAge="..string.format("%.1f",now-damageAt).." | net="..tostring(PHX.KillAura.LastMessage))
                 lastFallback=now
             end
             if now-lastDiag>=2.5 then
-                logLine("SCRAP_GOLEM_M1",string.format("LOOP | localNear=%d/%d moved=%d owned=%d m1Targets=%d playerY=%.1f mobY=%.1f hp=%.0f sinceDamage=%.1f sent=%d attackOK=%s",near,#models,brought,owned,#attackTargets,r.Position.Y,mobAnchor.Position.Y,hp,now-damageAt,sent,tostring(hitOk)))
+                logLine("SCRAP_GOLEM_NET",string.format("LOOP | localNear=%d/%d moved=%d owned=%d netTargets=%d playerY=%.1f mobY=%.1f hp=%.0f sinceDamage=%.1f sent=%d attackOK=%s",near,#models,brought,owned,#attackTargets,r.Position.Y,mobAnchor.Position.Y,hp,now-damageAt,sent,tostring(hitOk)))
                 lastDiag=now
             end
             if now-damageAt>=CONFIG.FARM_COMBAT.RecoveryTimeout and now-lastStall>=3 then
-                logLine("SCRAP_GOLEM_M1","NO_DAMAGE | Golem M1 sent does not imply server accepted damage")
+                logLine("SCRAP_GOLEM_NET","NO_DAMAGE | NET request does not imply server accepted damage")
                 lastStall=now
             end
             task.wait(CONFIG.GOLEM_AURA.ATTACK_INTERVAL)
@@ -4165,7 +4213,7 @@ function PHX.farmFixedScrapWave(camp,token,completed)
     end)
     if PHX.stopFarmHover then PHX.stopFarmHover() end
     PHX.restoreForestGolemBring()
-    if not ok then logLine("SCRAP_GOLEM_M1_ERROR",tostring(finished));return false end
+    if not ok then logLine("SCRAP_GOLEM_NET_ERROR",tostring(finished));return false end
     return finished==true
 end
 
@@ -4198,6 +4246,9 @@ function PHX.restoreQuestFarmBring()
     PHX.QuestFarmLastBring=setmetatable({}, {__mode="k"})
 end
 
+-- V2.17.06: Only move network-owned NPCs; keep the original root size.
+-- A successful PivotTo on the client is NOT proof that the server moved the mob.
+-- V2.17.08: Reverted Hydra/Venom Bring from the original V2.16.38 lineage.
 function PHX.bringQuestMobCluster(models,anchor)
     local rr=root()
     if not rr or not anchor then return 0,0,0,0,{} end
@@ -4219,7 +4270,7 @@ function PHX.bringQuestMobCluster(models,anchor)
         local slot=CFrame.new(anchor.Position+offset)
         local owned=networkOwned(mr)
         if owned==false then unowned+=1 elseif owned==nil then unknown+=1 end
-        if owned~=false then
+        if CONFIG.FARM_COMBAT.QuestBringEnabled~=false and owned~=false then
             if not PHX.QuestFarmOriginalParts[mr] then
                 PHX.QuestFarmOriginalParts[mr]={Size=mr.Size,CanCollide=mr.CanCollide}
             end
@@ -4268,7 +4319,7 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
         if #models>0 then break end
         task.wait(.2)
     until os.clock()>=waitUntil
-    if #models==0 then logLine("QUEST_M1","NO_MOBS | "..name); return false end
+    if #models==0 then logLine("QUEST_NET","NO_MOBS | "..name); return false end
     -- Pick a new fixed point per wave. Never chase individual enemies mid-wave.
     local centerPart,smallest=nil,math.huge
     for _,mob in ipairs(models) do
@@ -4283,25 +4334,25 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
     local hover=anchor*CFrame.new(0,CONFIG.FARM_COMBAT.QuestHoverGap,0)
     if not safeTween(hover,340,token) then return false end
     if not PHX.maintainFarmHover or not PHX.maintainFarmHover(hover) then
-        logLine("QUEST_M1","HOVER_START_FAILED | "..name)
+        logLine("QUEST_NET","HOVER_START_FAILED | "..name)
         return false
     end
     local ok,result=pcall(function()
         local tool=equipTooltip("Melee")
-        if not tool then logLine("QUEST_M1","NO_MELEE | "..name); return false end
+        if not tool then logLine("QUEST_NET","NO_MELEE | "..name); return false end
         local deadline=os.clock()+CONFIG.FARM_COMBAT.MaxWaveSeconds
         local previousHP=setmetatable({}, {__mode="k"})
         local damageAt=os.clock()
         local lastDiag,lastFallback,lastBoost=0,0,0
         local sends=0
-        logLine("QUEST_M1",string.format("START %s | fixedY=%.1f mobY=%.1f",name,hover.Position.Y,anchor.Position.Y))
+        logLine("QUEST_NET",string.format("START %s | fixedY=%.1f mobY=%.1f | legacyBring=%s",name,hover.Position.Y,anchor.Position.Y,tostring(CONFIG.FARM_COMBAT.QuestBringEnabled)))
         while isRunning(token) and CHARACTER_EPOCH==epoch and os.clock()<deadline do
             if completed and completed() then return true end
             local h,rr=hum(),root()
             if not h or h.Health<=0 or not rr or h.SeatPart then return false end
             if not PHX.maintainFarmHover(hover) then
                 if not safeTween(hover,340,token) or not PHX.maintainFarmHover(hover) then
-                    logLine("QUEST_M1","HOVER_RECOVER_FAILED | "..name)
+                    logLine("QUEST_NET","HOVER_RECOVER_FAILED | "..name)
                     return false
                 end
             end
@@ -4314,14 +4365,17 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
                     localModels[#localModels+1]=mob
                 end
             end
-            if #localModels==0 then return true end -- wave cleared; reacquire the next spawn
+            if #localModels==0 then
+                logLine("QUEST_BRING_REACQUIRE",name.." | remaining mobs outside local cluster")
+                return false
+            end
             local now=os.clock()
             if now-lastBoost>=3 then farmV19BoostSim();lastBoost=now end
             local moved,near,unowned,unknown,targets=PHX.bringQuestMobCluster(localModels,anchor)
             tool=equipTooltip("Melee") or tool
             local attackOK=false
             if tool and tool.Parent==char() and #targets>0 then
-                attackOK=PHX.netHitGolemCluster(targets)
+                attackOK=PHX.killAuraDispatch(targets,"NET")
                 if attackOK then sends+=1 end
             end
             for _,mob in ipairs(localModels) do
@@ -4332,14 +4386,17 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
                     previousHP[mob]=mh.Health
                 end
             end
+            -- NET dispatcher sends the attack pair; never send native M1.
             if (not attackOK or now-damageAt>=CONFIG.FARM_COMBAT.DamageTimeout)
-                and now-lastFallback>=.7 then
-                if tool and tool.Parent==char() then pcall(function() tool:Activate() end) end
-                sendNativeM1()
+                and now-lastFallback>=2 then
+                logLine("QUEST_NET_STALL",name.." | no verified HP loss"
+                    .." | targets="..tostring(#targets)
+                    .." | net="..tostring(PHX.KillAura.LastMessage)
+                    .." | hpAge="..string.format("%.1f",now-damageAt))
                 lastFallback=now
             end
             if now-lastDiag>=2.5 then
-                logLine("QUEST_M1",string.format("%s | near=%d/%d moved=%d unowned=%d unknown=%d targets=%d hoverY=%.1f hpAge=%.1f sends=%d",name,near,#localModels,moved,unowned,unknown,#targets,rr.Position.Y,now-damageAt,sends))
+                logLine("QUEST_NET",string.format("%s | near=%d/%d moved=%d unowned=%d unknown=%d targets=%d hoverY=%.1f hpAge=%.1f sends=%d",name,near,#localModels,moved,unowned,unknown,#targets,rr.Position.Y,now-damageAt,sends))
                 lastDiag=now
             end
             task.wait(CONFIG.MELEE_ATTACK_INTERVAL)
@@ -4348,7 +4405,7 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
     end)
     if PHX.stopFarmHover then PHX.stopFarmHover() end
     PHX.restoreQuestFarmBring()
-    if not ok then logLine("QUEST_M1_ERROR",tostring(result));return false end
+    if not ok then logLine("QUEST_NET_ERROR",tostring(result));return false end
     return result==true
 end
 
@@ -4365,49 +4422,149 @@ local function farmNamedMob(name, fallbackCFrame, token)
     end)
 end
 
-local function isLavaPart(v)
-    if not v:IsA("BasePart") then return false end
-    local n = string.lower(v.Name)
-    return n:find("lava", 1, true) ~= nil or v:GetAttribute("__LavaPart") == true
+-- REMOVE LAVA V1 integrated: auto-discover Core.InteriorLava from startup.
+-- Client-only appearance/touch/collision. Not confirmed against server damage.
+PHX.RemoveLava = {
+    Enabled=CONFIG.REMOVE_LAVA.Enabled, Root=nil, Snapshots=setmetatable({}, {__mode="k"}),
+    Parts=0, Visuals=0, LastError=nil, LastStatus=nil, LastScanAt=nil,
+}
+local function lavaRootNow()
+    -- Primary path from the confirmed standalone donor. Keep the scan scoped
+    -- to PrehistoricIsland so unrelated lava/effects are never changed.
+    local map=workspace:FindFirstChild("Map")
+    local island=map and map:FindFirstChild("PrehistoricIsland")
+    if not island then return nil end
+    local core=island:FindFirstChild("Core")
+    local exact=core and core:FindFirstChild("InteriorLava")
+    if exact then return exact end
+    -- Robust against an added intermediate Model/Folder in future map streams.
+    return island:FindFirstChild("InteriorLava",true)
 end
-
-local function neutralizeLavaObject(v)
-    if not isLavaPart(v) then return end
-    pcall(function()
-        v.CanTouch = false
-        v.CanCollide = false
-    end)
-    local ti = v:FindFirstChild("TouchInterest")
-    if ti then
-        pcall(function() ti:Destroy() end)
+local function lavaBelongs(object,parent)
+    return parent and object and (object==parent or object:IsDescendantOf(parent)) or false
+end
+local function lavaRestoreOne(object,entry)
+    if object and object.Parent then
+        for property,value in pairs(entry.Properties) do
+            pcall(function() object[property]=value end)
+        end
+    end
+    PHX.RemoveLava.Snapshots[object]=nil
+end
+local function lavaRestoreAll()
+    for object,entry in pairs(PHX.RemoveLava.Snapshots) do
+        lavaRestoreOne(object,entry)
     end
 end
-
-local function enableLavaProtection(island)
-    if lavaConnection then
-        lavaConnection:Disconnect()
-        lavaConnection = nil
-    end
-    table.clear(SOLO_LAVA_PARTS)
-    for _,v in ipairs(island:GetDescendants()) do
-        if isLavaPart(v) then SOLO_LAVA_PARTS[v] = true end
-        neutralizeLavaObject(v)
-    end
-    lavaConnection = PHX.connect(island.DescendantAdded, function(v)
-        PHX.defer(function()
-            if isLavaPart(v) then SOLO_LAVA_PARTS[v] = true end
-            neutralizeLavaObject(v)
-        end)
-    end)
+local function lavaSet(object,entry,property,value)
+    local ok,original=pcall(function() return object[property] end)
+    if not ok or original==nil then return false end
+    if entry.Properties[property]==nil then entry.Properties[property]=original end
+    if original==value then return true end
+    local success=pcall(function() object[property]=value end)
+    if not success then PHX.RemoveLava.LastError="Cannot set "..property end
+    return success
 end
-
+local function lavaApply(object,parent)
+    if not PHX.RemoveLava.Enabled or not lavaBelongs(object,parent) then return end
+    local part=object:IsA("BasePart")
+    local surface=object:IsA("Decal") or object:IsA("Texture")
+    local effect=object:IsA("ParticleEmitter") or object:IsA("Beam") or object:IsA("Trail")
+        or object:IsA("Fire") or object:IsA("Smoke") or object:IsA("Sparkles")
+        or object:IsA("PointLight") or object:IsA("SpotLight") or object:IsA("SurfaceLight")
+    if not part and not surface and not effect then return end
+    local entry=PHX.RemoveLava.Snapshots[object]
+    if not entry then
+        entry={Properties={},IsPart=part}
+        PHX.RemoveLava.Snapshots[object]=entry
+    end
+    if part then
+        if not lavaSet(object,entry,"LocalTransparencyModifier",1) then
+            lavaSet(object,entry,"Transparency",1)
+        end
+        lavaSet(object,entry,"CanTouch",false)
+        lavaSet(object,entry,"CanCollide",false)
+    elseif surface then lavaSet(object,entry,"Transparency",1)
+    else lavaSet(object,entry,"Enabled",false) end
+    if next(entry.Properties)==nil then PHX.RemoveLava.Snapshots[object]=nil end
+end
+function PHX.removeLavaRescan()
+    local system=PHX.RemoveLava
+    local current=lavaRootNow()
+    system.Root=current
+    for object,entry in pairs(system.Snapshots) do
+        if not system.Enabled or not lavaBelongs(object,current) then lavaRestoreOne(object,entry) end
+    end
+    if system.Enabled and current then
+        lavaApply(current,current)
+        for _,object in ipairs(current:GetDescendants()) do lavaApply(object,current) end
+    end
+    local parts,visuals=0,0
+    for _,entry in pairs(system.Snapshots) do
+        if entry.IsPart then parts+=1 else visuals+=1 end
+    end
+    system.Parts,system.Visuals=parts,visuals
+    system.LastScanAt=os.clock()
+    local status=not system.Enabled and "OFF_RESTORED"
+        or not current and "WAITING_INTERIOR_LAVA"
+        or ("ROOT_FOUND parts="..parts.." visuals="..visuals)
+    if status~=system.LastStatus then
+        system.LastStatus=status
+        if CONFIG.REMOVE_LAVA.Debug then
+            print("[PX LAVA V2.17.02] "..status)
+            if logLine then logLine("REMOVE_LAVA",status) end
+        end
+    end
+    return current~=nil
+end
+function PHX.removeLavaStatus()
+    local sys=PHX.RemoveLava
+    return {Enabled=sys.Enabled,RootFound=sys.Root~=nil,Parts=sys.Parts,
+        Visuals=sys.Visuals,LastError=sys.LastError,LastScanAt=sys.LastScanAt,
+        Status=sys.LastStatus or "BOOT"}
+end
+function PHX.removeLavaSetEnabled(enabled)
+    PHX.RemoveLava.Enabled=enabled==true
+    CONFIG.REMOVE_LAVA.Enabled=PHX.RemoveLava.Enabled
+    if not PHX.RemoveLava.Enabled then lavaRestoreAll() end
+    local ok,why=pcall(PHX.removeLavaRescan)
+    if not ok then PHX.RemoveLava.LastError=tostring(why) end
+    return ok,ok and (PHX.RemoveLava.Enabled and "LAVA_ON_CLIENT_ONLY" or "LAVA_RESTORED") or tostring(why)
+end
+function PHX.removeLavaStop()
+    PHX.RemoveLava.Enabled=false
+    lavaRestoreAll()
+end
+local function enableLavaProtection(_island)
+    -- Main event phase does not own the client lava scanner; it is always ready.
+    PHX.removeLavaRescan()
+end
 local function disableLavaProtection()
-    if lavaConnection then
-        lavaConnection:Disconnect()
-        lavaConnection = nil
-    end
-    table.clear(SOLO_LAVA_PARTS)
+    -- Auto lava survives event completion. Stop/Settings OFF restores values.
 end
+PHX.connect(workspace.DescendantAdded,function(object)
+    local sys=PHX.RemoveLava
+    if not sys.Enabled then return end
+    if lavaBelongs(object,sys.Root) then
+        local ok,err=pcall(lavaApply,object,sys.Root)
+        if not ok then sys.LastError=tostring(err) end
+    elseif object.Name=="PrehistoricIsland" or object.Name=="Core"
+        or object.Name=="InteriorLava" then
+        -- Scan immediately on significant map stream events; the polling
+        -- loop below still catches fully populated/renamed descendants.
+        local ok,err=pcall(PHX.removeLavaRescan)
+        if not ok then sys.LastError=tostring(err) end
+    end
+end)
+PHX.spawn(function()
+    while PHX.generationAlive() do
+        if PHX.RemoveLava.Enabled then
+            local ok,err=pcall(PHX.removeLavaRescan)
+            if not ok then PHX.RemoveLava.LastError=tostring(err) end
+        end
+        task.wait(math.max(.2,tonumber(CONFIG.REMOVE_LAVA.Interval) or .5))
+    end
+end)
 
 local function nearestDistance(pos)
     local r = root()
@@ -4637,6 +4794,8 @@ local function getMasterBoat()
             local player=occupant and occupant.Parent and Players:GetPlayerFromCharacter(occupant.Parent)
             local owner=boatOwnerName(boat)
             local owned=PHX.sameName(owner,masterName)
+            if not owned and owner==nil and PHX.sameName(masterName,LP.Name)
+                and PHX.VerifiedSpawnBoats[boat] then owned=true end
             if player and PHX.sameName(player.Name,masterName) then owned=true end
             if not owned and owner==nil and not player
                 and os.clock()-(PHX.RecentBoatPurchaseAt or -math.huge)<48 then
@@ -4918,11 +5077,24 @@ local function findVerifiedPurchasedBoat(pending)
     local folder=workspace:FindFirstChild("Boats")
     if not folder or not pending or not pending.Snapshot then return nil,nil end
     local seen=nil
+    local ownerless,ownerlessCount=nil,0
     for _,boat in ipairs(folder:GetChildren()) do
         if boat.Name==CONFIG.BOAT_BUY_NAME and not pending.Snapshot[boat] and PHX.boatAlive(boat) then
             local owner=boatOwnerName(boat)
             if owner and PHX.sameName(owner,LP.Name) then return boat,owner end
+            if owner==nil then ownerless,ownerlessCount=boat,ownerlessCount+1 end
             seen=owner or "OWNER_PENDING"
+        end
+    end
+    -- Same proof used by the supplied one-shot BuyBoat test: a fresh boat plus
+    -- precisely 2000 Beli charged. Accept only ONE ownerless candidate; if the
+    -- Owner identifies another player, never associate their boat with us.
+    if ownerlessCount==1 and pending.BeliBefore~=nil then
+        local after=boatBeli()
+        if after~=nil and pending.BeliBefore-after==2000 then
+            logLine("BOAT_DIRECT","OWNER_PENDING but Beli -2000 + unique fresh boat verified")
+            pending.VerifiedByBeli=true
+            return ownerless,"BELI_MINUS_2000"
         end
     end
     return nil,seen
@@ -4930,8 +5102,11 @@ end
 
 local function finishVerifiedBoatBuy(pending,boat)
     if not boat or not PHX.boatAlive(boat) then return nil end
+    if pending.VerifiedByBeli then PHX.VerifiedSpawnBoats[boat]=true end
     local after=boatBeli()
     logLine("SPAWN_VERIFIED","name="..tostring(boat.Name).." owner="..tostring(boatOwnerName(boat))..
+        " mode="..(pending.FastDirect and "FAST" or "DEALER")..
+        " elapsed="..string.format("%.2f",os.clock()-(pending.StartedAt or os.clock()))..
         " result="..tostring(pending.Result).." beliDelta="..
         tostring(after and pending.BeliBefore and (after-pending.BeliBefore) or "unknown"))
     PHX.BoatRebuyPending=false
@@ -4967,7 +5142,26 @@ local function buyGrandBrigade(token)
     if pending then
         local boat,seen=findVerifiedPurchasedBoat(pending)
         if boat then return finishVerifiedBoatBuy(pending,boat) end
-        if pending.Stage=="FAILED" then
+        if pending.Stage=="FAST_REJECT_OBSERVE" then
+            -- A negative RPC response alone does not prove that the purchase is
+            -- harmless to retry. Allow replication time before dealer fallback.
+            if os.clock()>=(pending.ObserveUntil or math.huge) then
+                local currentBeli=boatBeli()
+                if pending.BeliBefore==nil or currentBeli==nil or currentBeli<pending.BeliBefore or seen then
+                    pending.Stage="PAYMENT_UNCERTAIN"
+                    PHX.BoatState="PAYMENT_UNCERTAIN"
+                    logLine("BOAT_FAST_DIRECT","AMBIGUOUS_AFTER_REJECTION old="..tostring(pending.BeliBefore)..
+                        " new="..tostring(currentBeli).." seen="..tostring(seen).." NO_DUPLICATE_BUY=true")
+                else
+                    -- Now it is safe to use the established dealer route.
+                    PHX.BoatFastForceDealer=true
+                    PHX.BoatPurchasePending=nil;PHX.BoatsBeforePurchase=nil
+                    PHX.NextBoatBuyAt=os.clock()+0.2
+                    PHX.BoatState="FAST_FALLBACK_DEALER"
+                    logLine("BOAT_FAST_DIRECT","REJECT_CONFIRMED_NO_CHARGE -> DEALER_FALLBACK")
+                end
+            end
+        elseif pending.Stage=="FAILED" then
             if os.clock()>=(pending.RetryAt or math.huge) then
                 PHX.BoatPurchasePending=nil;PHX.BoatsBeforePurchase=nil
                 PHX.NextBoatBuyAt=os.clock()+3
@@ -4990,8 +5184,17 @@ local function buyGrandBrigade(token)
     end
     if os.clock()<(PHX.NextBoatBuyAt or 0) then return nil end
     local rr=root()
+    if not rr then return nil end
+    local fastDirect=CONFIG.BOAT_FAST_BUY.Enabled and not PHX.BoatFastForceDealer
     local npc,part=nearestNativeBoatDealer()
-    if not rr or not part or (rr.Position-part.Position).Magnitude>8 then
+    local distance=part and (rr.Position-part.Position).Magnitude or math.huge
+    if fastDirect then
+        -- Borrow the user's fast test: BuyBoat can be attempted without opening
+        -- a menu, or pre-travelling to the NPC. Server acceptance is verified below.
+        PHX.BoatState="FAST_DIRECT_PREP"
+        logLine("BOAT_FAST_DIRECT","SKIP_DEALER distance="..string.format("%.1f",distance)..
+            " region="..tostring(getRegion()).." mode=ONE_RPC")
+    elseif not part or distance>8 then
         PHX.TeamPhase="RECOVERY";PHX.BoatState="TWEEN_TO_BOAT_DEALER"
         if not PHX.returnToDealer(token) then
             logLine("BUY_FAILED","ARRIVAL_FAILED")
@@ -5015,8 +5218,13 @@ local function buyGrandBrigade(token)
         return nil
     end
     npc,part=nearestNativeBoatDealer()
-    local settled,why=settleBoatMovement(lease,part,token)
-    if not settled then return abort("SETTLE:"..tostring(why)) end
+    if not fastDirect then
+        local settled,why=settleBoatMovement(lease,part,token)
+        if not settled then return abort("SETTLE:"..tostring(why)) end
+    else
+        -- Preserve the exclusive movement lock, but skip the .45s dealer settle.
+        logLine("BOAT_FAST_DIRECT","LOCK_READY; SKIP_NPC_SETTLE")
+    end
     if not PHX.travelAlive(token) or LP.Character~=character or PHX.Runtime.MovementLockLease~=lease then
         return abort("PURCHASE_INTERRUPTED")
     end
@@ -5024,16 +5232,20 @@ local function buyGrandBrigade(token)
     if not boats then return abort("BOATS_FOLDER_MISSING") end
     local initialCount=0;for _ in pairs(snapshot) do initialCount+=1 end
     pending={Stage="REQUEST",Snapshot=snapshot,Character=character,Epoch=PHX.BoatRespawnEpoch,
-        Rebuy=PHX.BoatRebuyPending,StartedAt=os.clock(),BeliBefore=boatBeli(),Token=token,Lease=lease}
+        FastDirect=fastDirect,Rebuy=PHX.BoatRebuyPending,StartedAt=os.clock(),
+        BeliBefore=boatBeli(),Token=token,Lease=lease}
     PHX.BoatPurchasePending=pending
     PHX.BoatsBeforePurchase=snapshot
     PHX.RecentBoatPurchaseAt=pending.StartedAt
     PHX.BoatState="DIRECT_BUY_REQUEST"
-    logLine("BOAT_DIRECT","START dist="..string.format("%.2f",(root().Position-part.Position).Magnitude)..
-        " beli="..tostring(pending.BeliBefore).." boats="..initialCount.." npc="..tostring(npc and npc.Name))
+    local currentRoot=root()
+    local currentDist=(currentRoot and part) and (currentRoot.Position-part.Position).Magnitude or math.huge
+    logLine("BOAT_DIRECT","START mode="..(fastDirect and "FAST" or "DEALER")..
+        " dist="..string.format("%.2f",currentDist).." beli="..tostring(pending.BeliBefore)..
+        " boats="..initialCount.." npc="..tostring(npc and npc.Name))
     pending.CallIssued=true  -- One transaction = one request; set before RemoteFunction yields.
     pending.RequestAt=os.clock()
-    logLine("BUY_INVOKED","CommF_:InvokeServer(BuyBoat, MarineGrandBrigade) call=1")
+    logLine("BUY_INVOKED","CommF_:InvokeServer(BuyBoat, MarineGrandBrigade) call=1 mode="..(fastDirect and "FAST" or "DEALER"))
     local ok,result=pcall(function() return CommF:InvokeServer("BuyBoat",CONFIG.BOAT_BUY_NAME) end)
     PHX.BoatPurchaseInFlight=false
     if PHX.BoatPurchasePending~=pending or LP.Character~=character then
@@ -5048,8 +5260,18 @@ local function buyGrandBrigade(token)
     local charged=after and pending.BeliBefore and after<pending.BeliBefore
     local appeared,seenNewBoat=findVerifiedPurchasedBoat(pending)
     if not ok or result~=1 then
-        -- RPC errors, nil results and new boats with delayed Owner are NOT proof of rejection.
-        if charged or appeared or seenNewBoat or not ok or result==nil then
+        -- Only a concrete negative response is eligible for dealer fallback,
+        -- and only after observing unchanged Beli and no fresh boat.
+        local concreteReject=ok and (result==false or (type(result)=="number" and result~=1))
+        if fastDirect and concreteReject and not charged and not appeared and not seenNewBoat then
+            pending.Stage="FAST_REJECT_OBSERVE"
+            pending.ObserveUntil=os.clock()+math.max(2,tonumber(CONFIG.BOAT_FAST_BUY.RejectionObserveSeconds) or 3.5)
+            PHX.BoatState="FAST_REJECT_OBSERVE"
+            logLine("BOAT_FAST_DIRECT","NEGATIVE_RESULT="..tostring(result)..
+                " observeSeconds="..string.format("%.1f",pending.ObserveUntil-os.clock())..
+                " NO_DUPLICATE_YET=true")
+        elseif charged or appeared or seenNewBoat or not ok or result==nil then
+            -- No automatic second RPC when payment/spawn replication is uncertain.
             pending.Stage="PAYMENT_UNCERTAIN";PHX.BoatState="PAYMENT_UNCERTAIN"
             logLine("BUY_FAILED","AMBIGUOUS_PAYMENT noDuplicate=true result="..tostring(result))
         else
@@ -5160,46 +5382,136 @@ function PHX.boatTelemetry()
         Heading=PHX.SeaHeading,IsDriver=driver and hum() and driver.Occupant==hum() or false}
 end
 
-local function boatNoclip(boat)
-    if not isMaster() or not boat or not boat.Parent then return end
-    local active=PHX.BoatNoclipGuard
-    if active and active.Boat==boat then return end
-    if active then PHX.stopBoat(active.Boat) end
-    local backup={}
-    PHX.TravelState.BoatParts=backup
-    local guard={Boat=boat,Connections={},Watched=setmetatable({}, {__mode="k"})}
-    PHX.BoatNoclipGuard=guard
-    local function ensurePart(part)
-        if not part:IsA("BasePart") then return end
-        if backup[part]==nil then backup[part]=part.CanCollide end
-        if not guard.Watched[part] then
-            guard.Watched[part]=true
-            guard.Connections[#guard.Connections+1]=part:GetPropertyChangedSignal("CanCollide"):Connect(function()
-                if PHX.BoatNoclipGuard==guard and PHX.TravelState.BoatMoving
-                    and part.Parent and part.CanCollide then
-                    part.CanCollide=false
-                end
-            end)
+-- V2.17.14: Continuous local collision guard for the ship AND seated character.
+-- IMPORTANT: Cannot override server-authoritative world collision or server position correction.
+-- No terrain destruction / CFrame forcing; guard turns off on seat exit or settings OFF.
+function PHX.restoreBoatNoclip(reason)
+    local guard=PHX.BoatNoclipGuard
+    PHX.BoatNoclipGuard=nil -- invalidate callbacks before restoring state
+    if guard then
+        for _,connection in ipairs(guard.Connections or {}) do
+            pcall(function() connection:Disconnect() end)
         end
-        if part.CanCollide then part.CanCollide=false end
     end
-    for _,part in ipairs(boat:GetDescendants()) do ensurePart(part) end
-    guard.Connections[#guard.Connections+1]=boat.DescendantAdded:Connect(function(item)
-        if PHX.BoatNoclipGuard==guard and PHX.TravelState.BoatMoving then
-            ensurePart(item)
+    local boatBackup=(guard and guard.Parts) or (PHX.TravelState and PHX.TravelState.BoatParts) or {}
+    for part,old in pairs(boatBackup) do
+        if part and part.Parent then pcall(function() part.CanCollide=old end) end
+    end
+    if guard then
+        for part,old in pairs(guard.CharacterParts or {}) do
+            if part and part.Parent then pcall(function() part.CanCollide=old end) end
         end
-    end)
-    local elapsed=0
-    guard.Connections[#guard.Connections+1]=RunService.Heartbeat:Connect(function(dt)
-        if PHX.BoatNoclipGuard~=guard or not PHX.TravelState.BoatMoving then return end
-        elapsed+=dt
-        if elapsed>=.5 then
-            elapsed=0
-            for _,part in ipairs(boat:GetDescendants()) do ensurePart(part) end
-        end
-    end)
-    logLine("BOAT_NOCLIP","GUARD_STARTED parts="..tostring(#boat:GetDescendants()))
+        logLine("BOAT_NOCLIP","RESTORED reason="..tostring(reason or "OFF")..
+            " boatParts="..tostring(guard.BoatCount or 0).." playerParts="..tostring(guard.CharacterCount or 0))
+    end
+    if PHX.TravelState then PHX.TravelState.BoatParts=nil end
 end
+
+function PHX.boatNoclipActive(boat)
+    if not CONFIG.BOAT_NOCLIP.Enabled or not boat or not boat.Parent then return false end
+    if boat.Name~=CONFIG.BOAT_NAME then return false end
+    local h=hum()
+    if not h or h.Health<=0 or not h.SeatPart then return false end
+    -- Do NOT check throttle/steer: releasing W for even a frame must not restore collision.
+    -- Driver and seated passengers both need protection against their character collision.
+    return PHX.boatForSeat(h.SeatPart)==boat
+end
+
+function PHX.enableBoatNoclip(boat)
+    if not PHX.boatNoclipActive(boat) then return false end
+    local currentCharacter=LP.Character
+    local active=PHX.BoatNoclipGuard
+    if active and active.Boat==boat and active.Character==currentCharacter then return true end
+    if active then PHX.restoreBoatNoclip("BOAT_OR_CHARACTER_CHANGED") end
+
+    local backup,characterBackup={},{}
+    local guard={Boat=boat,Character=currentCharacter,Parts=backup,CharacterParts=characterBackup,
+        Connections={},BoatCount=0,CharacterCount=0}
+    PHX.BoatNoclipGuard=guard
+    PHX.TravelState.BoatParts=backup
+
+    local function ensurePart(part,stash,kind)
+        if not part:IsA("BasePart") then return end
+        local ok,collidable=pcall(function() return part.CanCollide end)
+        if not ok then return end
+        if stash[part]==nil then
+            stash[part]=collidable
+            if kind=="BOAT" then guard.BoatCount+=1 else guard.CharacterCount+=1 end
+        end
+        if collidable then pcall(function() part.CanCollide=false end) end
+    end
+    local function scan()
+        for _,part in ipairs(boat:GetDescendants()) do ensurePart(part,backup,"BOAT") end
+        if currentCharacter and currentCharacter.Parent then
+            for _,part in ipairs(currentCharacter:GetDescendants()) do
+                ensurePart(part,characterBackup,"PLAYER")
+            end
+        end
+    end
+    scan() -- apply immediately, before the player next presses W
+    guard.Connections[#guard.Connections+1]=boat.DescendantAdded:Connect(function(part)
+        if PHX.BoatNoclipGuard==guard then ensurePart(part,backup,"BOAT") end
+    end)
+    if currentCharacter then
+        guard.Connections[#guard.Connections+1]=currentCharacter.DescendantAdded:Connect(function(part)
+            if PHX.BoatNoclipGuard==guard then ensurePart(part,characterBackup,"PLAYER") end
+        end)
+    end
+    local elapsed,scanElapsed=0,0
+    -- Run before physics so CanCollide is corrected prior to nearby obstacle contact.
+    guard.Connections[#guard.Connections+1]=RunService.Stepped:Connect(function(_,dt)
+        if PHX.BoatNoclipGuard~=guard then return end
+        if not PHX.generationAlive() or not PHX.boatNoclipActive(boat) or LP.Character~=currentCharacter then
+            PHX.restoreBoatNoclip("LEFT_BOAT_OR_STOPPED")
+            return
+        end
+        local delta=tonumber(dt) or 0
+        elapsed+=delta; scanElapsed+=delta
+        if elapsed<(tonumber(CONFIG.BOAT_NOCLIP.RefreshSeconds) or 0.10) then return end
+        elapsed=0
+        -- Some games re-enable collision during vehicle physics updates.
+        for part in pairs(backup) do
+            if part.Parent then pcall(function() if part.CanCollide then part.CanCollide=false end end) end
+        end
+        for part in pairs(characterBackup) do
+            if part.Parent then pcall(function() if part.CanCollide then part.CanCollide=false end end) end
+        end
+        if scanElapsed>=0.40 then scanElapsed=0;scan() end
+    end)
+    logLine("BOAT_NOCLIP","CONTINUOUS boat="..tostring(boat.Name)..
+        " boatParts="..guard.BoatCount.." playerParts="..guard.CharacterCount)
+    return true
+end
+
+function PHX.setBoatNoclipEnabled(enabled)
+    if type(enabled)~="boolean" then return false,"BOAT_NOCLIP_EXPECTS_BOOLEAN" end
+    CONFIG.BOAT_NOCLIP.Enabled=enabled
+    if not enabled then
+        PHX.restoreBoatNoclip("SETTINGS_OFF")
+    else
+        local h=hum()
+        local seat=h and h.SeatPart
+        local boat=(seat and PHX.boatForSeat(seat)) or (PHX.TravelState and PHX.TravelState.Boat)
+        if boat and PHX.boatNoclipActive(boat) then PHX.enableBoatNoclip(boat) end
+    end
+    return true,enabled and "Boat Noclip: luôn bật khi ngồi thuyền; tắt va chạm cả nhân vật." or "Boat Noclip tắt; đã khôi phục va chạm."
+end
+
+-- Works if executed before a ship spawns or while already seated as driver/passenger.
+PHX.spawn(function()
+    while PHX.generationAlive() do
+        local h=hum()
+        local seat=h and h.SeatPart
+        local boat=seat and PHX.boatForSeat(seat) or nil
+        if boat and PHX.boatNoclipActive(boat) then
+            local ok,err=pcall(PHX.enableBoatNoclip,boat)
+            if not ok then logLine("BOAT_NOCLIP_ERROR",tostring(err)) end
+        elseif PHX.BoatNoclipGuard then
+            PHX.restoreBoatNoclip("NOT_ON_BOAT")
+        end
+        task.wait(0.10)
+    end
+end)
 
 function PHX.prehistoricMarker()
     local map = workspace:FindFirstChild("Map")
@@ -5228,7 +5540,7 @@ local function boatFlyTo(boat,targetPos,token)
     end
     PHX.TravelState.Boat=boat
     PHX.TravelState.BoatMoving=true
-    boatNoclip(boat)
+    PHX.enableBoatNoclip(boat)
     PHX.TravelState.BoatMoving=true
     local previousAt=os.clock()
     local speed=math.clamp(tonumber(CONFIG.BOAT_TWEEN_SPEED) or 280,50,280)
@@ -5858,42 +6170,25 @@ function PHX.soloRelicGolemThreat(island, golems)
     return best,nearest
 end
 
+-- V2.17.03: GOLEM-ABSOLUTE SOLO POLICY.
+-- Legacy radius/pressure thresholds no longer override a live Lava Golem.
+-- TEAM's pressure allocation remains unchanged.
 function PHX.soloRelicThreatRadius(relicHp, pressure)
-    local cfg=CONFIG.SOLO_GUARD
-    local radius=cfg.THREAT_RADIUS
-    if type(relicHp)=="number" and relicHp<=cfg.RELIC_ALARM_PERCENT then radius+=45 end
-    if type(pressure)=="number" and pressure>=cfg.PRESSURE_CRITICAL_AT then
-        radius=math.min(radius, cfg.CRITICAL_GOLEM_RADIUS)
-    end
-    return radius
+    return math.huge -- compatibility for callers querying SOLO threat radius
 end
 
 function PHX.soloPressureMustYield(island)
-    local nearestGolem, distance=PHX.soloRelicGolemThreat(island)
-    if not nearestGolem then return false end
-    local hud=PHX.readRaidHUD()
-    local radius=PHX.soloRelicThreatRadius(hud.Relic,hud.Pressure)
-    return distance<=radius
+    -- Any replicated, living Golem forces pressure work to yield, regardless of
+    -- distance, pressure reading, Relic HP or the presence of active rocks.
+    return #PHX.liveGolems() > 0
 end
 
 PHX.SoloPressureRecovery=setmetatable({}, {__mode="k"})
 function PHX.soloPressurePriority(island, snapshot, distance, rock)
-    if not rock then PHX.SoloPressureRecovery[island]=nil;return false end
-    local cfg=CONFIG.SOLO_GUARD
-    local pressure=tonumber(snapshot.Pressure)
-    if pressure==nil then return false end -- unknown pressure must not be guessed
-    local radius=PHX.soloRelicThreatRadius(snapshot.Relic,pressure)
-    if distance<=radius then return false end
-    local wasRecovering=PHX.SoloPressureRecovery[island]==true
-    if pressure>=cfg.PRESSURE_WHILE_FAR_AT then
-        if not wasRecovering then logLine("SOLO_PRESSURE_PRIORITY","START | pressure="..pressure.." | golem_distance="..math.floor(distance)) end
-        PHX.SoloPressureRecovery[island]=true
-        return true
-    end
-    if wasRecovering and pressure>cfg.PRESSURE_RECOVERY_EXIT then return true end
-    if wasRecovering then logLine("SOLO_PRESSURE_PRIORITY","DONE | pressure="..pressure) end
-    PHX.SoloPressureRecovery[island]=nil
-    return false
+    -- Legacy entry point. Pressure is permitted ONLY when the Golem list is
+    -- empty. Do not use previously latched recovery or pressure thresholds.
+    if not rock then return false end
+    return not PHX.soloPressureMustYield(island)
 end
 
 function PHX.teamPressureAssignment(island, snapshot, golems)
@@ -5927,16 +6222,11 @@ end
 
 local function pressureWorkShouldYield(island)
     local golems=PHX.liveGolems()
-    if #golems==0 then return false end
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then
-        if PHX.soloPressureMustYield(island) then return true end
-        local hud=PHX.readRaidHUD()
-        if type(hud.Pressure)=="number" and hud.Pressure<=CONFIG.SOLO_GUARD.PRESSURE_RECOVERY_EXIT then
-            PHX.SoloPressureRecovery[island]=nil
-            return true
-        end
-        return false
+        -- Absolute priority: any live Golem interrupts pressure work.
+        return #golems > 0
     end
+    if #golems==0 then return false end
     local snapshot=PHX.eventSnapshot(island)
     return not PHX.teamPressureAssignment(island,snapshot,golems)
 end
@@ -6004,9 +6294,12 @@ local function soloRockUnsafe(rock, why)
     logLine("SOLO_LAVA_SKIP", tostring(why))
 end
 
-local function soloGuardSegment(cf, speed, token, tag, zone)
+local function soloGuardSegment(cf, speed, token, tag, zone, island)
     local h = hum()
     if not h or h.Health <= 0 then return false end
+    local isRockTravel=type(tag)=="string" and tag:sub(1,4)=="ROCK"
+    -- Perform early priority check BEFORE subscribing to Humanoid events.
+    if isRockTravel and PHX.soloPressureMustYield(island) then return false end
     local starting = h.Health
     local damaged = false
     local conn = h.HealthChanged:Connect(function(hp)
@@ -6017,9 +6310,23 @@ local function soloGuardSegment(cf, speed, token, tag, zone)
         end
     end)
     local volumeEntered=false
+    local priorityInterrupted=false
+    local lastPriorityCheck=-math.huge
     local watch=nil
-    if zone then
+    if zone or isRockTravel then
         watch=RunService.Heartbeat:Connect(function()
+            -- Abort an IN-PROGRESS rock tween when a new Golem spawns.
+            -- Check at 0.1s intervals to avoid scanning enemies every frame.
+            if isRockTravel and os.clock()-lastPriorityCheck>=.10 then
+                lastPriorityCheck=os.clock()
+                if PHX.soloPressureMustYield(island) then
+                    priorityInterrupted=true
+                    local tween=PHX.TravelState and PHX.TravelState.Tween
+                    if tween then pcall(function() tween:Cancel() end) end
+                    return
+                end
+            end
+            if not zone then return end
             local rr=root()
             if not rr then return end
             local dx,dz=rr.Position.X-zone.Center.X,rr.Position.Z-zone.Center.Z
@@ -6034,6 +6341,10 @@ local function soloGuardSegment(cf, speed, token, tag, zone)
     local result = safeTween(cf, speed, token)
     conn:Disconnect()
     if watch then watch:Disconnect() end
+    if priorityInterrupted then
+        logLine("SOLO_GOLEM_FIRST", "PREEMPT_ROCK_MOVE | "..tostring(tag or "ROCK"))
+        return false
+    end
     if volumeEntered then
         logLine("SOLO_LAVA_INTRUSION",tostring(tag or "MOVE").." | position="..
             tostring(root() and root().Position))
@@ -6125,7 +6436,7 @@ local function soloGuardApproach(position,hoverY,token,baseSpeed,tag,island)
     end
     local name=tostring(tag or "TARGET")
     if not soloCylinderIntersects(rr.Position,destination,zone) then
-        return soloGuardSegment(CFrame.new(destination),speed,token,name.."_DIRECT",zone)
+        return soloGuardSegment(CFrame.new(destination),speed,token,name.."_DIRECT",zone,island)
     end
     local route,reason=soloBuildLavaDetour(rr.Position,destination,zone)
     if not route then
@@ -6144,7 +6455,7 @@ local function soloGuardApproach(position,hoverY,token,baseSpeed,tag,island)
             return false
         end
         if (rootNow.Position-route[i]).Magnitude>3 then
-            if not soloGuardSegment(CFrame.new(route[i]),speed,token,name.."_DET"..i,zone) then return false end
+            if not soloGuardSegment(CFrame.new(route[i]),speed,token,name.."_DET"..i,zone,island) then return false end
         end
     end
     return true
@@ -6163,6 +6474,8 @@ function PHX.pressureRockBurst(target, token, island)
         local hover = CFrame.new(p + Vector3.new(0, hoverHeight, 0))
         if solo then
             if not soloGuardApproach(p, hoverHeight,token,CONFIG.SOLO_PRESSURE_TWEEN_SPEED or 260,"ROCK",island) then
+                -- New Golem preemption is a priority switch, NOT an unsafe rock.
+                if pressureWorkShouldYield(island) then return false end
                 soloRockUnsafe(target, "Rock approach refused or HP dropped")
                 return false
             end
@@ -6177,7 +6490,7 @@ function PHX.pressureRockBurst(target, token, island)
         for _,tooltip in ipairs(order) do
             local tool=equipTooltip(tooltip)
             if tool then
-                for _,key in ipairs(SKILL_KEYS) do
+                for _,key in ipairs(skillKeysForTooltip(tooltip)) do
                     if os.clock()>=deadline then break end
                     if not isRunning(token) or not target.model.Parent or not rockActive(target.model) or pressureWorkShouldYield(island) then return false end
                     aimAt(p)
@@ -6205,22 +6518,23 @@ function PHX.clusterAnchor(island)
     local islandPivot = island:GetPivot()
     local away = Vector3.new(-islandPivot.LookVector.X, 0, -islandPivot.LookVector.Z)
     if away.Magnitude < .1 then away = Vector3.new(1,0,0) end
-    local pos = relicPivot.Position + away.Unit * CONFIG.GOLEM_AURA.BRING_DISTANCE_FROM_RELIC
-    pos = Vector3.new(pos.X, target.Position.Y, pos.Z)
-    if PHX.isSoloAutomation and PHX.isSoloAutomation() then
-        local sum,count,sumY=Vector3.zero,0,0
-        for _,g in ipairs(PHX.liveGolems()) do
-            local gp=g:FindFirstChild("HumanoidRootPart") or g:FindFirstChild("Head")
-            if gp then
-                sum=sum+Vector3.new(gp.Position.X-relicPivot.Position.X,0,gp.Position.Z-relicPivot.Position.Z)
-                sumY=sumY+gp.Position.Y
-                count=count+1
-            end
+    -- Prefer the direction from the Fossil to the existing Golems (for both
+    -- TEAM and SOLO). This pushes them away rather than toward the Relic.
+    local sum,count,sumY=Vector3.zero,0,0
+    for _,g in ipairs(PHX.liveGolems()) do
+        local gp=g:FindFirstChild("HumanoidRootPart") or g:FindFirstChild("Head")
+        if gp then
+            local delta=gp.Position-relicPivot.Position
+            sum+=Vector3.new(delta.X,0,delta.Z)
+            sumY+=gp.Position.Y
+            count+=1
         end
-        if sum.Magnitude>=1 then away=sum end
-        pos=relicPivot.Position+away.Unit*CONFIG.GOLEM_AURA.BRING_DISTANCE_FROM_RELIC
-        pos=Vector3.new(pos.X,count>0 and sumY/count or relicPivot.Position.Y,pos.Z)
     end
+    if sum.Magnitude>=1 then away=sum end
+    local distance=math.max(tonumber(CONFIG.GOLEM_AURA.BRING_DISTANCE_FROM_RELIC) or 195,
+        (tonumber(CONFIG.GOLEM_AURA.MIN_RELIC_DISTANCE) or 165)+12)
+    local pos=relicPivot.Position+away.Unit*distance
+    pos=Vector3.new(pos.X,count>0 and sumY/count or target.Position.Y,pos.Z)
     PHX.ClusterIsland = island
     PHX.ClusterAnchor = CFrame.lookAt(pos, Vector3.new(relicPivot.Position.X, pos.Y, relicPivot.Position.Z))
     PHX.ClusterProgressAt, PHX.ClusterLastHP = os.clock(), nil
@@ -6257,55 +6571,279 @@ function PHX.restoreGolemChanges()
     PHX.GolemLastBring = setmetatable({}, {__mode="k"})
 end
 
+PHX.GolemBringStats={Attempts=0,Applied=0,Failed=0,NotOwned=0,LastError=nil,LastAt=nil,LastLoggedAt=-math.huge}
 function PHX.bringGolemCluster(island, golems)
+    if not island or not island.Parent then return nil end
     local anchor = PHX.clusterAnchor(island)
-    if not anchor or not isMaster() then return anchor end
+    -- Slave clients still need the anchor for their melee approach; only the
+    -- Master/SOLO client owns the relocation attempt.
+    if not anchor or not isMaster() or CONFIG.GOLEM_AURA.BRING_ENABLED==false then return anchor end
     local now = os.clock()
-    for i,g in ipairs(golems) do
+    local relic=getRelic(island)
+    local relicPose=relic and relicPart(relic)
+    local relicPos=relicPose and relicPose.Position or anchor.Position
+    local minDistance=tonumber(CONFIG.GOLEM_AURA.MIN_RELIC_DISTANCE) or 165
+    local interval=tonumber(CONFIG.GOLEM_AURA.BRING_INTERVAL) or .15
+    local drift=tonumber(CONFIG.GOLEM_AURA.REBRING_DRIFT) or 8
+    local radius=tonumber(CONFIG.GOLEM_AURA.CLUSTER_RADIUS) or 4
+    for i,g in ipairs(golems or {}) do
         local h = g:FindFirstChildOfClass("Humanoid")
         local gp = g:FindFirstChild("HumanoidRootPart") or g:FindFirstChild("Head")
-        if h and h.Health > 0 and gp then
-            local first = not PHX.GolemPrepared[g]
+        if h and h.Health > 0 and gp and gp:IsA("BasePart") and not gp.Anchored then
             PHX.prepareGolemOnce(g)
-            local angle = ((i-1)/math.max(#golems,1))*math.pi*2
-            local off = #golems > 1 and Vector3.new(math.cos(angle)*CONFIG.GOLEM_AURA.CLUSTER_RADIUS,0,math.sin(angle)*CONFIG.GOLEM_AURA.CLUSTER_RADIUS) or Vector3.zero
-            local slot = CFrame.lookAt(anchor.Position+off, anchor.Position+off+anchor.LookVector)
-            if first or (now-(PHX.GolemLastBring[g] or -math.huge) >= CONFIG.GOLEM_AURA.BRING_INTERVAL and (gp.Position-slot.Position).Magnitude >= CONFIG.GOLEM_AURA.REBRING_DRIFT) then
-                PHX.GolemLastBring[g] = now
-                pcall(function()
+            local angle=((i-1)/math.max(#golems,1))*math.pi*2
+            local off=#golems>1 and Vector3.new(math.cos(angle)*radius,0,math.sin(angle)*radius) or Vector3.zero
+            local targetPos=anchor.Position+off
+            local slot=CFrame.lookAt(targetPos,targetPos+anchor.LookVector)
+            local delta=gp.Position-relicPos
+            local relicHorizontal=Vector3.new(delta.X,0,delta.Z).Magnitude
+            local mustProtect=relicHorizontal<minDistance
+            local movingFar=(gp.Position-targetPos).Magnitude>=drift
+            if (mustProtect or movingFar) and now-(PHX.GolemLastBring[g] or -math.huge)>=interval then
+                PHX.GolemLastBring[g]=now
+                local stats=PHX.GolemBringStats
+                stats.Attempts+=1
+                local ok,err=pcall(function()
                     g:PivotTo(slot)
-                    gp.AssemblyLinearVelocity = Vector3.zero
-                    gp.AssemblyAngularVelocity = Vector3.zero
+                    gp.AssemblyLinearVelocity=Vector3.zero
+                    gp.AssemblyAngularVelocity=Vector3.zero
                 end)
+                if ok then stats.Applied+=1;stats.LastAt=now
+                else stats.Failed+=1;stats.LastError=tostring(err) end
+                -- Request accepted locally does not prove NPC moved on server.
+                if now-stats.LastLoggedAt>10 then
+                    stats.LastLoggedAt=now
+                    print("[PX GOLEM BRING] local requests="..stats.Attempts.." applied="..stats.Applied..
+                        " errors="..stats.Failed.." (server replication NOT verified)")
+                end
             end
         end
     end
     return anchor
 end
 
+-- SOLO has its own golemRushBurst, so the TEAM burst's bring call did not
+-- protect the Relic during pressure work. This single non-attack worker runs
+-- only for SOLO while the raid is active, and shares the same bring throttle.
+PHX.spawn(function()
+    while PHX.generationAlive() do
+        if ENV.TeamConfig.IsRunning and PHX.isSoloAutomation() then
+            local island=findPrehistoric()
+            if island and PHX.eventActive(island) then
+                local golems=PHX.liveGolems()
+                if #golems>0 then
+                    local ok,err=pcall(PHX.bringGolemCluster,island,golems)
+                    if not ok then PHX.GolemBringStats.LastError=tostring(err) end
+                end
+            end
+        end
+        task.wait(.18)
+    end
+end)
+
 function PHX.netHitGolemCluster(golems)
-    local rr = root()
-    if not rr then return false end
-    local hits, primary = {}, nil
-    for _,g in ipairs(golems) do
-        local h = g:FindFirstChildOfClass("Humanoid")
-        local gp = g:FindFirstChild("HumanoidRootPart") or g:FindFirstChild("Head")
-        if h and h.Health > 0 and gp and (gp.Position-rr.Position).Magnitude <= CONFIG.GOLEM_AURA.NET_DISTANCE then
-            primary = primary or gp
-            hits[#hits+1] = {g, gp}
+    -- Compatibility: any legacy caller must use the same Recovery NET dispatcher.
+    return PHX.killAuraDispatch(golems,"NET")
+end
+
+
+-- KILL AURA V1 integrated: one shared combat backend for farms and Golems.
+-- No separate attack worker while main automation is active.
+PHX.KillAura = {Requests=0,NativeRequests=0,NetRequests=0,ObservedDamage=0,
+    LastDamageAt=nil,LastStepAt=0,TargetCount=0,Hp=setmetatable({}, {__mode="k"}),
+    LastMessage="READY"}
+function PHX.killAuraRelease()
+    -- If another caller was interrupted during a mouse press, release it.
+    if PHX.Runtime and PHX.Runtime.HeldMouse then
+        for button,pointer in pairs(PHX.Runtime.HeldMouse) do
+            pcall(function() PHX.mouseEvent(pointer.X,pointer.Y,button,false,pointer.Target,pointer.Layer) end)
         end
     end
-    if not primary then return false end
-    local registerAttack, registerHit = resolveNetAttack()
-    if not registerAttack or not registerHit then
-        local tool = equipTooltip("Melee")
-        if tool then pcall(function() tool:Activate() end) end
+end
+function PHX.killAuraTargets(radius)
+    local rr=root()
+    local h=hum()
+    local enemies=workspace:FindFirstChild("Enemies")
+    if not rr or not h or h.Health<=0 or h.SeatPart or not enemies then return {} end
+    local targets={}
+    for _,model in ipairs(enemies:GetChildren()) do
+        if model:IsA("Model") and not Players:GetPlayerFromCharacter(model) then
+            local enemy,part=PHX.farmMobRoot(model)
+            if enemy and part then
+                local distance=(part.Position-rr.Position).Magnitude
+                if distance<=radius then
+                    targets[#targets+1]={Model=model,Humanoid=enemy,Part=part,Distance=distance}
+                end
+            end
+        end
+    end
+    table.sort(targets,function(a,b) return a.Distance<b.Distance end)
+    return targets
+end
+function PHX.killAuraObserve(targets)
+    local aura=PHX.KillAura
+    for model,old in pairs(aura.Hp) do
+        if not model.Parent or old.Humanoid.Parent~=model or old.Humanoid.Health<=0 then
+            aura.Hp[model]=nil
+        else
+            if old.Humanoid.Health<old.Health then
+                aura.ObservedDamage+=old.Health-old.Humanoid.Health
+                aura.LastDamageAt=os.clock()
+            end
+            old.Health=old.Humanoid.Health
+        end
+    end
+    for _,entry in ipairs(targets or {}) do
+        local old=aura.Hp[entry.Model]
+        if not old or old.Humanoid~=entry.Humanoid then
+            aura.Hp[entry.Model]={Humanoid=entry.Humanoid,Health=entry.Humanoid.Health}
+        end
+    end
+end
+-- PX V2.17.11 RECOVERY NET BACKEND
+-- Derived from standalone PX_KillAura_Recovery_Test_V1.sendNET that the user tested.
+-- No native M1 fallback, no GUI clicks. Different hit-part modes are selectable in Settings.
+-- RPC accepted for transmission != server-confirmed NPC damage.
+function PHX.killAuraDispatch(models,backend)
+    local aura=PHX.KillAura
+    if not CONFIG.KILL_AURA.Enabled or not PHX.generationAlive() then return false end
+    local h,rr=hum(),root()
+    if not h or h.Health<=0 or h.SeatPart or not rr or PHX.isMovementLocked() then
+        aura.LastMessage="ACTOR_UNAVAILABLE"
         return false
     end
-    local okA = pcall(function() registerAttack:FireServer(.05) end)
-    if not okA then return false end
-    return pcall(function() registerHit:FireServer(primary, hits) end)
+    local now=os.clock()
+    local interval=math.max(.10,tonumber(CONFIG.KILL_AURA.NetGap) or .30)
+    if now-(aura.LastNetAttemptAt or -math.huge)<interval then
+        aura.LastMessage="RATE_LIMITED"
+        return false
+    end
+    local tool=equipTooltip("Melee")
+    if not tool or tool.Parent~=char() or not tool:IsA("Tool")
+        or tostring(tool.ToolTip or "")~="Melee" or tool.Enabled==false
+        or (PHX.isPhysicalFruitTool and PHX.isPhysicalFruitTool(tool)) then
+        aura.LastMessage="MELEE_NOT_EQUIPPED"
+        return false
+    end
+    local folder=workspace:FindFirstChild("Enemies")
+    if not folder then aura.LastMessage="ENEMIES_FOLDER_MISSING";return false end
+
+    local selected=CONFIG.KILL_AURA.NetMode or "NET_HEAD"
+    if selected~="NET_HEAD" and selected~="NET_ROOT" and selected~="NET_HEAD_0" then
+        selected="NET_HEAD"
+    end
+    local useHead=selected~="NET_ROOT"
+    local delay=selected=="NET_HEAD_0" and 0 or .05
+    local radius=math.max(1,tonumber(CONFIG.KILL_AURA.NetRange) or 35)
+
+    -- Matches the recovery test: fresh live NPCs, correct hit part, validate range.
+    local function collectFresh()
+        local actorRoot=root()
+        local actorHum=hum()
+        if not actorRoot or not actorHum or actorHum.Health<=0 or actorHum.SeatPart
+            or not PHX.generationAlive() or tool.Parent~=char() then
+            return nil,nil,0
+        end
+        local hits,base={},nil
+        for _,model in ipairs(models or {}) do
+            if model and model.Parent==folder and model:IsA("Model")
+                and not Players:GetPlayerFromCharacter(model) then
+                local enemyHum=model:FindFirstChildOfClass("Humanoid")
+                local part=model:FindFirstChild(useHead and "Head" or "HumanoidRootPart")
+                if enemyHum and enemyHum.Health>0 and part and part:IsA("BasePart")
+                    and (part.Position-actorRoot.Position).Magnitude<=radius then
+                    hits[#hits+1]={model,part}
+                    base=base or part
+                end
+            end
+        end
+        return base,hits,#hits
+    end
+
+    local base,hits,count=collectFresh()
+    aura.TargetCount=count
+    if not base then
+        aura.LastMessage="NO_VALID_HIT_PART_WITHIN_RANGE"
+        return false
+    end
+    local registerAttack,registerHit=resolveNetAttack()
+    if not registerAttack or not registerHit
+        or not registerAttack:IsA("RemoteEvent") or not registerHit:IsA("RemoteEvent") then
+        aura.LastMessage="REGISTER_REMOTES_MISSING"
+        return false
+    end
+    -- Prevent TEAM/SOLO/idle dispatch overlap; one pair per send.
+    if aura.NetDispatchBusy then aura.LastMessage="NET_BUSY";return false end
+    aura.NetDispatchBusy=true
+    aura.LastNetAttemptAt=now
+    local ok,sent,message=pcall(function()
+        local sentAttack,attackError=pcall(function() registerAttack:FireServer(delay) end)
+        if not sentAttack then return false,"ATTACK_RPC_ERROR:"..tostring(attackError) end
+        if selected~=CONFIG.KILL_AURA.NetMode then return false,"NET_MODE_CHANGED" end
+        local freshBase,freshHits,freshCount=collectFresh()
+        aura.TargetCount=freshCount
+        if not freshBase then return false,"TARGETS_EXPIRED_AFTER_ATTACK_RPC" end
+        local sentHit,hitError=pcall(function() registerHit:FireServer(freshBase,freshHits) end)
+        if not sentHit then return false,"HIT_RPC_ERROR:"..tostring(hitError) end
+        return true,"REQUESTED_NOT_VERIFIED | mode="..selected.." | targets="..freshCount
+    end)
+    aura.NetDispatchBusy=false
+    if not ok then
+        aura.LastMessage="RECOVERY_NET_ERROR:"..tostring(sent)
+        aura.NetErrors=(aura.NetErrors or 0)+1
+        return false
+    end
+    aura.LastMessage=message or "RECOVERY_NET_FAILED"
+    if sent then
+        aura.NetRequests+=1
+        aura.Requests+=1
+        aura.Mode=selected
+        PHX.FarmCombatDebug.LastNet=aura.LastMessage
+        PHX.FarmCombatDebug.Hits+=count
+        -- Sparse diagnostic logging only; server may reject packets without client errors.
+        if aura.NetRequests%12==1 then
+            logLine("RECOVERY_NET", "mode="..selected.." | sent="..aura.NetRequests
+                .." | targetCount="..count.." | radius="..radius
+                .." | damageNotGuaranteed=true")
+        end
+    else
+        aura.NetErrors=(aura.NetErrors or 0)+1
+        if (aura.NetErrors%8)==1 then logLine("RECOVERY_NET_ERROR",aura.LastMessage) end
+    end
+    return sent==true
 end
+
+function PHX.setRecoveryNetMode(selected)
+    if selected~="NET_HEAD" and selected~="NET_ROOT" and selected~="NET_HEAD_0" then
+        return false,"INVALID_NET_MODE"
+    end
+    CONFIG.KILL_AURA.NetMode=selected
+    PHX.KillAura.LastNetAttemptAt=-math.huge
+    PHX.KillAura.LastMessage="NET_MODE_SELECTED:"..selected
+    logLine("RECOVERY_NET_MODE",selected)
+    if PHX.saveUserConfig then PHX.saveUserConfig() end
+    return true,selected
+end
+
+function PHX.killAuraIdleStep()
+    if not CONFIG.KILL_AURA.Enabled or not CONFIG.KILL_AURA.IdleEnabled then return end
+    if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy or PHX.isMovementLocked() then return end
+    local targets=PHX.killAuraTargets(math.max(1,tonumber(CONFIG.KILL_AURA.Radius) or 60))
+    PHX.KillAura.TargetCount=#targets
+    PHX.killAuraObserve(targets)
+    if #targets>0 then
+        local models={}
+        for _,entry in ipairs(targets) do models[#models+1]=entry.Model end
+        PHX.killAuraDispatch(models,"NET")
+    end
+end
+PHX.spawn(function()
+    while PHX.generationAlive() do
+        local ok,err=pcall(PHX.killAuraIdleStep)
+        if not ok then PHX.KillAura.LastMessage="ERROR: "..tostring(err) end
+        task.wait(math.max(.15,tonumber(CONFIG.KILL_AURA.Interval) or .2))
+    end
+end)
 
 function PHX.golemClusterBurst(island, token)
     local golems = PHX.liveGolems()
@@ -6342,17 +6880,17 @@ function PHX.golemClusterBurst(island, token)
         if damaged then PHX.ClusterProgressAt = os.clock() noteProgress("GOLEM_DAMAGE:"..math.floor(total)) end
         PHX.eventStatus(roleText().." | GOLEM FIRST: "..#golems.." | HP "..math.floor(total), "GOLEM")
         equipTooltip("Melee")
-        PHX.netHitGolemCluster(golems)
+        PHX.killAuraDispatch(golems,"NET")
         if os.clock()-(PHX.ClusterProgressAt or os.clock()) >= CONFIG.GOLEM_AURA.STALL_SECONDS then
-            PHX.eventStatus("Golem stalled -> safe approach + one physical Melee fallback", "GOLEM_RECOVERY")
+            PHX.eventStatus("Golem stalled -> reposition + donor NET retry", "GOLEM_RECOVERY")
             local firstPart = golems[1] and (golems[1]:FindFirstChild("HumanoidRootPart") or golems[1]:FindFirstChild("Head"))
             local currentRoot = root()
             if firstPart and currentRoot and (currentRoot.Position-firstPart.Position).Magnitude > CONFIG.GOLEM_AURA.APPROACH_DISTANCE then
                 if not safeTween(CFrame.new(firstPart.Position+Vector3.new(0,CONFIG.GOLEM_AURA.HOVER_Y,0)),165,token) then return false end
             end
             if firstPart then aimAt(firstPart.Position) end
-            local tool = equipTooltip("Melee")
-            if tool then pcall(function() tool:Activate() end) end
+            PHX.killAuraDispatch(golems,"NET")
+            logLine("GOLEM_NET_RETRY", "TEAM | NET request sent; await HP delta")
             PHX.ClusterProgressAt = os.clock()
             task.wait(.2)
         end
@@ -6366,6 +6904,10 @@ PHX.SoloGolemProgress = setmetatable({}, {__mode="k"})
 function PHX.soloGolemRushBurst(island, token)
     local golems = PHX.liveGolems()
     if #golems == 0 then return true end
+    -- Bring before selecting/chasing a target, not only during TEAM bursts.
+    if CONFIG.GOLEM_AURA.BRING_ENABLED then
+        pcall(PHX.bringGolemCluster,island,golems)
+    end
 
     local settings = CONFIG.SOLO_GUARD
     local relic = relicPart(getRelic(island))
@@ -6419,6 +6961,10 @@ function PHX.soloGolemRushBurst(island, token)
         rr=root()
         gp=target:FindFirstChild("HumanoidRootPart") or target:FindFirstChild("Head")
         if not rr or not gp then break end
+        if CONFIG.GOLEM_AURA.BRING_ENABLED then
+            -- Shared throttle prevents this burst racing the SOLO guard worker.
+            PHX.bringGolemCluster(island,PHX.liveGolems())
+        end
         local holdCF=CFrame.new(gp.Position+Vector3.new(0,settings.GOLEM_HOVER_Y,0))
         if (gp.Position-rr.Position).Magnitude>CONFIG.GOLEM_AURA.NET_DISTANCE then break end
         if (rr.Position-holdCF.Position).Magnitude>36 then
@@ -6428,7 +6974,7 @@ function PHX.soloGolemRushBurst(island, token)
         equipTooltip("Melee")
         local hits={target}
         for _,other in ipairs(PHX.liveGolems()) do if other~=target then hits[#hits+1]=other end end
-        if PHX.netHitGolemCluster(hits) then attackSent+=1 end
+        if PHX.killAuraDispatch(hits,"NET") then attackSent+=1 end
         task.wait(settings.ATTACK_INTERVAL)
         local hp=th.Health
         if hp < last or hp < state.LastHP then
@@ -6445,13 +6991,10 @@ function PHX.soloGolemRushBurst(island, token)
             and os.clock()-state.LastFallbackAt>=settings.MELEE_FALLBACK_COOLDOWN then
             fallbackUsed=true
             state.LastFallbackAt=os.clock()
-            local tool=equipTooltip("Melee")
-            if tool then
-                aimAt(gp.Position)
-                pcall(function() tool:Activate() end)
-                logLine("SOLO_GUARD","V29_MELEE_STALL_FALLBACK | stalled="..
-                    string.format("%.1f",os.clock()-state.LastDamageAt).."s")
-            end
+            aimAt(gp.Position)
+            local sentNative=PHX.killAuraDispatch(hits,"NET")
+            logLine("SOLO_NET_RETRY","donor NET stall retry | sent="..tostring(sentNative).." | stalled="..
+                string.format("%.1f",os.clock()-state.LastDamageAt).."s")
         end
     end
     if PHX.stopFarmHover then PHX.stopFarmHover() end
@@ -6534,6 +7077,7 @@ function PHX.teamEventLoop(island, token)
 end
 
 PHX.SoloRelicGuardAudit = setmetatable({}, {__mode="k"})
+PHX.SoloAbsolutePriorityState = setmetatable({}, {__mode="k"})
 function PHX.soloDonorEventLoop(island, token)
     enableLavaProtection(island)
     local seenActive=false
@@ -6541,7 +7085,12 @@ function PHX.soloDonorEventLoop(island, token)
     local completed=false
     local ok,err=pcall(function()
         while isRunning(token) and island.Parent do
-            if PHX.PostRespawnStashPending then task.wait(.15); continue end
+            -- Keep Golem defense responsive even if a post-respawn Stash read
+            -- is still pending. The existing alive/respawn guard runs below.
+            if PHX.PostRespawnStashPending and #PHX.liveGolems()==0 then
+                task.wait(.15)
+                continue
+            end
             PHX.RaidHUDCache=nil
             local snapshot=PHX.eventSnapshot(island)
             if snapshot.Active then seenActive=true;missingSince=nil
@@ -6566,20 +7115,30 @@ function PHX.soloDonorEventLoop(island, token)
                 if not isRunning(token) or not island.Parent then break end
                 continue
             end
+            -- V2.17.03 strict SOLO scheduler: Golem > Rock, with NO pressure
+            -- override (even at critical pressure or when Golems are distant).
             local golems=PHX.liveGolems()
-            local nearest,threatDistance=PHX.soloRelicGolemThreat(island,golems)
-            local pressure=tonumber(snapshot.Pressure)
-            local rock,count=PHX.pickPressureRock(island,1)
-            local shouldWorkRock=PHX.soloPressurePriority(island,snapshot,threatDistance,rock)
-            local shouldGuard=(#golems>0) and not shouldWorkRock
-            if shouldGuard then
-                PHX.eventStatus("SOLO GUARD | Golems "..#golems.." | Nearest to Relic "..math.floor(threatDistance).." | HP "..math.floor(PHX.totalGolemHP(golems)),"GOLEM")
+            local golemPresent=#golems>0
+            if PHX.SoloAbsolutePriorityState[island] ~= golemPresent then
+                PHX.SoloAbsolutePriorityState[island]=golemPresent
+                logLine("SOLO_GOLEM_FIRST",golemPresent and
+                    ("ENGAGE | live="..tostring(#golems)) or "CLEAR | RESUME_PRESSURE")
+            end
+            if golemPresent then
+                local _,distance=PHX.soloRelicGolemThreat(island,golems)
+                PHX.eventStatus("SOLO GOLEM FIRST | Golems "..#golems..
+                    " | Relic distance "..math.floor(distance)..
+                    " | HP "..math.floor(PHX.totalGolemHP(golems)),"GOLEM")
                 PHX.soloGolemRushBurst(island,token)
-            elseif rock then
-                PHX.eventStatus("SOLO GUARD | PRESSURE "..tostring(pressure or "?").."% | Rocks "..count,"PRESSURE")
-                PHX.pressureRockBurst(rock,token,island)
             else
-                task.wait(.08)
+                local rock,count=PHX.pickPressureRock(island,1)
+                if rock then
+                    local pressure=tonumber(snapshot.Pressure)
+                    PHX.eventStatus("SOLO PRESSURE | "..tostring(pressure or "?").."% | Rocks "..count,"PRESSURE")
+                    PHX.pressureRockBurst(rock,token,island)
+                else
+                    task.wait(.08)
+                end
             end
         end
     end)
@@ -7907,13 +8466,12 @@ function PHX.startTreeHover(targetCF, token)
 end
 
 function PHX.treeSkillsNoViewLock(token)
-    local keys={Enum.KeyCode.X,Enum.KeyCode.C,Enum.KeyCode.V,Enum.KeyCode.F}
     for index,tooltip in ipairs({"Melee","Blox Fruit"}) do
         if not isRunning(token) then return false end
         if equipTooltip(tooltip) then
             task.wait(.12)
             for _=1,2 do
-                for _,key in ipairs(keys) do
+                for _,key in ipairs(skillKeysForTooltip(tooltip)) do
                     if not isRunning(token) or not hum() or hum().Health<=0 then return false end
                     pressKey(key,.10)
                     task.wait(.16)
@@ -7932,8 +8490,9 @@ local function farmTreeQuest(token)
     if not started or started == -math.huge then started=os.clock() end
     while isRunning(token) and not PHX.questCompleteSince(started) do
         if not waitAlive(token) then return false end
-        local hover=CONFIG.TREES[i]*CFrame.new(0,10,0)
-        setStatus("QUEST TREE | saved point "..i.."/"..#CONFIG.TREES.." | Melee XCVF + Fruit XCVF")
+        -- The three saved CFrames are safe standing positions; use their exact coordinates.
+        local hover=CONFIG.TREES[i]
+        setStatus("QUEST TREE | saved point "..i.."/"..#CONFIG.TREES.." | Melee XC + Fruit ZCVF")
         if not safeTween(hover,180,token) then return false end
         local stopHover=PHX.startTreeHover(hover,token)
         local ok,result=xpcall(function()
@@ -11280,6 +11839,8 @@ function PHX.buildUI()
     end
     local function sourceLabel(source)
         if not source or source == "UNAVAILABLE" or source == "UNKNOWN" then return "CHƯA XÁC NHẬN" end
+        if tostring(source):find("DIRECT_CACHE_NO_RECORD", 1, true) then return "0 / CHƯA REPLICATE" end
+        if tostring(source):find("DIRECT_CACHE", 1, true) then return "CACHE LIVE" end
         if tostring(source):find("STASH", 1, true) then return "STASH CACHE" end
         if tostring(source):find("REMOTE", 1, true) then return "SERVER CACHE" end
         if tostring(source):find("CRAFT", 1, true) then return "CRAFT CACHE" end
@@ -11342,7 +11903,7 @@ function PHX.buildUI()
     }, U.Root))
     make("Frame", {BackgroundColor3 = C.Cyan, BackgroundTransparency = 0.55, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1)}, header)
     U.Brand = text(header, "VOLCANO TEAM", 15, C.Text, UDim2.fromOffset(14, 8), UDim2.fromOffset(163, 22), Enum.Font.GothamBold)
-    U.Version = text(header, "V2.16.22  /  TEAM + SOLO", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
+    U.Version = text(header, "V2.17.10 / NET + BRING", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
     U.StatePill = text(header, "READY", 10, C.Cyan, UDim2.new(1, -129, 0, 8), UDim2.fromOffset(78, 21), Enum.Font.GothamBold)
     U.StatePill.BackgroundTransparency = 0
     U.StatePill.BackgroundColor3 = C.Raised
@@ -11369,7 +11930,7 @@ function PHX.buildUI()
     U.PageTitle = text(U.Root, "Tổng quan", 19, C.Text, UDim2.fromOffset(183, 59), UDim2.new(1, -199, 0, 25), Enum.Font.GothamBold)
     U.PageSubtitle = text(U.Root, "Trạng thái thuyền, vật liệu và sự kiện", 10, C.Muted, UDim2.fromOffset(183, 85), UDim2.new(1, -199, 0, 16))
     U.SearchResult = text(U.Sidebar, "", 9, C.Muted, UDim2.new(0, 12, 1, -87), UDim2.new(1, -24, 0, 22))
-    U.SidebarFooter = text(U.Sidebar, "V2.16.22\n" .. tostring(LP.Name), 10, C.Muted, UDim2.new(0, 12, 1, -58), UDim2.new(1, -24, 0, 43), Enum.Font.GothamMedium)
+    U.SidebarFooter = text(U.Sidebar, "V2.17.10\n" .. tostring(LP.Name), 10, C.Muted, UDim2.new(0, 12, 1, -58), UDim2.new(1, -24, 0, 43), Enum.Font.GothamMedium)
     local pageInfo = {
         LIVE = {Title = "Tổng quan", Subtitle = "Trạng thái thuyền, vật liệu và sự kiện"},
         CREW = {Title = "Đội / Master", Subtitle = "Chọn Master để làm Slave, hoặc bật role Master"},
@@ -11565,6 +12126,48 @@ function PHX.buildUI()
     toggle(switches, 31, "Nhật ký chẩn đoán", "Lưu trạng thái thật và lỗi vào log.", function() return CONFIG.DEBUG.ENABLED end, function(value) CONFIG.DEBUG.ENABLED = value end)
     toggle(switches, 83, "Tự phục hồi khi bị kẹt", "Giữ an toàn khi sự kiện Volcano đang chạy.", function() return CONFIG.DEBUG.WATCHDOG_RESTART end, function(value) CONFIG.DEBUG.WATCHDOG_RESTART = value end)
     toggle(switches, 135, "Trở về Tiki", "Trở về sau reward và kiểm tra Dragon storage.", function() return CONFIG.RESET_TO_TIKI_AFTER_EVENT end, function(value) CONFIG.RESET_TO_TIKI_AFTER_EVENT = value end)
+    local pxModules = card(settingsPage, 399, 1.5, "recovery net kill aura mode head root dragon hunter quest bring golem remove lava cache")
+    text(pxModules, "PX NET COMBAT / QUEST BRING / LAVA", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
+    toggle(pxModules, 30, "NET Kill Aura hỗ trợ farm", "Donor NET cho Scrap / Hunter Quest / Golem; không click vào Inventory.",
+        function() return CONFIG.KILL_AURA.Enabled end,
+        function(value) CONFIG.KILL_AURA.Enabled=value end)
+    toggle(pxModules, 81, "Kill Aura khi Auto OFF", "Donor NET bán kính 60; tự ngừng khi Auto Volcano chạy.",
+        function() return CONFIG.KILL_AURA.IdleEnabled end,
+        function(value) CONFIG.KILL_AURA.IdleEnabled=value end)
+    toggle(pxModules, 132, "Remove Lava tự động", "Chờ InteriorLava xuất hiện, thay đổi client; không đảm bảo chống damage server.",
+        function() return PHX.RemoveLava.Enabled end,
+        function(value) PHX.removeLavaSetEnabled(value) end)
+    toggle(pxModules, 183, "Bring Golem xa Fossil Relic", "TEAM + SOLO: đẩy Golem ra >=165 studs theo chiều ngang; client/network-owned only.",
+        function() return CONFIG.GOLEM_AURA.BRING_ENABLED end,
+        function(value) CONFIG.GOLEM_AURA.BRING_ENABLED=value==true end)
+    toggle(pxModules, 234, "Bring Dragon Hunter Quest", "Hydra/Venom: Bring gốc V2.16.38 + Kill Aura NET.",
+        function() return CONFIG.FARM_COMBAT.QuestBringEnabled end,
+        function(value) CONFIG.FARM_COMBAT.QuestBringEnabled=value==true end)
+    text(pxModules, "RECOVERY NET: Khớp test V1 / 35 studs / 0.30s; RPC không bảo đảm HP giảm.", 9, C.Cyan,
+        UDim2.fromOffset(11, 284), UDim2.new(1, -22, 0, 22))
+    text(pxModules, "Chọn đúng NET mode đã gây damage trong bản Recovery Test.", 10, C.Muted,
+        UDim2.fromOffset(11, 310), UDim2.new(1, -22, 0, 18))
+    local netModeButton = button(pxModules, "NET MODE · "..CONFIG.KILL_AURA.NetMode,
+        UDim2.fromOffset(11, 336), UDim2.new(1, -22, 0, 34), C.Raised)
+    local netModes={"NET_HEAD","NET_ROOT","NET_HEAD_0"}
+    PHX.connect(netModeButton.Activated, function()
+        if U.PassThrough then return end
+        local current=CONFIG.KILL_AURA.NetMode
+        local index=1
+        for i,name in ipairs(netModes) do if name==current then index=i;break end end
+        local nextMode=netModes[index%#netModes+1]
+        local ok,chosen=PHX.setRecoveryNetMode(nextMode)
+        if ok then netModeButton.Text="NET MODE · "..chosen end
+        if U.notice then U.notice(ok and ("Recovery NET: "..chosen) or tostring(chosen),ok) end
+    end)
+    local boatNoclipCard = card(settingsPage, 169, 1.75, "thuyền boat noclip xuyên vật cản collision lái tàu manual auto fast buy")
+    text(boatNoclipCard, "BOAT NOCLIP / FAST BUY", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
+    toggle(boatNoclipCard, 31, "Boat + Player Noclip", "Luôn bật khi ngồi Grand Brigade (lái/hành khách); tắt collision local cả thuyền và nhân vật, rời ghế tự khôi phục.",
+        function() return CONFIG.BOAT_NOCLIP.Enabled end,
+        function(value) return PHX.setBoatNoclipEnabled(value) end)
+    toggle(boatNoclipCard, 83, "FAST DIRECT BUY BOAT", "Thử BuyBoat RPC ngay; chỉ đến Boat Dealer nếu server từ chối và xác minh chưa trừ tiền.",
+        function() return CONFIG.BOAT_FAST_BUY.Enabled end,
+        function(value) CONFIG.BOAT_FAST_BUY.Enabled=value==true; return true end)
     local fruitCard = card(settingsPage, 347, 2, "trái cây fruit random auto store dragon kitsune leopard discord V6 prepare roll")
     text(fruitCard, "DIRECT RANDOM / AUTO STORE", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
     U.FruitToggle = toggle(fruitCard, 31, "Auto Random Fruit", "V6 Direct Gacha; tự mua khi đủ cooldown và tự nhớ lần tới.", function() return CONFIG.FRUIT_AUTO.Enabled == true end, function(value)
@@ -11678,11 +12281,11 @@ function PHX.buildUI()
     text(diagnostics, "PHIÊN CHẠY / KIỂM TRA VẬT LIỆU", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
     U.Health = text(diagnostics, "", 10, C.Text, UDim2.fromOffset(11, 31), UDim2.new(1, -22, 0, 35))
     U.LogPath = text(diagnostics, "Log: " .. tostring(NIGHT.LogPath), 9, C.Muted, UDim2.fromOffset(11, 70), UDim2.new(1, -22, 0, 29), Enum.Font.Code)
-    U.Sync = button(diagnostics, "KIỂM TRA TÚI ĐỒ · KHI ĐÃ DỪNG", UDim2.fromOffset(11, 107), UDim2.new(1, -22, 0, 29), C.CyanSoft)
-    text(diagnostics, "Kiểm tra thủ công khi đã dừng Auto Volcano.", 10, C.Muted, UDim2.fromOffset(11, 140), UDim2.new(1, -22, 0, 32))
+    U.Sync = button(diagnostics, "QUÉT CACHE ITEM NGAY", UDim2.fromOffset(11, 107), UDim2.new(1, -22, 0, 29), C.CyanSoft)
+    text(diagnostics, "Auto scan mỗi 3 giây · không cần mở Stash.", 10, C.Muted, UDim2.fromOffset(11, 140), UDim2.new(1, -22, 0, 32))
     PHX.connect(U.Sync.Activated, function()
         if U.PassThrough or U.SyncBusy then return end
-        if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy then U.notice("Tắt Auto Volcano trước khi kiểm tra Stash thủ công.", false); return end
+        -- A direct cache read does not require stopping Auto Volcano.
         if os.clock() - U.LastSyncAt < 5 then return end
         U.SyncBusy = true
         U.LastSyncAt = os.clock()
@@ -11691,7 +12294,7 @@ function PHX.buildUI()
             local ok, count, reason = pcall(PHX.checkMagnetFromStash, true)
             if not PHX.generationAlive() or not U.Screen.Parent then return end
             U.SyncBusy = false
-            U.notice(ok and count ~= nil and ("Stash confirmed · Magnet " .. number(count)) or ("Stash chưa xác nhận: " .. tostring(ok and reason or count)), ok and count ~= nil)
+            U.notice(ok and count ~= nil and ("Cache read · Magnet " .. number(count)) or ("Cache chưa sẵn sàng: " .. tostring(ok and reason or count)), ok and count ~= nil)
             U.updateControls()
             U.updateCounters()
         end)
@@ -12032,13 +12635,15 @@ function PHX.buildUI()
         U.FooterText.Text = solo and "SOLO · TỰ LÁI THUYỀN VÀ ĐÁNH · KHÔNG CẦN CHỌN ROLE" or (U.Narrow and (running and "MASTER + ÍT NHẤT 3 SLAVE TRÊN THUYỀN" or "CHỌN MASTER → SLAVE · BẬT MASTER → MASTER") or (running and "MASTER GIỮ GHẾ LÁI · ÍT NHẤT 3 SLAVE NGỒI GHẾ PHỤ" or "CHỌN MASTER ĐỂ LÀM SLAVE · BẬT ADD ROLE MASTER ĐỂ LÀM MASTER"))
         local editable = not running and not U.PassThrough and not U.SyncBusy
         U.MasterBox.TextEditable = editable
-        for _, control in ipairs({U.ApplyMaster, U.Sync, U.PlayerMenu}) do
+        for _, control in ipairs({U.ApplyMaster, U.PlayerMenu}) do
             control.Active = editable
             pcall(function() control.Interactable = editable end)
             control.TextColor3 = editable and C.Cyan or C.Muted
             control.BackgroundColor3 = editable and C.CyanSoft or C.Raised
         end
-        U.Sync.Text = U.SyncBusy and "STASH · ĐANG KIỂM TRA..." or (running and "DỪNG AUTO ĐỂ KIỂM TRA STASH" or "KIỂM TRA TÚI ĐỒ · KHI ĐÃ DỪNG")
+        U.Sync.Text = U.SyncBusy and "CACHE · ĐANG QUÉT..." or "QUÉT CACHE ITEM NGAY"
+        U.Sync.Active = not U.PassThrough and not U.SyncBusy
+        pcall(function() U.Sync.Interactable = U.Sync.Active end)
         U.ApplyMaster.Text = running and "KHÓA" or "CHỌN"
         local master = ENV.TeamConfig.MasterName
         local role = PHX.localRole()
@@ -12192,8 +12797,8 @@ function PHX.buildUI()
         local queue=PHX.StashScanQueue
         if queue and not ENV.TeamConfig.IsRunning and not U.SyncBusy then
             if queue.StartupPending then
-                U.Phase.Text="STARTUP · TỰ KIỂM TRA STASH"
-                STATUS_LABEL.Text=tostring(PHX.Runtime.StartupStatus or "Execute đủ 7s sẽ kiểm tra Stash; tự thử lại nếu thông tin chưa đủ.")
+                U.Phase.Text="STARTUP · QUÉT CLIENT CACHE"
+                STATUS_LABEL.Text=tostring(PHX.Runtime.StartupStatus or "Đợi ItemReplicationService khởi tạo, sẽ tự quét lại.")
             elseif queue.StartupDone and not PHX.StashBaselineReady and PHX.StashLastError then
                 U.Phase.Text="STASH · ĐANG ĐỢI THỬ LẠI"
                 STATUS_LABEL.Text="Chưa đủ thông tin kho: "..tostring(PHX.StashLastError).."\nScript sẽ tự kiểm tra lại khi thao tác hiện tại kết thúc."
@@ -12250,3 +12855,5 @@ if PHX.generationAlive() then
     PHX.startUserConfigResume()
 end
 PHX.Runtime.Tasks[coroutine.running()] = nil
+
+-- V2.17.04: Strict NET combat and Dragon Hunter Bring integration.
