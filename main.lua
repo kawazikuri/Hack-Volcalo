@@ -1,3 +1,5 @@
+-- V2.17.20: Pressure Rock cast-after-approach, extended skill hold and diagnostics; preserves V2.17.19 Dragon Egg recovery.
+-- PX PREHISTORIC V2.17.17 | TEAM: MASTER/BOAT may sail without Magnet; SLAVES must craft/verify Magnet before boarding.
 -- PX PREHISTORIC V2.17.16 | Golem-only local Humanoid.Health=0 (EXPERIMENT, server kill UNVERIFIED).
 -- Forest Pirate, Dragon Hunter, idle NPC combat retain V2.17.15 Recovery NET unchanged.
 -- The client can hide a Golem without removing it from the SERVER or protecting Fossil Relic.
@@ -291,7 +293,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.12\nLoading automation..."
+BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.20\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -308,10 +310,12 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.12\nLoaded core, building UI..."
+BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.20\nLoaded core, building UI..."
 
 local CONFIG = {
-    MIN_SLAVES_TO_SAIL = 3, -- Master + at least three live passenger Slaves.
+    MIN_SLAVES_TO_SAIL = 3, -- Team of 1 Master + up to 4 Slaves; require 3 VERIFIED/BOARDED passengers to sail.
+    -- V2.17.17: Master is driver and DOES NOT need a Volcanic Magnet; each Slave needs one before boarding.
+    -- The Master cannot inspect other players' private Stash: the gate runs on each Slave's own client.
     TEAM_TRUSTED_SLAVES = {},
     WEBHOOK_USER_ID = "", -- Discord user ID; receive Dragon East/West mentions.
     PROTECT_HELD_DRAGON = true, -- A reset always requires confirmed Dragon storage.
@@ -368,7 +372,7 @@ local CONFIG = {
         CRITICAL_GOLEM_RADIUS = 130,  -- still used in stalled-Golem target ordering
         STALL_PRIORITY_PENALTY = 65, -- de-prioritize a stalled distant target, not a close one
         PRESSURE_SKILL_GAP = 0.045,  -- shorter time between pressure skills in SOLO only
-        PRESSURE_BURST_SECONDS = 1.10,
+        PRESSURE_BURST_SECONDS = 2.40, -- V2.17.20: timer starts AFTER arriving at Rock; enough time for Fruit ZCVF + Melee XC; Golem still preempts each key
         BURST_SECONDS = 0.78,         -- re-evaluate risk more frequently
         ATTACK_INTERVAL = 0.09, -- V2.9 donor stable remote cadence
         MELEE_FALLBACK_AFTER = 3.5, -- V2.9 donor: wait for sustained HP stall across bursts
@@ -457,14 +461,14 @@ local CONFIG = {
         DOUBLE_EMERGENCY = 88,
     },
     PRESSURE = {
-        SKILL_HOLD = 0.03,
+        SKILL_HOLD = 0.10, -- V2.17.20: slightly longer key press for more reliable skill input
         SKILL_GAP = 0.09,
         ROCK_HOVER_Y = 10,
         ASSIST_AT = 8,          -- when no golem, slaves help almost immediately
         EMERGENCY_AT = 42,
         RELIC_ASSIST_AT = 98,
         RELIC_EMERGENCY_AT = 92,
-        MAX_BURST_SECONDS = 1.65,
+        MAX_BURST_SECONDS = 2.60, -- V2.17.20: count only time spent casting after approaching Rock
     },
 
     GOLEM_AURA = {
@@ -1207,6 +1211,11 @@ function PHX.invalidatePreRespawnBoats(newCharacter)
         (PHX.Runtime.AutomationMode or CONFIG.AUTOMATION_MODE)=="SOLO") then return end
 
     PHX.BoatRespawnEpoch=(PHX.BoatRespawnEpoch or 0)+1
+    -- V2.17.18: a replaced boat starts a NEW outward voyage. Never inherit an
+    -- offshore/possibly inverted heading from a prior character or boat.
+    PHX.SeaHeading=nil
+    PHX.SeaHeadingBoat=nil
+    logLine("BOAT_HEADING_RESET","CHARACTER_RESPAWN epoch="..PHX.BoatRespawnEpoch)
     PHX.BoatRebuyPending=true
     PHX.BoatPurchaseInFlight=false
     PHX.BoatPurchasePending=nil -- old character cannot claim a late-arriving pre-respawn boat
@@ -3555,6 +3564,7 @@ end
 
 function PHX.invalidateMagnetCache()
     PHX.SeaHeading=nil
+    PHX.SeaHeadingBoat=nil
     PHX.MagnetCache.RefreshNeeded=false
 end
 
@@ -5587,6 +5597,40 @@ local function findPrehistoric()
 end
 
 PHX.BoatStallAttempts=PHX.BoatStallAttempts or setmetatable({}, {__mode="k"})
+
+-- V2.17.18 BOAT HEADING FIX
+-- A direction recalculated from the boat's *current offshore position* back to
+-- the Sea-6 center reverses after passing that center. A cached opposite vector
+-- can then survive respawns because the Lua runtime remains alive.
+-- All voyages MUST use the same Tiki->Sea6 outward compass bearing, regardless
+-- of where the boat currently is. The direction is not tied to the boat pivot.
+local function expectedOutwardSeaHeading()
+    local tiki=CONFIG.BOAT_DEALER_CFRAME.Position
+    local sea=CONFIG.SEA6_CENTER
+    local delta=Vector3.new(sea.X-tiki.X,0,sea.Z-tiki.Z)
+    return delta.Magnitude>=1 and delta.Unit or Vector3.new(-1,0,0)
+end
+
+function PHX.ensureSeaHeading(boat,reason)
+    local expected=expectedOutwardSeaHeading()
+    local old=PHX.SeaHeading
+    local valid=typeof(old)=="Vector3" and old.Magnitude>0.95
+    local dot=valid and old.Unit:Dot(expected) or -2
+    if PHX.SeaHeadingBoat~=boat or not valid or dot<0.999 then
+        local changedBoat=PHX.SeaHeadingBoat~=boat
+        local isReverse=valid and dot<0
+        local tag=isReverse and "BOAT_HEADING_REVERSE_FIXED" or
+            (valid and dot<0.999 and "BOAT_HEADING_CORRECTED" or "BOAT_HEADING_INIT")
+        logLine(tag,"reason="..tostring(reason or "UNKNOWN")..
+            " newBoat="..tostring(changedBoat)..
+            " old="..tostring(old).." dot="..string.format("%.3f",dot)..
+            " direction="..tostring(expected).." source=TIKI_TO_SEA6_STABLE")
+        PHX.SeaHeading=expected
+        PHX.SeaHeadingBoat=boat
+    end
+    return PHX.SeaHeading
+end
+
 local function boatFlyTo(boat,targetPos,token)
     if PHX.isMovementLocked() then return false end
     if not isMaster() or not PHX.boatAlive(boat) then return false end
@@ -5596,6 +5640,9 @@ local function boatFlyTo(boat,targetPos,token)
         PHX.BoatState="NO_DRIVER";return false
     end
     PHX.TravelState.Boat=boat
+    -- Capture outward heading for this whole segment; never reverse when boat
+    -- passes Sea6 or when transient state is cleared in an asynchronous callback.
+    local segmentHeading=PHX.ensureSeaHeading(boat,"SEGMENT_START")
     PHX.TravelState.BoatMoving=true
     PHX.enableBoatNoclip(boat)
     PHX.TravelState.BoatMoving=true
@@ -5616,8 +5663,7 @@ local function boatFlyTo(boat,targetPos,token)
         previousAt=now
         local current=boat:GetPivot().Position
         local diff=Vector3.new(targetPos.X-current.X,0,targetPos.Z-current.Z)
-        local heading=PHX.SeaHeading
-        if not heading or heading.Magnitude<.01 then heading=diff.Magnitude>.01 and diff.Unit or Vector3.new(-1,0,0) end
+        local heading=segmentHeading
         local remaining=diff:Dot(heading)
         if remaining<=4 then arrived=true;noteProgress("SAILED:"..math.floor(current.X)..":"..math.floor(current.Z));break end
         if now-lastSampleAt>=3 then
@@ -5654,6 +5700,7 @@ local function boatFlyTo(boat,targetPos,token)
             if attempts>=2 then
                 PHX.RejectedBoats[boat]=true
                 PHX.SeaHeading=nil
+                PHX.SeaHeadingBoat=nil
                 PHX.BoatState="REBUY_AFTER_STALL"
                 PHX.NextBoatBuyAt=os.clock()+4
                 logLine("BOAT_RECOVERY","Rejected stalled boat after "..attempts.." failed segments")
@@ -5667,16 +5714,7 @@ end
 
 local function searchSeaUntilIsland(boat,token)
     if not isMaster() or not PHX.boatAlive(boat) then return nil end
-    if not PHX.SeaHeading then
-        local start=boat:GetPivot().Position
-        local direction=Vector3.new(CONFIG.SEA6_CENTER.X-start.X,0,CONFIG.SEA6_CENTER.Z-start.Z)
-        if direction.Magnitude<1 then
-            local look=boat:GetPivot().LookVector
-            direction=Vector3.new(look.X,0,look.Z)
-        end
-        if direction.Magnitude<.01 then direction=Vector3.new(-1,0,0) end
-        PHX.SeaHeading=direction.Unit
-    end
+    PHX.ensureSeaHeading(boat,"SEA_SEARCH_START")
     local distanceSailed=0
     while PHX.travelAlive(token) and PHX.boatAlive(boat) do
         PHX.refreshCrew(boat)
@@ -5711,6 +5749,7 @@ local function searchSeaUntilIsland(boat,token)
         local label=PHX.isSoloAutomation and PHX.isSoloAutomation() and "SOLO" or "MASTER"
         setStatus(label..": Sea6 STRAIGHT | sailed "..math.floor(distanceSailed).." | aboard "..countTeamAboard(boat))
         local position=boat:GetPivot().Position
+        PHX.ensureSeaHeading(boat,"SEA_NEXT_SEGMENT")
         local target=position+PHX.SeaHeading*3000
         target=Vector3.new(target.X,CONFIG.SEA6_CENTER.Y,target.Z)
         local result=boatFlyTo(boat,target,token)
@@ -5897,9 +5936,43 @@ function PHX.raidResetBlockReason()
     return nil
 end
 
-function PHX.raidFinishAfterHudLoss(missingSince)
-    if not missingSince or os.clock()-missingSince<12 then return false end
+-- V2.17.19: Eggs with a real Collect prompt are stronger post-raid evidence than
+-- an outdated HUD/timer cache. This ONLY advances to reward collection; all
+-- reset/Dragon inventory guards still apply normally.
+PHX.EggPromptStageLogged = PHX.EggPromptStageLogged or setmetatable({}, {__mode="k"})
+function PHX.eggRewardPromptReady(island)
+    local core = island and island:FindFirstChild("Core")
+    local folder = core and core:FindFirstChild("SpawnedDragonEggs")
+    if not folder then return false,0 end
+    local count=0
+    for _,egg in ipairs(folder:GetChildren()) do
+        if egg.Parent then
+            count+=1
+            local prompt=egg:FindFirstChildWhichIsA("ProximityPrompt",true)
+            if prompt and prompt.Enabled then return true,count end
+        end
+    end
+    return false,count
+end
+function PHX.raidFinishAfterHudLoss(missingSince,island)
+    if not missingSince then return false end
+    local elapsed=os.clock()-missingSince
     if PHX.readRaidHUD(true).Active then return false end
+    -- Never assume an egg is assigned to the local player merely because one
+    -- is visible; the existing original roster/slot checks still decide that.
+    local eggPromptReady,eggCount=PHX.eggRewardPromptReady(island)
+    if eggPromptReady and elapsed>=2.0 then
+        if island and not PHX.EggPromptStageLogged[island] then
+            PHX.EggPromptStageLogged[island]=true
+            local timer,left=PHX.raidTimerStillRunning()
+            logLine("EGG_STAGE_READY", "eggPrompt=true count="..eggCount..
+                " hudMissing="..string.format("%.1fs",elapsed)..
+                " cachedTimerActive="..tostring(timer).." remaining="..tostring(left)..
+                " | reward ONLY, no auto-reset approval")
+        end
+        return true
+    end
+    if elapsed<12 then return false end
     if PHX.raidTimerStillRunning() then return false end
     return true
 end
@@ -6521,53 +6594,138 @@ local function soloGuardApproach(position,hoverY,token,baseSpeed,tag,island)
     return true
 end
 
+-- V2.17.20: The previous burst deadline started BEFORE safeTween/soloGuardApproach.
+-- A long approach could consume the entire 1.10s SOLO budget and issue 0 skill keys.
+-- Approach first, confirm arrival, THEN begin the skill budget. The key logs
+-- indicate client input requests only; they are not proof the rock was damaged.
 function PHX.pressureRockBurst(target, token, island)
-    if not target or not target.model or not target.part then return false end
+    if not target or not target.model or not target.part or not target.model.Parent then return false end
     local solo=PHX.isSoloAutomation and PHX.isSoloAutomation()
-    local deadline = os.clock() + (solo and CONFIG.SOLO_GUARD.PRESSURE_BURST_SECONDS or CONFIG.PRESSURE.MAX_BURST_SECONDS)
-    while isRunning(token) and target.model.Parent and rockActive(target.model) and os.clock() < deadline do
-        if pressureWorkShouldYield(island) then return false end
-        if island and not PHX.eventActive(island) then return false end
-        local p, rp = target.part.Position, root()
-        if not rp then return false end
-        local hoverHeight=solo and CONFIG.SOLO_GUARD.ROCK_SAFE_HOVER_Y or CONFIG.PRESSURE.ROCK_HOVER_Y
-        local hover = CFrame.new(p + Vector3.new(0, hoverHeight, 0))
-        if solo then
-            if not soloGuardApproach(p, hoverHeight,token,CONFIG.SOLO_PRESSURE_TWEEN_SPEED or 260,"ROCK",island) then
-                -- New Golem preemption is a priority switch, NOT an unsafe rock.
-                if pressureWorkShouldYield(island) then return false end
-                soloRockUnsafe(target, "Rock approach refused or HP dropped")
-                return false
-            end
-        elseif (rp.Position-hover.Position).Magnitude>14 and not safeTween(hover,165,token) then
+    local rockModel=target.model
+    local rockPart=target.part
+    if not isRunning(token) or not rockActive(rockModel) then return false end
+    if pressureWorkShouldYield(island) then return false end
+    if island and not PHX.eventActive(island) then return false end
+
+    local approachStarted=os.clock()
+    local rockPosition=rockPart.Position
+    local rr=root()
+    if not rr then return false end
+    local hoverHeight=solo and CONFIG.SOLO_GUARD.ROCK_SAFE_HOVER_Y or CONFIG.PRESSURE.ROCK_HOVER_Y
+    local hover=CFrame.new(rockPosition + Vector3.new(0,hoverHeight,0))
+    if solo then
+        if not soloGuardApproach(rockPosition,hoverHeight,token,
+            CONFIG.SOLO_PRESSURE_TWEEN_SPEED or 260,"ROCK",island) then
+            if pressureWorkShouldYield(island) then return false end
+            soloRockUnsafe(target,"Rock approach refused or HP dropped")
+            logLine("ROCK_APPROACH_FAILED","mode=SOLO rock="..tostring(rockModel.Name))
             return false
         end
-        local postMoveHum=hum()
-        local hpAtRock=postMoveHum and postMoveHum.Health or 0
-        if solo and hpAtRock <= 0 then soloRockUnsafe(target,"Dead at Pressure Rock");return false end
-        if solo then aimAt(p) end -- V2.9 donor pressure aim
-        local order=solo and {"Blox Fruit","Melee"} or {"Melee","Blox Fruit"}
+    elseif (rr.Position-hover.Position).Magnitude>14 then
+        if not safeTween(hover,165,token) then
+            logLine("ROCK_APPROACH_FAILED","mode=TEAM rock="..tostring(rockModel.Name))
+            return false
+        end
+    end
+
+    if not isRunning(token) or not rockModel.Parent or not rockActive(rockModel) then return false end
+    if pressureWorkShouldYield(island) or (island and not PHX.eventActive(island)) then return false end
+    rr=root()
+    local distance=rr and (rr.Position-hover.Position).Magnitude or math.huge
+    if distance>18 then
+        logLine("ROCK_APPROACH_FAILED",string.format("arrived=false dist=%.1f rock=%s",
+            distance,tostring(rockModel.Name)))
+        return false
+    end
+    local postMoveHum=hum()
+    local hpAtRock=postMoveHum and postMoveHum.Health or 0
+    if not postMoveHum or hpAtRock<=0 then
+        if solo then soloRockUnsafe(target,"Dead at Pressure Rock") end
+        return false
+    end
+    if solo then aimAt(rockPosition) end
+
+    -- Only NOW start the burst timer. Travel duration is diagnostic, not cast budget.
+    local burstSeconds=solo and CONFIG.SOLO_GUARD.PRESSURE_BURST_SECONDS or CONFIG.PRESSURE.MAX_BURST_SECONDS
+    local burstStarted=os.clock()
+    local deadline=burstStarted+math.max(.5,tonumber(burstSeconds) or 2.4)
+    local castRequests,castErrors,equips,passes=0,0,0,0
+    logLine("ROCK_ARRIVED",string.format("mode=%s rock=%s travel=%.2fs dist=%.1f budget=%.2fs hold=%.2fs",
+        solo and "SOLO" or "TEAM",tostring(rockModel.Name),os.clock()-approachStarted,
+        distance,burstSeconds,CONFIG.PRESSURE.SKILL_HOLD))
+
+    local function mayCast()
+        return isRunning(token) and rockModel.Parent~=nil and rockActive(rockModel)
+            and (not island or PHX.eventActive(island)) and not pressureWorkShouldYield(island)
+    end
+    local order=solo and {"Blox Fruit","Melee"} or {"Melee","Blox Fruit"}
+    while mayCast() and os.clock()<deadline do
+        passes+=1
+        local castThisPass=0
         for _,tooltip in ipairs(order) do
+            if not mayCast() then break end
+            if os.clock()>=deadline then break end
             local tool=equipTooltip(tooltip)
+            logLine("ROCK_EQUIP",string.format("pass=%d tooltip=%s ready=%s tool=%s",
+                passes,tooltip,tostring(tool~=nil),tostring(tool and tool.Name or "NONE")))
             if tool then
+                equips+=1
                 for _,key in ipairs(skillKeysForTooltip(tooltip)) do
+                    if not mayCast() then break end
                     if os.clock()>=deadline then break end
-                    if not isRunning(token) or not target.model.Parent or not rockActive(target.model) or pressureWorkShouldYield(island) then return false end
-                    aimAt(p)
-                    pressKey(key, CONFIG.PRESSURE.SKILL_HOLD)
-                    task.wait(solo and CONFIG.SOLO_GUARD.PRESSURE_SKILL_GAP or CONFIG.PRESSURE.SKILL_GAP)
+                    local curRoot=root()
+                    if not curRoot or (curRoot.Position-hover.Position).Magnitude>23 then
+                        logLine("ROCK_CAST_ABORT","LEFT_ROCK_HOVER; retry approach on next burst")
+                        return false
+                    end
+                    if tool.Parent~=char() or not hum() or hum().Health<=0 then
+                        logLine("ROCK_CAST_ABORT","TOOL_NOT_EQUIPPED: "..tostring(tooltip))
+                        break
+                    end
+                    aimAt(rockPosition)
+                    -- Preserve key-release even if an executor raises during input.
+                    local success,err=pcall(pressKey,key,CONFIG.PRESSURE.SKILL_HOLD)
+                    if not success then
+                        castErrors+=1
+                        pcall(function() PHX.keyEvent(false,key,false,game) end)
+                    else
+                        castRequests+=1
+                        castThisPass+=1
+                    end
+                    logLine("ROCK_CAST_"..key.Name,string.format("weapon=%s request=%s error=%s pass=%d (damage unverified)",
+                        tooltip,tostring(success),tostring(err),passes))
+                    if not success then break end
                     if solo then
                         local currentHum=hum()
-                        if not currentHum or currentHum.Health < hpAtRock - 0.5 then
-                            soloRockUnsafe(target,"HP fell during rock skills: "..tostring(hpAtRock).."->"..tostring(currentHum and currentHum.Health))
+                        if not currentHum or currentHum.Health<hpAtRock-0.5 then
+                            soloRockUnsafe(target,"HP fell during rock skills: "..tostring(hpAtRock).."->"..
+                                tostring(currentHum and currentHum.Health))
+                            logLine("ROCK_CAST_ABORT","SOLO_HP_DROPPED")
                             return false
                         end
                     end
+                    -- Recheck the Golem priority before the next skill.
+                    if not mayCast() then break end
+                    task.wait(solo and CONFIG.SOLO_GUARD.PRESSURE_SKILL_GAP or CONFIG.PRESSURE.SKILL_GAP)
                 end
             end
         end
+        -- Don't spin on missing weapons, blocked casts or a full cooldown.
+        if castThisPass==0 then break end
+        if not mayCast() then break end
+        if os.clock()>=deadline then break end
+        task.wait(.05)
     end
-    if not target.model.Parent or not rockActive(target.model) then noteProgress("PRESSURE_ROCK_FIXED") return true end
+    logLine("ROCK_BURST_END",string.format("rock=%s casts=%d inputErrors=%d equips=%d passes=%d elapsed=%.2fs rockActive=%s",
+        tostring(rockModel.Name),castRequests,castErrors,equips,passes,
+        os.clock()-burstStarted,tostring(rockModel.Parent~=nil and rockActive(rockModel))))
+    if castRequests==0 then
+        logLine("ROCK_NO_CAST","No skill input was sent: check ROCK_EQUIP / ROCK_CAST_ABORT / executor keyboard support")
+    end
+    if not rockModel.Parent or not rockActive(rockModel) then
+        noteProgress("PRESSURE_ROCK_FIXED")
+        return true
+    end
     return false
 end
 
@@ -7188,7 +7346,7 @@ function PHX.teamEventLoop(island, token)
             if PHX.PostRespawnStashPending then task.wait(.15); continue end
             local snapshot = PHX.eventSnapshot(island)
             if snapshot.Active then sawActive = true missingSince = nil else missingSince = missingSince or os.clock() end
-            if sawActive and PHX.raidFinishAfterHudLoss(missingSince) then
+            if sawActive and PHX.raidFinishAfterHudLoss(missingSince,island) then
                 completed = true
                 PHX.EventFinishedIslands[island] = true
                 break
@@ -7250,7 +7408,7 @@ function PHX.soloDonorEventLoop(island, token)
             local snapshot=PHX.eventSnapshot(island)
             if snapshot.Active then seenActive=true;missingSince=nil
             else missingSince=missingSince or os.clock() end
-            if seenActive and PHX.raidFinishAfterHudLoss(missingSince) then
+            if seenActive and PHX.raidFinishAfterHudLoss(missingSince,island) then
                 completed=true
                 PHX.EventFinishedIslands[island]=true
                 break
@@ -7828,6 +7986,43 @@ function PHX.confirmEggPickup(before)
     return before ~= nil and after ~= nil and after > before, after
 end
 
+-- V2.17.19: observable, bounded fallback for a visible E / Collect prompt.
+-- All methods use the assigned original egg; no cross-slot grabbing or reset.
+local function eggHoldEKey(holdTime,token)
+    local pressed,reason=pcall(function() PHX.keyEvent(true,Enum.KeyCode.E,false,game) end)
+    if not pressed then
+        pcall(function() PHX.keyEvent(false,Enum.KeyCode.E,false,game) end)
+        return false,"E_KEY_DOWN_FAILED:"..tostring(reason)
+    end
+    local deadline=os.clock()+holdTime
+    while isRunning(token) and os.clock()<deadline do
+        task.wait(math.min(.05,math.max(.01,deadline-os.clock())))
+    end
+    local up,releaseError=pcall(function() PHX.keyEvent(false,Enum.KeyCode.E,false,game) end)
+    if not up then return false,"E_KEY_UP_FAILED:"..tostring(releaseError) end
+    return isRunning(token), isRunning(token) and "E_KEY_HOLD_COMPLETED" or "E_KEY_CANCELLED"
+end
+
+local function eggInputAttempt(egg,prompt,holdTime,token,attempt)
+    if not isRunning(token) then return false,"EGG_CANCELLED","NONE" end
+    if attempt==1 and prompt and prompt.Enabled then
+        local ok,why=PHX.holdInteraction(prompt,holdTime,token)
+        return ok,why,"PROMPT_HOLD"
+    elseif attempt==2 then
+        local ok,why=PHX.holdInteraction(egg,holdTime,token)
+        return ok,why,"EGG_UI_OR_PROMPT_HOLD"
+    else
+        local envFire=ENV and ENV.fireproximityprompt
+        local fire=type(envFire)=="function" and envFire or fireproximityprompt
+        if prompt and prompt.Enabled and type(fire)=="function" then
+            local ok,why=pcall(function() fire(prompt) end)
+            return ok,ok and "EXECUTOR_PROMPT_REQUESTED" or tostring(why),"FIRE_PROXIMITY_PROMPT"
+        end
+        local ok,why=eggHoldEKey(holdTime,token)
+        return ok,why,"E_KEY_HOLD"
+    end
+end
+
 function PHX.soloEggRank(eggs,progress)
     if progress.SoloEgg then
         for index,egg in ipairs(eggs) do if egg==progress.SoloEgg then return index end end
@@ -7941,12 +8136,21 @@ local function collectAssignedEgg(island, token)
                 return false
             end
             aimAt(part.Position)
-            PHX.EventState.Egg = "TOUCH HOLD "..attempt.."/"..CONFIG.EGG.RETRIES
-            setStatus("Dragon Egg slot "..rank..": mobile click/touch hold "..string.format("%.2fs",holdTime))
+            PHX.EventState.Egg = "COLLECT "..attempt.."/"..CONFIG.EGG.RETRIES
+            setStatus("Dragon Egg slot "..rank..": collecting (attempt "..attempt.."/"..CONFIG.EGG.RETRIES..")")
             attempted, pending.Attempted = true,true
-            if not PHX.holdInteraction(egg,holdTime,token) then return false end
+            local inputOk,inputReason,inputMode=eggInputAttempt(egg,prompt,holdTime,token,attempt)
+            logLine("EGG_INTERACT", "rank="..rank.." try="..attempt..
+                " mode="..tostring(inputMode).." sent="..tostring(inputOk)..
+                " why="..tostring(inputReason).." prompt="..tostring(prompt and prompt.Enabled)..
+                " dist="..tostring(root() and string.format("%.2f",(root().Position-part.Position).Magnitude) or "NO_ROOT"))
+            if not isRunning(token) then return false end
             task.wait(CONFIG.EGG.RETRY_GAP)
-            confirmed = PHX.confirmEggPickup(before)
+            local after
+            confirmed,after = PHX.confirmEggPickup(before)
+            logLine("EGG_VERIFY", "rank="..rank.." try="..attempt..
+                " before="..tostring(before).." after="..tostring(after)..
+                " confirmed="..tostring(confirmed))
             if confirmed then break end
         end
         if not confirmed and not pending.RemoteSent and egg.Parent and egg:IsDescendantOf(folder) and attempted and isRunning(token) then
@@ -9647,12 +9851,47 @@ local function recoverMagnet(token)
     return true
 end
 
+-- V2.17.17: SLAVE boarding eligibility is established locally, not guessed from Master's crew list.
+-- Keep the voyage proof while a genuine crew member travels / fights at Prehistoric; the event
+-- can consume a Magnet after departure, so NEVER demand the same Magnet during the raid.
+PHX.SlaveMagnetVoyage = nil
+function PHX.slaveMagnetVoyageValid(island)
+    local trip=PHX.SlaveMagnetVoyage
+    if type(trip)~="table" or not trip.Verified then return false end
+    if PHX.isSoloAutomation() or PHX.localRole()~="SLAVE" then return false end
+    if trip.MasterName and not PHX.sameName(trip.MasterName,ENV.TeamConfig.MasterName) then return false end
+    local h=hum()
+    local seat=h and h.SeatPart
+    if seat and trip.Boat and PHX.boatForSeat(seat)==trip.Boat then return true end
+    if island and island.Parent then
+        local rr=root()
+        local ok,pivot=pcall(function() return island:GetPivot() end)
+        if rr and ok and pivot and (rr.Position-pivot.Position).Magnitude<=1100 then return true end
+    end
+    return false
+end
+
 PHX.EventFinishedIslands = PHX.EventFinishedIslands or setmetatable({}, {__mode="k"})
 PHX.RewardProgress = PHX.RewardProgress or setmetatable({}, {__mode="k"})
 PHX.CompletedIslands = PHX.CompletedIslands or setmetatable({}, {__mode="k"})
 
 local function runPrehistoricEvent(island, token)
     if not island or not isRunning(token) then return false end
+    if PHX.automationMode()=="TEAM" and PHX.localRole()=="SLAVE" then
+        local hasMagnet=hasVolcanicMagnet()
+        if hasMagnet~=true and not PHX.slaveMagnetVoyageValid(island) then
+            PHX.TeamPhase=hasMagnet==false and "MAGNET_FARM" or "MAGNET_UNKNOWN"
+            logLine("TEAM_SLAVE_MAGNET_GATE", "EVENT_BLOCKED magnet="..tostring(hasMagnet)..
+                " no_verified_voyage=true | remain/farm; driver_magnet_not_required")
+            if hasMagnet==false then
+                recoverMagnet(token)
+            else
+                setStatus("SLAVE: Magnet chưa xác nhận; không tới Prehistoric, chờ Stash")
+                task.wait(.5)
+            end
+            return false
+        end
+    end
     if PHX.afkSoloEnabled() and os.clock() < (PHX.AFKRecoveryUntil or 0) then
         task.wait(math.min(1,(PHX.AFKRecoveryUntil or 0)-os.clock()))
         return false
@@ -9733,6 +9972,9 @@ local function runPrehistoricEvent(island, token)
         if not progress.Egg then
             PHX.EventState.Phase = "EGG"
             setStatus("Event ended -> assigned Dragon Egg first")
+            logLine("EGG_STAGE_ENTER", "role="..tostring(PHX.localRole())..
+                " mode="..tostring(PHX.automationMode())..
+                " promptReady="..tostring(PHX.eggRewardPromptReady(island)))
             local eggCompleted = collectAssignedEgg(island,token)
             if eggCompleted == true or PHX.EventState.Egg == "CONFIRMED" then
                 progress.Egg = true
@@ -9811,7 +10053,15 @@ local function runPrehistoricEvent(island, token)
     if resetBackToTiki and not resetBackToTiki(token) then return false end
     PHX.PendingDepartureIsland=nil
     PHX.ActiveEventCrewIsland=nil
+    if PHX.automationMode()=="TEAM" and PHX.localRole()=="SLAVE" then
+        PHX.SlaveMagnetVoyage=nil -- the next trip needs a newly verified Magnet
+        logLine("TEAM_SLAVE_MAGNET_GATE","POST_EVENT_VOYAGE_CLEARED; next departure requires Magnet")
+    end
     if not isRunning(token) then return false end
+    if PHX.automationMode()=="TEAM" and isMaster() then
+        logLine("TEAM_BOAT_MAGNET_BYPASS","POST_EVENT_RESET: driver may sail without Magnet")
+        return true
+    end
     local magnet = hasVolcanicMagnet()
     if magnet == false then return recoverMagnet(token) end
     return magnet == true
@@ -9836,6 +10086,17 @@ local function waitForMasterOnline(token)
 end
 
 function PHX.requireMagnet(pre,token)
+    -- TEAM driver (BOAT/MASTER) can buy/drive/search with zero Magnet; SOLO remains unchanged.
+    if PHX.automationMode()=="TEAM" and isMaster() then
+        if pre.Magnet~=true and PHX.LastBoatMagnetNote~=tostring(pre.Magnet) then
+            PHX.LastBoatMagnetNote=tostring(pre.Magnet)
+            logLine("TEAM_BOAT_MAGNET_BYPASS","MASTER_DRIVER magnet="..tostring(pre.Magnet).." -> SAIL_ALLOWED")
+        end
+        return true
+    end
+    -- A Slave who boarded with verified Magnet must not abandon the event if the item is consumed.
+    if PHX.automationMode()=="TEAM" and PHX.localRole()=="SLAVE"
+        and PHX.slaveMagnetVoyageValid(pre and pre.Island) then return true end
     if pre.Magnet==nil then
         setStatus("Magnet UNKNOWN: authoritative Stash sync required; hunt paused")
         PHX.TeamPhase="MAGNET_UNKNOWN"
@@ -9920,7 +10181,7 @@ local function masterCycle(token)
                 end
             end
         end
-        setStatus("MASTER: aboard "..aboard.."; need driver + "..(tonumber(CONFIG.MIN_SLAVES_TO_SAIL) or 3).." passengers")
+        setStatus("MASTER: Magnet optional for driver | aboard "..aboard.."; need driver + "..(tonumber(CONFIG.MIN_SLAVES_TO_SAIL) or 3).." Magnet-ready Slaves")
         PHX.stopBoat(boat)
         task.wait(.5)
     end
@@ -9933,12 +10194,20 @@ end
 local function slaveCycle(token)
     local pre=scanTeamPreflight(token)
     if pre.Interrupted then return end
+    -- Old voyages are not valid when the Slave is back at Tiki and off the boat.
+    local h=hum()
+    if PHX.SlaveMagnetVoyage and pre.Region=="TIKI" and not (h and h.SeatPart)
+        and not PHX.ActiveEventCrewIsland and not PHX.PendingDepartureIsland then
+        PHX.SlaveMagnetVoyage=nil
+        logLine("TEAM_SLAVE_MAGNET_GATE","TIKI_FOOT: cleared previous trip proof")
+    end
+    -- ALWAYS farm a missing Magnet before waiting on Master or attempting to board.
+    if not PHX.requireMagnet(pre,token) then return end
     if pre.Island then runPrehistoricEvent(pre.Island,token); return end
     if not pre.MasterOnline then
         PHX.TeamPhase="WAIT_MASTER"
         if not waitForMasterOnline(token) then return end
     end
-    if not PHX.requireMagnet(pre,token) then return end
     local boat=getMasterBoat()
     while PHX.travelAlive(token) and not boat do
         PHX.TeamPhase="WAIT_MASTER"; PHX.BoatState="WAIT_MASTER_BOAT"
@@ -9970,11 +10239,22 @@ local function slaveCycle(token)
             return
         end
     end
+    if not PHX.slaveMagnetVoyageValid(nil) then
+        local ready=hasVolcanicMagnet()
+        if ready~=true then
+            PHX.TeamPhase=ready==false and "MAGNET_FARM" or "MAGNET_UNKNOWN"
+            logLine("TEAM_SLAVE_MAGNET_GATE","BOARD_BLOCKED magnet="..tostring(ready).."; must verify Magnet before seat")
+            if ready==false then recoverMagnet(token) else setStatus("SLAVE: Magnet unknown; wait before boarding") end
+            return
+        end
+    end
     if not boardBoat(boat,token) then
         PHX.TeamPhase="RECOVERY"; PHX.BoatState="PASSENGER_SEAT_FAILED"
         setStatus("SLAVE passenger seat retry; keep Magnet cache")
         task.wait(.5); return
     end
+    PHX.SlaveMagnetVoyage={Verified=true,Boat=boat,MasterName=ENV.TeamConfig.MasterName,BoardedAt=os.clock()}
+    logLine("TEAM_SLAVE_MAGNET_GATE","BOARD_VERIFIED magnet_checked=true role=SLAVE boat="..boat.Name)
     PHX.TeamPhase="SAILING"; PHX.BoatState="PASSENGER_SEATED"
     while PHX.travelAlive(token) and PHX.boatAlive(boat) do
         PHX.refreshCrew(boat)
@@ -10166,6 +10446,7 @@ function PHX.setAutomationMode(mode)
     PHX.ActiveEventCrewIsland=nil
     PHX.ClusterIsland,PHX.ClusterAnchor=nil,nil
     PHX.SeaHeading=nil
+    PHX.SeaHeadingBoat=nil
     PHX.TeamPhase="READY"
     PHX.BoatState=mode=="SOLO" and "SOLO_READY" or "WAIT_MASTER"
     if PHX.saveUserConfig then PHX.saveUserConfig() end
@@ -10200,6 +10481,9 @@ function PHX.stopAutomation(reason)
         end
     end
     ENV.TeamConfig.IsRunning = false
+    PHX.SeaHeading=nil
+    PHX.SeaHeadingBoat=nil
+    logLine("BOAT_HEADING_RESET","AUTOMATION_STOP reason="..tostring(ENV.TeamConfig.StopReason))
     if PHX.restoreForestGolemBring then pcall(PHX.restoreForestGolemBring) end
     if PHX.restoreQuestFarmBring then pcall(PHX.restoreQuestFarmBring) end
     RUN_TOKEN = RUN_TOKEN + 1
