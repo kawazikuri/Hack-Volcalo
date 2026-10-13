@@ -9404,6 +9404,9 @@ function PHX.endDragonQuestPosition(owner)
     if not ctx or (owner and owner~=ctx) then return end
     state.Current=nil;ctx.Active=false
     if ctx.Connection then PHX.disconnect(ctx.Connection);PHX.Runtime.MovementConnections[ctx.Connection]=nil end
+    if ctx.CompletedConnection then
+        PHX.disconnect(ctx.CompletedConnection);PHX.Runtime.MovementConnections[ctx.CompletedConnection]=nil;ctx.CompletedConnection=nil
+    end
     if ctx.Tween then pcall(function() ctx.Tween:Cancel() end);PHX.Runtime.Tweens[ctx.Tween]=nil end
     for _,obj in ipairs(ctx.Objects) do pcall(function() obj:Destroy() end);PHX.Runtime.MovementObjects[obj]=nil end
     for part,value in pairs(ctx.Collisions) do
@@ -9478,14 +9481,29 @@ function PHX.moveDragonQuestPosition(ctx)
         local step=math.min(48,distance)
         local tween=TweenService:Create(ctx.Root,TweenInfo.new(math.max(step/speed,.04),Enum.EasingStyle.Linear),
             {CFrame=ctx.Root.CFrame:Lerp(target,step/distance)})
-        ctx.Tween=tween;PHX.Runtime.Tweens[tween]=true;tween:Play()
-        local untilTime=os.clock()+math.max(step/speed,.04)+.20
-        repeat
+        local finished,playbackState,nearArrival=false,nil,false
+        ctx.Tween=tween;PHX.Runtime.Tweens[tween]=true
+        ctx.CompletedConnection=PHX.connect(tween.Completed,function(state)
+            if ctx.Active and ctx.Tween==tween then finished=true;playbackState=state end
+        end)
+        PHX.Runtime.MovementConnections[ctx.CompletedConnection]=true
+        tween:Play()
+        while not finished do
             if not PHX.dragonQuestPositionAlive(ctx) then return false,"CONTEXT_CHANGED" end
-            if (target.Position-ctx.Root.Position).Magnitude<=3 then break end
+            if os.clock()>=deadline then return false,"APPROACH_TIMEOUT" end
+            if (target.Position-ctx.Root.Position).Magnitude<=3 then nearArrival=true;break end
             task.wait(.03)
-        until os.clock()>=untilTime
-        tween:Cancel();PHX.Runtime.Tweens[tween]=nil;ctx.Tween=nil
+        end
+        if not PHX.dragonQuestPositionAlive(ctx) then return false,"CONTEXT_CHANGED" end
+        PHX.disconnect(ctx.CompletedConnection);PHX.Runtime.MovementConnections[ctx.CompletedConnection]=nil
+        ctx.CompletedConnection=nil
+        PHX.Runtime.Tweens[tween]=nil;ctx.Tween=nil
+        if not finished then
+            pcall(function() tween:Cancel() end)
+            if not nearArrival then return false,"APPROACH_TIMEOUT" end
+        elseif playbackState~=Enum.PlaybackState.Completed then
+            return false,"TWEEN_CANCELLED"
+        end
     end
     if not PHX.dragonQuestPositionAlive(ctx) then return false,"CONTEXT_CHANGED" end
     ctx.Moving=false
@@ -9496,7 +9514,7 @@ function PHX.moveDragonQuestPosition(ctx)
     PHX.Runtime.MovementObjects[attachment]=true
     local hold=Instance.new("AlignPosition");ctx.Objects[#ctx.Objects+1]=hold
     hold.Name="PH_DragonQuestPosition";hold.Mode=Enum.PositionAlignmentMode.OneAttachment
-    hold.Attachment0=attachment;hold.Position=target.Position;hold.ApplyAtCenterOfMass=true
+    hold.Attachment0=attachment;hold.Position=ctx.Root.Position;hold.ApplyAtCenterOfMass=true
     hold.RigidityEnabled=false;hold.Responsiveness=35;hold.MaxVelocity=60;hold.MaxForce=1e6
     hold.Parent=ctx.Root;PHX.Runtime.MovementObjects[hold]=true
     ctx.Arrived=true
@@ -13411,7 +13429,7 @@ function PHX.buildUI()
     }, U.Root))
     make("Frame", {BackgroundColor3 = C.Cyan, BackgroundTransparency = 0.55, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1)}, header)
     U.Brand = text(header, "VOLCANO TEAM", 15, C.Text, UDim2.fromOffset(14, 8), UDim2.fromOffset(163, 22), Enum.Font.GothamBold)
-    U.Version = text(header, "V2.17.35 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
+    U.Version = text(header, "V2.17.36 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
     U.StatePill = text(header, "READY", 10, C.Cyan, UDim2.new(1, -129, 0, 8), UDim2.fromOffset(78, 21), Enum.Font.GothamBold)
     U.StatePill.BackgroundTransparency = 0
     U.StatePill.BackgroundColor3 = C.Raised
