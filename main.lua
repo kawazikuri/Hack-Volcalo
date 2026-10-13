@@ -1,4 +1,4 @@
-
+-- PX PREHISTORIC FULL MAIN V2.17.34 | UI: MANUAL FARM SCRAP / BLAZE | isolated runner.
 local SCRIPT_EXECUTED_AT = os.clock() 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -220,6 +220,9 @@ end
 
 function PHX.destroy()
     if not PHX.Runtime.Alive then return end
+    if PHX.ManualMaterialFarm and PHX.ManualMaterialFarm.Stop then
+        pcall(PHX.ManualMaterialFarm.Stop,"UNLOAD")
+    end
     if PHX.stopAutomation then PHX.stopAutomation("UNLOAD") end
     PHX.Runtime.Alive = false
     if ENV.PH_VOLCANO_GENERATION == SCRIPT_GENERATION then ENV.PH_VOLCANO_KILL = true end
@@ -986,8 +989,17 @@ local function setStatus(s)
     end
 end
 
+-- V2.17.34: A separate material-only token; never arm TeamConfig.IsRunning.
+-- This authorizes only the selected manual material worker, not Auto Volcano.
+PHX.ManualMaterialFarm={Active=false,Mode=nil,Token=nil,Worker=nil,Stopping=false,
+    Message="OFF",LastError=nil,StartedAt=nil,WaveCount=0}
 local function isRunning(token)
-    return PHX.generationAlive() and ENV.TeamConfig.IsRunning and token == RUN_TOKEN
+    if not PHX.generationAlive() then return false end
+    local manual=PHX.ManualMaterialFarm
+    if manual and manual.Active and token~=nil and token==manual.Token then
+        return ENV.TeamConfig.IsRunning~=true and PHX.Runtime.StartBusy~=true
+    end
+    return ENV.TeamConfig.IsRunning==true and token == RUN_TOKEN
 end
 
 function PHX.sameName(a, b)
@@ -4984,7 +4996,7 @@ function PHX.farmAdaptiveMobWave(name,camp,token,completed)
     return finished==true
 end
 
--- V2.17.32 material-only combat: uploaded V1.2 XZ rebring + OriginalY+5 + NET M1.
+-- V2.17.33 material-only combat: V1.2 XZ rebring + OriginalY+5 + NET M1; soft-pause conflict diagnostic.
 -- No calls to the shared Golem dispatcher/hover; no Prehistoric changes.
 -- MATERIAL FARM CORE BEGIN
 function PHX.newMaterialCombatWave(name,camp,token)
@@ -5000,7 +5012,8 @@ function PHX.newMaterialCombatWave(name,camp,token)
         TargetCount=0,NearCount=0,LocalStacked=0,OwnedTrue=0,OwnedFalse=0,OwnershipUnknown=0,
         BringErrors=0,TweenSegments=0,SimulationBoost="NOT_ATTEMPTED",LastError=nil,KeepHover=false,Context=nil,
         BringTracked=setmetatable({}, {__mode="k"}),Brought=0,RebringCount=0,BringMoves=0,
-        LastBringReason=nil,LastBringHorizontalDistance=nil,BodyColliders=0}
+        LastBringReason=nil,LastBringHorizontalDistance=nil,BodyColliders=0,
+        SoftPauseCount=0,SoftBusy=nil,LastSoftPauseReason=nil,LastNetReason=nil,LastEquipReason=nil}
     local K={}
 function K.Alive()
     return State.Alive and PHX.MaterialCombat.Current==K
@@ -5018,16 +5031,31 @@ end
 function K.ContextValid(context,tool)
     if not context or not K.Alive() or context.Generation~=State.Generation
         or context.Epoch~=CHARACTER_EPOCH or context.Token~=token or not isRunning(token) then return false end
+    -- Hard cancellation only: a true movement handoff, dead/changed actor, or stopped main.
+    -- V2.17.33: temporary inventory/fruit/GUI locks must NOT destroy the Material wave
+    -- from the Hover Stepped callback (which checks ContextValid every frame).
     local runtime=PHX.Runtime
-    if (PHX.isMovementLocked and PHX.isMovementLocked()) or (runtime and runtime.MovementLockLease)
-        or PHX.InventoryBusy or (runtime and (runtime.FruitGuiBusy or runtime.InteractionHold))
-        or (PHX.FruitAutoState and PHX.FruitAutoState.Busy)
-        or (DRAGON_GUARD_STATE and (DRAGON_GUARD_STATE.Busy or DRAGON_GUARD_STATE.Critical or DRAGON_GUARD_STATE.Pending)) then
+    if (PHX.isMovementLocked and PHX.isMovementLocked()) or (runtime and runtime.MovementLockLease) then
         return false
     end
     local current=K.Actor()
     return current and current.Character==context.Character and current.Humanoid==context.Humanoid
         and current.Root==context.Root and (not tool or (tool.Parent==current.Character and tool.Enabled~=false and K.IsMelee(tool))) or false
+end
+function K.TemporaryBusyReason()
+    -- Soft pause while another subsystem owns an interaction or inventory operation.
+    -- Do not destroy Hover / NPC backup / BringTracked; resume the wave when released.
+    local runtime=PHX.Runtime
+    if PHX.InventoryBusy then return "INVENTORY_RPC" end
+    if runtime and runtime.FruitGuiBusy then return "FRUIT_GUI" end
+    if runtime and runtime.InteractionHold then return "INTERACTION_HOLD" end
+    if PHX.FruitAutoState and PHX.FruitAutoState.Busy then return "FRUIT_SERVICE" end
+    if DRAGON_GUARD_STATE then
+        if DRAGON_GUARD_STATE.Critical then return "DRAGON_CRITICAL" end
+        if DRAGON_GUARD_STATE.Pending then return "DRAGON_PENDING" end
+        if DRAGON_GUARD_STATE.Busy then return "DRAGON_GUARD_BUSY" end
+    end
+    return nil
 end
 function K.NormalName(name)
     return string.lower(tostring(name or "")):gsub("<.->",""):gsub("%s+"," "):gsub("^%s+",""):gsub("%s+$","")
@@ -5450,6 +5478,8 @@ function K.AuraEnabled()
 end
 function K.Net(context,tool,targets)
     if not K.ContextValid(context,tool) then return false,"CONTEXT_CHANGED" end
+    local softBusy=K.TemporaryBusyReason()
+    if softBusy then return false,"SOFT_BUSY:"..softBusy end
     if not K.AuraEnabled() then return false,"KILL_AURA_OFF" end
     local modules=S.ReplicatedStorage:FindFirstChild("Modules")
     local net=modules and modules:FindFirstChild("Net")
@@ -5488,6 +5518,9 @@ function K.GetStatus()
         TargetCount=State.TargetCount,NearCount=State.NearCount,LocalStacked=State.LocalStacked,
         OwnedTrue=State.OwnedTrue,OwnedFalse=State.OwnedFalse,OwnershipUnknown=State.OwnershipUnknown,
         NetRequests=State.NetRequests,AttackRequests=State.AttackRequests,ObservedDamage=State.ObservedDamage,
+        SoftPauseCount=State.SoftPauseCount,SoftBusy=State.SoftBusy,
+        LastSoftPauseReason=State.LastSoftPauseReason,LastNetReason=State.LastNetReason,
+        LastEquipReason=State.LastEquipReason,
         LastDamageAt=State.LastDamageAt,TweenSegments=State.TweenSegments,SimulationBoost=State.SimulationBoost,
         BringErrors=State.BringErrors,LastError=State.LastError,
         BringMode="XZ_Y_OFFSET_ONCE_DISTANCE_REBRING",RebringDistance=Config.RebringDistance,BringYOffset=Config.BringYOffset,
@@ -5504,6 +5537,10 @@ function K.CanReuse(nextName,nextCamp,nextToken)
 end
 function K.KeepHover() return State.KeepHover==true end
 function K.Stop(reason)
+    if State.Alive and type(logLine)=="function" then
+        logLine("MATERIAL_STOP",string.format("%s | reason=%s phase=%s sent=%d hp=%.0f softPauses=%d",
+            name,tostring(reason),tostring(State.Phase),State.NetRequests,State.ObservedDamage,State.SoftPauseCount))
+    end
     State.Alive=false;State.Generation+=1;State.KeepHover=false;State.Message=reason or "STOPPED"
     K.Restore()
 end
@@ -5558,6 +5595,22 @@ function K.Run(completed)
                 State.Message="COMPLETED";return true
             end
             if not K.ContextValid(context) then return false end
+            -- V2.17.33: competing inventory/UI jobs only pause the combat *tick*.
+            -- A fleeting soft busy must not reset Hover, BringTracked or the whole wave.
+            local softBusy=K.TemporaryBusyReason()
+            if softBusy then
+                if State.SoftBusy~=softBusy then
+                    State.SoftBusy=softBusy;State.SoftPauseCount+=1
+                    State.LastSoftPauseReason=softBusy
+                    if type(logLine)=="function" then logLine("MATERIAL_SOFT_PAUSE",name.." | "..softBusy) end
+                end
+                State.Message="SOFT_PAUSE:"..softBusy
+                task.wait(math.max(.12,Config.Interval))
+                continue
+            elseif State.SoftBusy then
+                if type(logLine)=="function" then logLine("MATERIAL_SOFT_RESUME",name.." | "..State.SoftBusy) end
+                State.SoftBusy=nil
+            end
             targets=K.Gather(context,Config.ScanRadius,camp.Position)
             K.ObserveDamage(targets);State.TargetCount=#targets
             if #targets==0 then State.Message="PACK_CLEARED";State.KeepHover=true;return true end
@@ -5567,14 +5620,26 @@ function K.Run(completed)
             local nearby=K.Gather(context)
             State.NearCount=#nearby
             local tool,equipWhy=K.Equip(context)
-            if not tool then State.Message=equipWhy;return false end
+            if not tool then
+                -- Another controller may temporarily switch tools; retry without resetting NPCs.
+                State.Message="EQUIP_WAIT:"..tostring(equipWhy)
+                if State.LastEquipReason~=equipWhy and type(logLine)=="function" then
+                    logLine("MATERIAL_EQUIP_WAIT",name.." | "..tostring(equipWhy))
+                end
+                State.LastEquipReason=equipWhy
+                task.wait(math.max(.15,Config.Interval))
+                continue
+            end
+            State.LastEquipReason=nil
             local sent,sendWhy=K.Net(context,tool,nearby)
+            State.LastNetReason=sendWhy
             State.Message=sendWhy
-            if not K.ContextValid(context,tool) then return false end
+            -- Tool switches are recoverable; only hard actor/session changes retire the wave.
+            if not K.ContextValid(context) then return false end
             if os.clock()-lastDiag>=2.4 then
                 if type(logLine)=="function" then
-                    logLine("MATERIAL_HOVER_NET",string.format("%s | mobs=%d near=%d stacked=%d hitbox=90 sends=%d observedHP=%.0f hover=ALIGN_POSITION bring=XZ_ONCE_YPLUS5",
-                        name,State.TargetCount,State.NearCount,State.LocalStacked,State.NetRequests,State.ObservedDamage))
+                    logLine("MATERIAL_HOVER_NET",string.format("%s | mobs=%d near=%d stacked=%d hitbox=90 sends=%d observedHP=%.0f net=%s softPauses=%d hover=ALIGN_POSITION bring=XZ_ONCE_YPLUS5",
+                        name,State.TargetCount,State.NearCount,State.LocalStacked,State.NetRequests,State.ObservedDamage,tostring(sendWhy),State.SoftPauseCount))
                 end
                 lastDiag=os.clock()
             end
@@ -8421,7 +8486,8 @@ end
 
 function PHX.killAuraIdleStep()
     if not CONFIG.KILL_AURA.Enabled or not CONFIG.KILL_AURA.IdleEnabled then return end
-    if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy or PHX.isMovementLocked() then return end
+    if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy or PHX.isMovementLocked()
+        or (PHX.ManualMaterialFarm and (PHX.ManualMaterialFarm.Active or PHX.ManualMaterialFarm.Stopping)) then return end
     local targets=PHX.killAuraTargets(math.max(1,tonumber(CONFIG.KILL_AURA.Radius) or 60))
     PHX.KillAura.TargetCount=#targets
     PHX.killAuraObserve(targets)
@@ -10618,8 +10684,9 @@ function PHX.collectBlazeEmberDrops(token, seconds)
     return after > before
 end
 
-local function farmBlazeEmbers(token)
-    while isRunning(token) and inventoryCount("Blaze Ember", true) < 15 do
+local function farmBlazeEmbers(token,manualUnlimited)
+    -- Normal Volcano still stops at 15; dedicated manual button farms until OFF.
+    while isRunning(token) and (manualUnlimited==true or inventoryCount("Blaze Ember", true) < 15) do
         if not goHydra(token) then
             setStatus("Hydra portal failed - NOT flying across sea")
             task.wait(.35)
@@ -10961,6 +11028,110 @@ local function farmScrap(token)
     PHX.stopFarmHover()
     return false
 end
+
+-- V2.17.34 MANUAL MATERIAL UI WORKER BEGIN
+-- Independent token avoids starting the Team/Solo volcano state machine.
+-- Only one material mode may own movement/combat at a time.
+do
+    local M=PHX.ManualMaterialFarm
+    function M.IsBusy()
+        return M.Active or M.Stopping or M.Worker~=nil
+    end
+    function M.GetStatus()
+        return {Active=M.Active,Mode=M.Mode,Stopping=M.Stopping,Message=M.Message,
+            LastError=M.LastError,StartedAt=M.StartedAt,WaveCount=M.WaveCount,
+            Combat=PHX.MaterialCombat and PHX.MaterialCombat.GetStatus() or nil}
+    end
+    function M.Stop(reason)
+        if not M.IsBusy() then return true,"MATERIAL_ALREADY_OFF" end
+        if M.Stopping then return true,"MATERIAL_STOPPING" end
+        M.Active=false
+        M.Stopping=true
+        M.Message="STOPPING:"..tostring(reason or "USER_BUTTON")
+        logLine("MANUAL_MATERIAL_STOP",M.Message)
+        if PHX.MaterialCombat then PHX.MaterialCombat.Stop("MANUAL_STOP") end
+        -- Restore the travel/hover owned by this worker. Auto Volcano is blocked
+        -- until the old worker has exited (M.Worker==nil).
+        if PHX.restoreMovement then pcall(PHX.restoreMovement) end
+        return true,"Đang dừng farm vật liệu"
+    end
+    function M.Start(mode)
+        if mode~="SCRAP" and mode~="BLAZE" then return false,"INVALID_MATERIAL_MODE" end
+        if not PHX.generationAlive() then return false,"RUNTIME_STOPPED" end
+        if M.IsBusy() then return false,"Hãy tắt farm đang chạy, đợi STOP hoàn tất rồi bật chế độ khác" end
+        if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy then
+            return false,"Tắt Auto Volcano TEAM/SOLO trước khi farm riêng"
+        end
+        if DRAGON_GUARD_STATE and (DRAGON_GUARD_STATE.Critical or DRAGON_GUARD_STATE.Pending) then
+            return false,"DRAGON_GUARD_BUSY"
+        end
+        if (PHX.Runtime.MovementLockLease~=nil) or (PHX.isMovementLocked and PHX.isMovementLocked()) then
+            return false,"MOVEMENT_LOCKED"
+        end
+        if CONFIG.KILL_AURA and CONFIG.KILL_AURA.Enabled==false then
+            return false,"Bật NET Kill Aura hỗ trợ farm trong SETTINGS trước"
+        end
+        if PHX.MaterialCombat and PHX.MaterialCombat.Busy then
+            return false,"MATERIAL_COMBAT_PREVIOUS_WAVE_BUSY"
+        end
+        local character=LP.Character
+        local humanoid=character and character:FindFirstChildOfClass("Humanoid")
+        if not humanoid or humanoid.Health<=0 then return false,"CHARACTER_NOT_READY" end
+        if humanoid.SeatPart then return false,"Rời ghế thuyền trước khi farm" end
+        local token={} -- never collides with the numeric RUN_TOKEN
+        M.Active=true;M.Stopping=false;M.Token=token;M.Mode=mode
+        M.Message="STARTING_"..mode;M.LastError=nil;M.StartedAt=os.clock();M.WaveCount=0
+        logLine("MANUAL_MATERIAL_START",mode.." | independent token | Auto Volcano OFF")
+        M.Worker=PHX.spawn(function()
+            local ok,err=pcall(function()
+                if mode=="SCRAP" then
+                    while isRunning(token) do
+                        if getRegion()~="TURTLE" then
+                            M.Message="TRAVEL_TO_TURTLE"
+                            if not goTurtle(token) and isRunning(token) then
+                                M.Message="PORTAL_TURTLE_RETRY"
+                                task.wait(1)
+                            end
+                        else
+                            M.Message="FARM_SCRAP_FOREST_PIRATE"
+                            local finished=PHX.MaterialCombat.RunWave(
+                                "Forest Pirate",CONFIG.MOB_CAMPS.ForestPirate,token,
+                                function() return not isRunning(token) end)
+                            M.WaveCount+=1
+                            if not finished and isRunning(token) then
+                                M.Message="SCRAP_WAVE_RETRY"
+                            end
+                            task.wait(.35)
+                        end
+                    end
+                else
+                    M.Message="FARM_BLAZE_DRAGON_HUNTER"
+                    -- Existing Hunter quest flow (HYDRA/VENOM/TREE) and ember drops.
+                    farmBlazeEmbers(token,true)
+                end
+            end)
+            if M.Token==token then
+                M.Active=false;M.Stopping=true
+                if not ok then
+                    M.LastError=tostring(err);M.Message="ERROR:"..tostring(err)
+                    logLine("MANUAL_MATERIAL_ERROR",tostring(err))
+                elseif M.Message:sub(1,8)~="STOPPING" then
+                    M.Message="MANUAL_FARM_ENDED"
+                end
+                if PHX.MaterialCombat then PHX.MaterialCombat.Stop("MANUAL_EXIT") end
+                if PHX.restoreTravel then pcall(PHX.restoreTravel) end
+                M.Mode=nil;M.Token=nil;M.Worker=nil;M.Stopping=false
+                logLine("MANUAL_MATERIAL_EXIT",mode.." | "..tostring(M.Message))
+            end
+        end)
+        if not M.Worker then
+            M.Active=false;M.Mode=nil;M.Token=nil;M.Message="SPAWN_FAILED"
+            return false,"MATERIAL_WORKER_SPAWN_FAILED"
+        end
+        return true,"Đã bật farm "..(mode=="SCRAP" and "Scrap Metal" or "Blaze Ember").." · nhấn lại để dừng"
+    end
+end
+-- V2.17.34 MANUAL MATERIAL UI WORKER END
 
 function PHX.craftWindow()
     local craft=PG:FindFirstChild("Craft")
@@ -12206,6 +12377,9 @@ end
 
 function PHX.setAutomationMode(mode)
     if not PHX.generationAlive() then return false,"Runtime đã đóng" end
+    if PHX.ManualMaterialFarm and PHX.ManualMaterialFarm.IsBusy() then
+        return false,"Dừng FARM SCRAP / FARM BLAZE trước khi đổi mode Auto Volcano"
+    end
     mode=type(mode)=="string" and string.upper(mode) or ""
     if mode~="TEAM" and mode~="SOLO" then return false,"Mode phải là TEAM hoặc SOLO" end
     if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy then
@@ -12337,6 +12511,9 @@ end
 
 function PHX.startAutomation(masterName)
     if not PHX.generationAlive() then return false,"Runtime unloaded" end
+    if PHX.ManualMaterialFarm and PHX.ManualMaterialFarm.IsBusy() then
+        return false,"Dừng farm vật liệu thủ công trước khi bật Auto Volcano"
+    end
     if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy then return false,"Automation is already starting/running" end
     if PHX.Runtime.FruitGuiBusy or (PHX.FruitAutoState and PHX.FruitAutoState.Busy) then
         return false,"Đợi thao tác random / store hiện tại hoàn tất trước khi bật Auto Volcano"
@@ -14082,7 +14259,8 @@ function PHX.buildUI()
         U.Toggles[#U.Toggles + 1] = {Control = control, Read = read, RoleLock = roleLock == true, Stroke = control:FindFirstChildOfClass("UIStroke")}
         PHX.connect(control.Activated, function()
             if U.PassThrough then return end
-            if roleLock and (ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy or U.SyncBusy) then
+            if roleLock and (ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy or U.SyncBusy
+                or (PHX.ManualMaterialFarm and PHX.ManualMaterialFarm.IsBusy())) then
                 U.notice("Tắt Auto Volcano trước khi đổi role.", false)
                 return
             end
@@ -14124,7 +14302,7 @@ function PHX.buildUI()
     }, U.Root))
     make("Frame", {BackgroundColor3 = C.Cyan, BackgroundTransparency = 0.55, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1)}, header)
     U.Brand = text(header, "VOLCANO TEAM", 15, C.Text, UDim2.fromOffset(14, 8), UDim2.fromOffset(163, 22), Enum.Font.GothamBold)
-    U.Version = text(header, "V2.17.10 / NET + BRING", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
+    U.Version = text(header, "V2.17.34 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
     U.StatePill = text(header, "READY", 10, C.Cyan, UDim2.new(1, -129, 0, 8), UDim2.fromOffset(78, 21), Enum.Font.GothamBold)
     U.StatePill.BackgroundTransparency = 0
     U.StatePill.BackgroundColor3 = C.Raised
@@ -14257,6 +14435,34 @@ function PHX.buildUI()
     COUNTER_LABEL = text(resources, "", 8, C.Muted, UDim2.fromOffset(0, 0), UDim2.fromOffset(0, 0))
     COUNTER_LABEL.Visible = false
 
+    -- V2.17.34: two active material-farm buttons directly in MAIN > LIVE.
+    local manualMaterials = card(overview, 109, 2.5,
+        "farm scrap metal blaze ember forest pirate dragon hunter quest manual material")
+    text(manualMaterials, "FARM VẬT LIỆU · THỦ CÔNG", 10, C.Cyan,
+        UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 19), Enum.Font.GothamBold)
+    U.FarmScrapButton = button(manualMaterials, "▶ FARM SCRAP METAL",
+        UDim2.fromOffset(11, 30), UDim2.new(.5, -17, 0, 33), C.CyanSoft)
+    U.FarmBlazeButton = button(manualMaterials, "▶ FARM BLAZE EMBER",
+        UDim2.new(.5, 5, 0, 30), UDim2.new(.5, -17, 0, 33), C.LavenderSoft)
+    U.FarmScrapButton.TextSize=10;U.FarmBlazeButton.TextSize=10
+    U.FarmManualStatus = text(manualMaterials,
+        "OFF · Farm độc lập đến khi bấm dừng. Không chạy cùng Volcano.", 9, C.Muted,
+        UDim2.fromOffset(11, 69), UDim2.new(1, -22, 0, 35))
+    local function pressMaterial(mode)
+        if U.PassThrough then return end
+        local manual=PHX.ManualMaterialFarm
+        local ok,msg
+        if manual.Active and manual.Mode==mode then
+            ok,msg=manual.Stop("USER_BUTTON")
+        else
+            ok,msg=manual.Start(mode)
+        end
+        if U.notice then U.notice(msg,ok) end
+        if U.updateControls then U.updateControls() end
+    end
+    PHX.connect(U.FarmScrapButton.Activated,function() pressMaterial("SCRAP") end)
+    PHX.connect(U.FarmBlazeButton.Activated,function() pressMaterial("BLAZE") end)
+
     local journey = card(overview, 91, 3, "thuyền boat grand brigade hp sea telemetry")
     U.BoatTitle = text(journey, "GRAND BRIGADE", 10, C.Cyan, UDim2.fromOffset(11, 5), UDim2.new(0.65, -12, 0, 18), Enum.Font.GothamBold)
     U.BoatHP = text(journey, "HP -- / --", 11, C.Text, UDim2.new(0.65, 0, 0, 5), UDim2.new(0.35, -11, 0, 18), Enum.Font.GothamBold)
@@ -14336,7 +14542,8 @@ function PHX.buildUI()
         U.CrewLocalNote.Position = UDim2.fromOffset(11, U.PlayerMenuOpen and 354 or 202)
     end
     PHX.connect(U.PlayerMenu.Activated, function()
-        if U.PassThrough or ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy or U.SyncBusy then return end
+        if U.PassThrough or ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy or U.SyncBusy
+            or (PHX.ManualMaterialFarm and PHX.ManualMaterialFarm.IsBusy()) then return end
         U.setPlayerMenu(not U.PlayerMenuOpen)
         U.refreshPlayers()
         U.updateControls()
@@ -14866,23 +15073,43 @@ function PHX.buildUI()
     function U.updateControls()
         if U.PlayersDirty then U.refreshPlayers() end
         local running = ENV.TeamConfig.IsRunning == true or PHX.Runtime.StartBusy == true
+        local manual=PHX.ManualMaterialFarm
+        local materialBusy=manual and manual.IsBusy() or false
         local solo=PHX.isSoloAutomation()
         local critical = DRAGON_GUARD_STATE and DRAGON_GUARD_STATE.Critical == true
         for _,entry in ipairs({{Control=U.Primary,Mode="TEAM",Accent=C.Cyan,Surface=C.CyanSoft},{Control=U.SoloPrimary,Mode="SOLO",Accent=C.Lavender,Surface=C.LavenderSoft}}) do
             local active=running and (solo and "SOLO" or "TEAM")==entry.Mode
-            local available=not U.PassThrough and not U.SyncBusy and (not running or active)
+            local available=not U.PassThrough and not U.SyncBusy and not materialBusy and (not running or active)
             entry.Control.Text=active and ("■ "..entry.Mode.." · DỪNG") or ("AUTO VOLCANO · "..entry.Mode)
             entry.Control.Active=available
             pcall(function() entry.Control.Interactable=available end)
             entry.Control.BackgroundColor3=active and C.RedSoft or entry.Surface
             entry.Control.TextColor3=active and C.Red or (available and entry.Accent or C.Muted)
         end
+        -- Manual farm is a separate worker, never an Auto Volcano run.
+        for _,entry in ipairs({
+            {Control=U.FarmScrapButton,Mode="SCRAP",Label="SCRAP METAL",Surface=C.CyanSoft,Accent=C.Cyan},
+            {Control=U.FarmBlazeButton,Mode="BLAZE",Label="BLAZE EMBER",Surface=C.LavenderSoft,Accent=C.Lavender},
+        }) do
+            local active=manual and manual.Active and manual.Mode==entry.Mode
+            local enabled=not U.PassThrough and not U.SyncBusy
+                and (active or (not running and not materialBusy and not critical))
+            entry.Control.Active=enabled
+            pcall(function() entry.Control.Interactable=enabled end)
+            entry.Control.Text=active and ("■ DỪNG "..entry.Label) or ("▶ FARM "..entry.Label)
+            entry.Control.BackgroundColor3=active and C.RedSoft or entry.Surface
+            entry.Control.TextColor3=active and C.Red or (enabled and entry.Accent or C.Muted)
+        end
+        U.FarmManualStatus.Text=materialBusy
+            and ("Manual farm: "..tostring(manual.Mode or "STOPPING").." · "..tostring(manual.Message or "")
+                .." · waves="..tostring(manual.WaveCount or 0))
+            or "OFF · Farm đến khi nhấn dừng. Không chạy cùng Volcano."
         U.ModeTitle.Text="AUTO VOLCANO · "..(solo and "SOLO · 1 TÀI KHOẢN" or "TEAM · MASTER + SLAVE")
-        U.StatePill.Text = critical and "CRITICAL" or (running and "RUNNING" or string.upper(PHX.Runtime.RunState or "READY"))
+        U.StatePill.Text = critical and "CRITICAL" or (running and "RUNNING" or (materialBusy and "FARMING" or string.upper(PHX.Runtime.RunState or "READY")))
         U.StatePill.TextColor3 = critical and C.Red or (running and C.Cyan or C.Lavender)
-        U.Dock.Text = running and "VOLCANO · ĐANG BẬT" or "VOLCANO · MỞ UI"
+        U.Dock.Text = running and "VOLCANO · ĐANG BẬT" or (materialBusy and "MATERIAL · FARM" or "VOLCANO · MỞ UI")
         U.FooterText.Text = solo and "SOLO · TỰ LÁI THUYỀN VÀ ĐÁNH · KHÔNG CẦN CHỌN ROLE" or (U.Narrow and (running and "MASTER + ÍT NHẤT 3 SLAVE TRÊN THUYỀN" or "CHỌN MASTER → SLAVE · BẬT MASTER → MASTER") or (running and "MASTER GIỮ GHẾ LÁI · ÍT NHẤT 3 SLAVE NGỒI GHẾ PHỤ" or "CHỌN MASTER ĐỂ LÀM SLAVE · BẬT ADD ROLE MASTER ĐỂ LÀM MASTER"))
-        local editable = not running and not U.PassThrough and not U.SyncBusy
+        local editable = not running and not materialBusy and not U.PassThrough and not U.SyncBusy
         U.MasterBox.TextEditable = editable
         for _, control in ipairs({U.ApplyMaster, U.PlayerMenu}) do
             control.Active = editable
@@ -15044,7 +15271,8 @@ function PHX.buildUI()
         U.Recovery.Text = reason and ("RECOVERY / ERROR · " .. tostring(reason)) or ("RECOVERY · " .. recovery .. " · " .. number(NIGHT.RecoveryCount) .. " lần")
         U.Recovery.TextColor3 = snapshot.Error and C.Red or C.Muted
         local queue=PHX.StashScanQueue
-        if queue and not ENV.TeamConfig.IsRunning and not U.SyncBusy then
+        if queue and not ENV.TeamConfig.IsRunning and not U.SyncBusy
+            and not (PHX.ManualMaterialFarm and PHX.ManualMaterialFarm.IsBusy()) then
             if queue.StartupPending then
                 U.Phase.Text="STARTUP · QUÉT CLIENT CACHE"
                 STATUS_LABEL.Text=tostring(PHX.Runtime.StartupStatus or "Đợi ItemReplicationService khởi tạo, sẽ tự quét lại.")
