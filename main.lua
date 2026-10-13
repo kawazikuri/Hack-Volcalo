@@ -1,5 +1,4 @@
--- PX PREHISTORIC FULL MAIN V2.17.34 | UI: MANUAL FARM SCRAP / BLAZE | isolated runner.
-local SCRIPT_EXECUTED_AT = os.clock() 
+local SCRIPT_EXECUTED_AT = os.clock()
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -9,11 +8,9 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local HttpService = game:GetService("HttpService")
 local CoreGui = game:GetService("CoreGui")
 local Lighting = game:GetService("Lighting")
-
 local LP = Players.LocalPlayer
 local PG = LP:WaitForChild("PlayerGui")
-local PHX = {} 
-
+local PHX = {}
 local ENV = (getgenv and getgenv()) or _G
 if ENV.__PH_GACHA_ACCOUNT and ENV.__PH_GACHA_ACCOUNT~=LP.UserId then
     ENV.__PH_DIRECT_GACHA_LAST_SENT=0
@@ -21,20 +18,18 @@ if ENV.__PH_GACHA_ACCOUNT and ENV.__PH_GACHA_ACCOUNT~=LP.UserId then
     ENV.__PH_GACHA_GLOBAL_PURCHASE_BUSY=false
 end
 ENV.__PH_GACHA_ACCOUNT=LP.UserId
--- Retire standalone donor/recovery tests before their workers compete with main.
 for _,key in ipairs({"__PH_REMOVE_LAVA_TEST","__PH_KILL_AURA_TEST","__PX_KILL_AURA_RECOVERY_TEST_V1","__PH_TWEEN_BRING_FAST_ATTACK","__PH_KILL_AURA_NET","__PH_MAGNET_REMOTE_CRAFT"}) do
     local donor=ENV[key]
     if type(donor)=="table" and type(donor.Stop)=="function" then
         pcall(donor.Stop,"INTEGRATED_MAIN")
     end
 end
--- Remove old standalone stash GUI; its auto loop stops when its ScreenGui is destroyed.
 for _,name in ipairs({"PX_STASH_TRACKER_V2","PX_STASH_TRACKER_V3","PX_STASH_TRACKER_V4"}) do
     local old=PG:FindFirstChild(name)
     if old then pcall(function() old:Destroy() end) end
 end
 if type(ENV.BF_AutoStore_Stop)=="function" then pcall(ENV.BF_AutoStore_Stop) end
-if type(ENV.PXGachaV6Cleanup)=="function" then pcall(ENV.PXGachaV6Cleanup) end -- Retire old standalone UI
+if type(ENV.PXGachaV6Cleanup)=="function" then pcall(ENV.PXGachaV6Cleanup) end
 if ENV.PH_FULL_SOLO_GENERATION~=nil then
     ENV.PH_FULL_SOLO_KILL=true
     ENV.PH_FULL_SOLO_GENERATION=(tonumber(ENV.PH_FULL_SOLO_GENERATION) or 0)+1
@@ -46,24 +41,20 @@ function PHX.generationAlive()
     return PHX.Runtime ~= nil and PHX.Runtime.Alive
         and not ENV.PH_VOLCANO_KILL and ENV.PH_VOLCANO_GENERATION == SCRIPT_GENERATION
 end
-
 PHX.Runtime = {
     Alive = true, RunState = "Ready", ExecutedAt = SCRIPT_EXECUTED_AT, Connections = {}, Tasks = {}, Tweens = {},
     UiReady = false, MarinesReady = false,
     LockOwners = {}, MovementLockLease = nil,
     HeldKeys = {}, HeldPointers = {}, HeldMouse = {}, Activity = {}, MovementObjects = {}, MovementConnections = {}, CollisionOverrides = setmetatable({}, {__mode="k"}),
 }
--- Shared movement ownership gate, visible to every travel/hover/fruit controller.
--- Kept on PHX, not a local to avoid crossing Luau main chunk local limits.
 function PHX.isMovementLocked()
     return PHX.Runtime~=nil and PHX.Runtime.MovementLockLease~=nil
 end
-
 function PHX.releaseBoatMovementLock(lease, reason)
     local runtime=PHX.Runtime
     local active=runtime and runtime.MovementLockLease
     if not active or (lease and active~=lease) then return false end
-    runtime.MovementLockLease=nil  -- release ownership first; cleanup may yield through signals
+    runtime.MovementLockLease=nil
     if active.Heartbeat then pcall(function() active.Heartbeat:Disconnect() end);runtime.Connections[active.Heartbeat]=nil end
     if active.ActionName then pcall(function() ContextActionService:UnbindAction(active.ActionName) end) end
     if active.Humanoid and active.Humanoid.Parent and active.Character==LP.Character then
@@ -79,13 +70,11 @@ function PHX.releaseBoatMovementLock(lease, reason)
     print("[PX V2.16.38] [MOVEMENT_UNLOCKED] "..active.ReleaseReason)
     return true
 end
-
 if type(ENV.PHX_PreviousRuntime) == "table" and type(ENV.PHX_PreviousRuntime.destroy) == "function" then
     pcall(ENV.PHX_PreviousRuntime.destroy)
 end
 ENV.PHX_PreviousRuntime = PHX
-PHX.Runtime.Tasks[coroutine.running()] = true -- cancel a superseded startup even while it yields
-
+PHX.Runtime.Tasks[coroutine.running()] = true
 function PHX.acquireLock(container, key, name)
     if container[key] then return nil end
     local lock = {Container=container, Key=key, Name=name, Owner=coroutine.running()}
@@ -93,14 +82,12 @@ function PHX.acquireLock(container, key, name)
     container[key] = true
     return lock
 end
-
 function PHX.releaseLock(lock)
     if not lock or PHX.Runtime.LockOwners[lock.Name] ~= lock then return false end
     PHX.Runtime.LockOwners[lock.Name] = nil
     lock.Container[lock.Key] = false
     return true
 end
-
 function PHX.ownsStartPreparation()
     local runtime=PHX.Runtime
     local owner=runtime and runtime.LockOwners and runtime.LockOwners.StartBusy
@@ -108,14 +95,12 @@ function PHX.ownsStartPreparation()
         and owner.Container==runtime and owner.Key=="StartBusy" and owner.Name=="StartBusy"
         and owner.Owner==coroutine.running() and runtime.StartThread==owner.Owner or false
 end
-
 function PHX.releaseRunnerLocks(thread)
     if not thread then return end
     for _,lock in pairs(PHX.Runtime.LockOwners) do
         if lock.Owner == thread then PHX.releaseLock(lock) end
     end
 end
-
 function PHX.connect(signal, callback)
     local connection = signal:Connect(function(...)
         if not PHX.generationAlive() then return end
@@ -128,7 +113,6 @@ function PHX.connect(signal, callback)
     PHX.Runtime.Connections[connection] = true
     return connection
 end
-
 function PHX.disconnect(connection)
     if connection then
         pcall(function() connection:Disconnect() end)
@@ -136,7 +120,6 @@ function PHX.disconnect(connection)
         PHX.Runtime.MovementConnections[connection] = nil
     end
 end
-
 function PHX.spawn(callback, ...)
     if not PHX.generationAlive() then return nil end
     local thread = task.spawn(function(...)
@@ -148,7 +131,6 @@ function PHX.spawn(callback, ...)
     if coroutine.status(thread) ~= "dead" then PHX.Runtime.Tasks[thread] = true end
     return thread
 end
-
 function PHX.defer(callback, ...)
     if not PHX.generationAlive() then return nil end
     local thread = task.defer(function(...)
@@ -160,7 +142,6 @@ function PHX.defer(callback, ...)
     PHX.Runtime.Tasks[thread] = true
     return thread
 end
-
 function PHX.isOwnGui(obj)
     local node = obj
     while node and node ~= PG do
@@ -169,7 +150,6 @@ function PHX.isOwnGui(obj)
     end
     return false
 end
-
 function PHX.gameGuiDescendants(base)
     local out = {}
     for _,obj in ipairs((base or PG):GetDescendants()) do
@@ -177,15 +157,12 @@ function PHX.gameGuiDescendants(base)
     end
     return out
 end
-
 function PHX.restoreMovement()
     if PHX.releaseBoatMovementLock then pcall(PHX.releaseBoatMovementLock,nil,"RUNTIME_CLEANUP") end
     if PHX.Runtime.FruitApproachCleanup then pcall(PHX.Runtime.FruitApproachCleanup) end
     if PHX.stopBoat then pcall(PHX.stopBoat) end
     if PHX.restoreTravel then pcall(PHX.restoreTravel) end
     if PHX.restoreGolemChanges then pcall(PHX.restoreGolemChanges) end
-    -- Remove Lava must NOT be stopped by routine movement restoration.
-    -- restoreMovement is also called by Auto OFF and TEAM/SOLO mode switches.
     if PHX.killAuraRelease then pcall(PHX.killAuraRelease) end
     if PHX.releaseSkillTouch then pcall(PHX.releaseSkillTouch) end
     for pointer in pairs(PHX.Runtime.HeldPointers or {}) do pcall(pointer.release) end
@@ -217,7 +194,6 @@ function PHX.restoreMovement()
     end
     PHX.Runtime.CollisionOverrides = setmetatable({}, {__mode="k"})
 end
-
 function PHX.destroy()
     if not PHX.Runtime.Alive then return end
     if PHX.ManualMaterialFarm and PHX.ManualMaterialFarm.Stop then
@@ -227,7 +203,6 @@ function PHX.destroy()
     PHX.Runtime.Alive = false
     if ENV.PH_VOLCANO_GENERATION == SCRIPT_GENERATION then ENV.PH_VOLCANO_KILL = true end
     PHX.restoreMovement()
-    -- Only full script unload is allowed to retire the independent Lava scanner.
     if PHX.removeLavaStop then pcall(PHX.removeLavaStop) end
     for connection in pairs(PHX.Runtime.Connections) do pcall(function() connection:Disconnect() end) end
     local current = coroutine.running()
@@ -241,7 +216,6 @@ function PHX.destroy()
     end
     if ENV.PHX_PreviousRuntime == PHX then ENV.PHX_PreviousRuntime = nil end
 end
-
 function PHX.keyEvent(down, key, repeated, target)
     if down and not PHX.generationAlive() then return end
     PHX.Runtime.HeldKeys[key] = down and true or nil
@@ -252,18 +226,15 @@ function PHX.mouseEvent(x, y, button, down, target, layer)
     PHX.Runtime.HeldMouse[button] = down and {X=x,Y=y,Target=target or game,Layer=layer or 0} or nil
     return VirtualInputManager:SendMouseButtonEvent(x,y,button,down,target or game,layer or 0)
 end
-
 PHX.spawn(function()
     while PHX.Runtime.Alive do
         task.wait(.1)
         if not PHX.generationAlive() then PHX.destroy(); return end
     end
 end)
-
 local BOOT_GUI_NAME = "PrehistoricTeamBoot"
 local oldBoot = PG:FindFirstChild(BOOT_GUI_NAME)
 if oldBoot then oldBoot:Destroy() end
-
 local BOOT_GUI = Instance.new("ScreenGui")
 BOOT_GUI.Name = BOOT_GUI_NAME
 BOOT_GUI.ResetOnSpawn = false
@@ -271,7 +242,6 @@ BOOT_GUI.IgnoreGuiInset = false
 BOOT_GUI.DisplayOrder = 999999
 BOOT_GUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 BOOT_GUI.Parent = PG
-
 local BOOT_LABEL = Instance.new("TextLabel")
 BOOT_LABEL.Parent = BOOT_GUI
 BOOT_LABEL.Size = UDim2.fromOffset(330, 54)
@@ -284,41 +254,34 @@ BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
 BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.27\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
-
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
 if not PHX.generationAlive() then return end
 if not remotes then
     BOOT_LABEL.Text = "PREHISTORIC V2 ERROR\nReplicatedStorage.Remotes not found"
     return
 end
-
 local CommF = remotes:WaitForChild("CommF_", 20)
 if not PHX.generationAlive() then return end
 if not CommF then
     BOOT_LABEL.Text = "PREHISTORIC V2 ERROR\nCommF_ not found"
     return
 end
-
 BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.22\nLoaded core, building UI..."
-
 local CONFIG = {
-    MIN_SLAVES_TO_SAIL = 3, -- Team of 1 Master + up to 4 Slaves; require 3 VERIFIED/BOARDED passengers to sail.
-    -- V2.17.17: Master is driver and DOES NOT need a Volcanic Magnet; each Slave needs one before boarding.
-    -- The Master cannot inspect other players' private Stash: the gate runs on each Slave's own client.
+    MIN_SLAVES_TO_SAIL = 3,
     TEAM_TRUSTED_SLAVES = {},
-    WEBHOOK_USER_ID = "", -- Discord user ID; receive Dragon East/West mentions.
-    PROTECT_HELD_DRAGON = true, -- A reset always requires confirmed Dragon storage.
+    WEBHOOK_USER_ID = "",
+    PROTECT_HELD_DRAGON = true,
     FRUIT_AUTO = {Enabled=false, AutoStore=true, AutoApproachNPC=false, LegacyRemote=false, TickSeconds=5, RandomInterval=7200, RollVerifySeconds=35,
         MaxBackoff=300, StoreVerifySeconds=2},
     FARM_COMBAT = {
         HitDistance=1500, BringRadius=2200, BringInterval=0.20, BringSize=90,
         HoverAboveMob=13, DamageTimeout=4.5, RecoveryTimeout=10,
         ScrapBringVerifyRadius=8,
-        -- V2.17.08: Restore original V2.16.38/V2.17.03 mob bring settings.
         ForestHitboxSize=3, ForestBringInterval=0.18, ForestRebringDrift=4,
         SafeBringPickupRadius=350, UnknownOwnerPickupRadius=150,
-        ShortBringRadius=80, -- V2.17.28: maximum 80 studs from player; move each NPC ONCE per pack.
-        ShortBringUnknownOwnerRadius=48, -- without owner API, only attempt within this tighter radius.
+        ShortBringRadius=80,
+        ShortBringUnknownOwnerRadius=48,
         ShortPackStallSeconds=4.5, ShortPackMaxSeconds=19,
         ForestAttackRange=55,
         QuestHitboxSize=3, QuestClusterRadius=3, QuestMobPickupRadius=165,
@@ -327,48 +290,42 @@ local CONFIG = {
         QuestBringInterval=0.11,
         NativeClickGap=0.22, EquipSettle=0.18, MaxWaveSeconds=20,
     },
-
     MASTER_NAME = nil,
     TEAM = {},
-    AUTOMATION_MODE = "TEAM", -- SOLO drives and completes the event with this client alone.
-
-    WEBHOOK_URL = "", -- <<<<<<<<<< PASTE WEBHOOK HERE
-
+    AUTOMATION_MODE = "TEAM",
+    WEBHOOK_URL = "",
     BOAT_NAME = "MarineGrandBrigade",
     BOAT_BUY_NAME = "MarineGrandBrigade",
     BOAT_FAST_BUY = {
-        Enabled = true,             -- try CommF_:InvokeServer("BuyBoat", ...) BEFORE dealer travel
-        RejectionObserveSeconds = 3.5, -- wait to rule out delayed Beli/boat replication before fallback
+        Enabled = true,
+        RejectionObserveSeconds = 3.5,
     },
     BOAT_NOCLIP = {
-        Enabled = true, -- continuous while on the boat (including idle throttle & passengers)
-        RefreshSeconds = 0.10, -- re-apply before physics periodically; dynamic parts use descendant signals
+        Enabled = true,
+        RefreshSeconds = 0.10,
     },
     MIN_TEAM_NEAR_RELIC = 4,
     RELIC_RADIUS = 40,
-
     PLAYER_TWEEN_SPEED = 200,
     PRESSURE_TWEEN_SPEED = 300,
-    SOLO_PRESSURE_TWEEN_SPEED = 260, -- Baseline, multiplied by SOLO_GUARD.TWEEN_MULTIPLIER only in SOLO raid.
+    SOLO_PRESSURE_TWEEN_SPEED = 260,
     SOLO_GUARD = {
         TWEEN_MULTIPLIER = 1.25,
         GOLEM_BASE_TWEEN_SPEED = 165,
-        SAFE_APPROACH_CLEARANCE = 30, -- vertical approach above current and enemy Y; then descend to hover
-        GOLEM_HOVER_Y = 20, -- keep the melee attacker above ordinary ground/lava height
-        -- V2.17.03: SOLO event scheduler ignores distance/pressure thresholds while any Golem lives.
-        -- Retained for compatibility with older saved profiles and stall target ordering.
+        SAFE_APPROACH_CLEARANCE = 30,
+        GOLEM_HOVER_Y = 20,
         THREAT_RADIUS = 220,
         RELIC_ALARM_PERCENT = 95,
         PRESSURE_WHILE_FAR_AT = 28,
         PRESSURE_RECOVERY_EXIT = 13,
         PRESSURE_CRITICAL_AT = 80,
-        CRITICAL_GOLEM_RADIUS = 130,  -- still used in stalled-Golem target ordering
-        STALL_PRIORITY_PENALTY = 65, -- de-prioritize a stalled distant target, not a close one
-        PRESSURE_SKILL_GAP = 0.045,  -- shorter time between pressure skills in SOLO only
-        PRESSURE_BURST_SECONDS = 2.40, -- V2.17.20: timer starts AFTER arriving at Rock; enough time for Fruit ZCVF + Melee XC; Golem still preempts each key
-        BURST_SECONDS = 0.78,         -- re-evaluate risk more frequently
-        ATTACK_INTERVAL = 0.09, -- V2.9 donor stable remote cadence
-        MELEE_FALLBACK_AFTER = 3.5, -- V2.9 donor: wait for sustained HP stall across bursts
+        CRITICAL_GOLEM_RADIUS = 130,
+        STALL_PRIORITY_PENALTY = 65,
+        PRESSURE_SKILL_GAP = 0.045,
+        PRESSURE_BURST_SECONDS = 2.40,
+        BURST_SECONDS = 0.78,
+        ATTACK_INTERVAL = 0.09,
+        MELEE_FALLBACK_AFTER = 3.5,
         MELEE_FALLBACK_COOLDOWN = 4.0,
         TARGET_STALL_COOLDOWN = 1.25,
         ROCK_SAFE_HOVER_Y = 45,
@@ -377,57 +334,55 @@ local CONFIG = {
             SAMPLE_DEATH = Vector3.new(-61423.93359375, 786.7953491210938, 12642.5341796875),
             SAMPLE_FOSSIL_PLAYER = Vector3.new(-60632.46875, 55.007808685302734, 12520.9111328125),
             CORE_RADIUS = 30,
-            ROUTE_RADIUS = 60, -- core plus 30-stud margin
-            HEIGHT = 150, -- from death-sample Y downward
-            WAYPOINT_OUTSET = 10, -- arc chords must stay outside R=60
+            ROUTE_RADIUS = 60,
+            HEIGHT = 150,
+            WAYPOINT_OUTSET = 10,
             ARC_STEP_DEGREES = 12,
             MAX_WAYPOINTS = 48,
         },
     },
-    BOAT_TWEEN_SPEED = 280, -- requested sea cruising speed (studs/sec)
-    FOREST_FARM_HEIGHT = 18, -- retained for secondary forest helpers.
+    BOAT_TWEEN_SPEED = 280,
+    FOREST_FARM_HEIGHT = 18,
     FOREST_HITBOX_SIZE = 90,
     FOREST_MAGNET_RADIUS = 2200,
     FOREST_SCAN_RADIUS = 1800,
     FOREST_GHOST_TIMEOUT = 10,
     FOREST_GHOST_MIN_ATTACKS = 100,
     HOVER_SNAP_DISTANCE = 2.5,
-    MELEE_NET_DISTANCE = 1500, -- Magnet V1.9 donor request range; server validates actual hits.
+    MELEE_NET_DISTANCE = 1500,
     MELEE_ATTACK_INTERVAL = 0.11,
-    MELEE_CLICK_DELAY = 0.05, -- Preserved native attack argument.
+    MELEE_CLICK_DELAY = 0.05,
     PORTAL_CHAIN_DELAY = 2.5,
     RESPAWN_SETTLE_DELAY = 1.5,
     RESET_TO_TIKI_AFTER_EVENT = true,
-
     ITEM_COUNTER = {
         CACHE_SECONDS = 0.65,
         OPTIMISTIC_GAIN_SECONDS = 180,
     },
     DIRECT_CACHE = {
         Enabled = true,
-        Interval = 3.0, -- do not open the Stash UI or perform an inventory remote call
+        Interval = 3.0,
     },
     REMOVE_LAVA = {
-        Enabled = true, -- runs before island spawns; client-only, no guaranteed server damage protection
+        Enabled = true,
         Interval = .5,
-        Debug = true, -- print on transitions; do not spam each 0.5s scan
+        Debug = true,
     },
     KILL_AURA = {
-        Enabled = true, -- shared melee backend inside existing FARM / GOLEM loops
-        IdleEnabled = false, -- optional nearby-NPC NET when Auto Volcano is OFF
-        IdleMode = "NET", -- Recovery NET only, no native click or Tool:Activate()
+        Enabled = true,
+        IdleEnabled = false,
+        IdleMode = "NET",
         Radius = 35,
         Interval = .20,
         EquipWait = .12,
-        MouseHold = .04, -- legacy setting; NET does not use the mouse
-        NetMode = "NET_HEAD", -- Recovery Test V1 default; choose proven mode in Settings
-        NetRange = 35, -- Recovery Test V1 verified-radius profile
-        NetGap = .30, -- Recovery Test V1 verified-send cadence
+        MouseHold = .04,
+        NetMode = "NET_HEAD",
+        NetRange = 35,
+        NetGap = .30,
     },
-
     STASH_UI = {
-        STARTUP_DELAY_SECONDS = 2.5, -- begin initial Menu > Items > Stash once HUD and Marines are ready
-        SPEED_MULTIPLIER = 2.5, -- faster click/settle steps while preserving UI-state checks
+        STARTUP_DELAY_SECONDS = 2.5,
+        SPEED_MULTIPLIER = 2.5,
         RETRY_MIN_SECONDS = 5,
         RETRY_MAX_SECONDS = 15,
         ITEMS_SETTLE_SECONDS = 0.28,
@@ -439,14 +394,12 @@ local CONFIG = {
         FILTER_TIMEOUT_SECONDS = 8,
         CARD_TIMEOUT_SECONDS = 5,
     },
-
     DRAGON_GUARD = {
         STORE_RETRIES = 8,
         RETRY_DELAY = 0.35,
         POST_EGG_GUARD_SECONDS = 10.0,
         PRE_RESET_GUARD_SECONDS = 10.0,
     },
-
     TEAM_PRESSURE_GUARD = {
         SINGLE_ENTER = 30, SINGLE_EXIT = 14,
         DOUBLE_ENTER = 70, DOUBLE_EXIT = 40,
@@ -454,20 +407,19 @@ local CONFIG = {
         DOUBLE_EMERGENCY = 88,
     },
     SKILL_INPUT = {
-        Mode = "AUTO", -- AUTO: touchscreen UI on Delta Android, keyboard on PC. Can switch in Settings.
-        MobileHold = 0.10, -- actual mobile touch duration, does not change game cooldowns
+        Mode = "AUTO",
+        MobileHold = 0.10,
     },
     PRESSURE = {
-        SKILL_HOLD = 0.10, -- V2.17.20: slightly longer key press for more reliable skill input
+        SKILL_HOLD = 0.10,
         SKILL_GAP = 0.09,
         ROCK_HOVER_Y = 10,
-        ASSIST_AT = 8,          -- when no golem, slaves help almost immediately
+        ASSIST_AT = 8,
         EMERGENCY_AT = 42,
         RELIC_ASSIST_AT = 98,
         RELIC_EMERGENCY_AT = 92,
-        MAX_BURST_SECONDS = 2.60, -- V2.17.20: count only time spent casting after approaching Rock
+        MAX_BURST_SECONDS = 2.60,
     },
-
     GOLEM_AURA = {
         APPROACH_DISTANCE = 48,
         HOVER_Y = 14,
@@ -475,20 +427,19 @@ local CONFIG = {
         ATTACK_INTERVAL = 0.09,
         BURST_SECONDS = 1.0,
         HITBOX_SIZE = 72,
-        BRING_DISTANCE_FROM_RELIC = 195, -- horizontal distance, not distance to player
-        MIN_RELIC_DISTANCE = 165, -- hard leash if a Golem approaches the Relic
+        BRING_DISTANCE_FROM_RELIC = 195,
+        MIN_RELIC_DISTANCE = 165,
         CLUSTER_RADIUS = 4,
         BRING_INTERVAL = 0.15,
         REBRING_DRIFT = 8,
-        BRING_ENABLED = true, -- shared by TEAM and SOLO; no additional attack worker
+        BRING_ENABLED = true,
         STALL_SECONDS = 4,
     },
     GOLEM_LOCAL_KILL = {
-        Enabled = true, -- Golem ONLY: client Humanoid.Health=0, NOT a proven server kill
-        Range = 48, -- must physically approach; no remote / cross-map targeting
-        RetryGap = 1.5, -- minimum delay to retry an unsuccessful local write
+        Enabled = true,
+        Range = 48,
+        RetryGap = 1.5,
     },
-
     FOSSIL = {
         PLAYER_RELATIVE_TO_RELIC = CFrame.new(
             -2.257812, -49.921875, 27.808289,
@@ -501,36 +452,31 @@ local CONFIG = {
         SETTLE_TIME = 0.35,
         TEAM_WAIT_SECONDS = 120,
     },
-
     BONES = {ENABLED=true, SWEEP_SECONDS=2.5},
-
     AFK_SOLO = {
         ENABLED = true,
-        EGG_FAST_RESET_RELIC_ABOVE = 90, -- strictly greater than 90%
-        RELIC_PROOF_MAX_AGE = 180,       -- last measured active-raid HUD
-        EGG_RECOVERY_TIMEOUT = 90,       -- after raid end: never wait for missing egg forever
-        ERROR_RETRY_GAP = 5,            -- do not spam UI/NPC on repeated failures
+        EGG_FAST_RESET_RELIC_ABOVE = 90,
+        RELIC_PROOF_MAX_AGE = 180,
+        EGG_RECOVERY_TIMEOUT = 90,
+        ERROR_RETRY_GAP = 5,
     },
-
     EGG = {
-        HOLD_SECONDS = 1.10, -- mobile click/touch hold; fresh inventory still verifies pickup
+        HOLD_SECONDS = 1.10,
         RETRIES = 3,
         RETRY_GAP = 0.30,
         SPAWN_WAIT_SECONDS = 12,
         APPROACH_DISTANCE = 4.0,
     },
-
     SAVE_CPU = {
         ENABLED = true,
         FPS_CAP = 30,
-        HIDE_STATIC_MAP_VISUALS = false, -- map removal moved to a separate UI toggle
+        HIDE_STATIC_MAP_VISUALS = false,
         HIDE_TEXTURES_DECALS = true,
         DISABLE_NONESSENTIAL_VFX = true,
         REDUCE_TERRAIN = true,
         LOW_GRAPHICS_QUALITY = true,
-        FULL_3D_RENDER_OFF = false, -- strongest saving; leave false so you can still see the game
+        FULL_3D_RENDER_OFF = false,
     },
-
     DEBUG = {
         ENABLED = true,
         LOG_TO_FILE = true,
@@ -540,16 +486,13 @@ local CONFIG = {
         WEBHOOK_ERRORS = true,
         MAX_MEMORY_LOG_LINES = 6000,
     },
-
     SEA6_CENTER = Vector3.new(-37813.6953, 65, 6105.16895),
-
     BOAT_DEALER_CFRAME = CFrame.new(
         -16928.9277, 10, 434.619995,
         -0.434707522, 0, -0.900571883,
         0, 1, 0,
         0.900571883, 0, -0.434707522
     ),
-
     PORTALS = {
         Tiki_To_Castle = CFrame.new(-16799.9473, 59.9832191, 290.861969, 0.792721033, 6.48934986e-08, -0.60958457, -1.1125271e-07, 1, -3.82208896e-08, 0.60958457, 9.81164376e-08, 0.792721033),
         Castle_To_Tiki = CFrame.new(-5096.34131, 316.511047, -3174.32227, 0.999937356, 4.29376179e-08, -0.0111938119, -4.30900293e-08, 1, -1.33745131e-08, 0.0111938119, 1.38560168e-08, 0.999937356),
@@ -558,12 +501,10 @@ local CONFIG = {
         Castle_To_Hydra = CFrame.new(-5027.03027, 316.511047, -3206.70361, 1, -4.02126652e-08, -1.21312694e-14, 4.02126652e-08, 1, 5.87755622e-08, 9.76774678e-15, -5.87755622e-08, 1),
         Hydra_To_Castle = CFrame.new(5650.94775, 1015.28326, -350.379181, 1, 5.02064275e-08, -1.44387506e-14, -5.02064275e-08, 1, -4.3968754e-08, 1.22312362e-14, 4.3968754e-08, 1),
     },
-
     DRAGON_HUNTER = {
         NPC = CFrame.new(5862.44092, 1208.89709, 807.572998, -0.400542974, 0, 0.916278243, 0, 1, 0, -0.916278243, 0, -0.400542974),
         STAND = CFrame.new(5863.4677734375, 1210.2822265625, 801.98779296875),
     },
-
     MOB_CAMPS = {
         HydraEnforcer = CFrame.new(4481.20752, 1004.28436, 538.046082),
         VenomousAssailant = CFrame.new(4622.26514, 1078.49329, 894.30603),
@@ -574,10 +515,6 @@ local CONFIG = {
             -0.542559206, 7.65943753e-08, -0.840017498
         ),
     },
-
-    -- 2026-10-11: Three quest-tree teleports from player-provided CFrame screenshots.
-    -- Screenshot text truncates the last two matrix components, recovered with
-    -- row 3 = row 1 x row 2 (orthonormal rotation matrix; display-precision approximation).
     TREES = {
         CFrame.new(
             5347.57959, 1004.18365, 360.519379,
@@ -599,23 +536,19 @@ local CONFIG = {
         ),
     },
 }
-
 ENV.TeamConfig = {Role="NONE", MasterName=nil, IsMaster=false, IsRunning=false}
-
 local RUN_TOKEN = 0
 local STATUS_LABEL
 local COUNTER_LABEL
-
 local ITEM_TRACK = {}
 local INVENTORY_CACHE = {Raw=nil, At=-math.huge}
 local PICKUP_WATCHED = setmetatable({}, {__mode="k"})
 ENV.__PH_DRAGON_GUARD_STATE = ENV.__PH_DRAGON_GUARD_STATE or {Busy=false, LastStored=nil, Critical=false}
 local DRAGON_GUARD_STATE = ENV.__PH_DRAGON_GUARD_STATE
-DRAGON_GUARD_STATE.Busy = false -- old runtime was retired before this declaration
+DRAGON_GUARD_STATE.Busy = false
 local SAVE_CPU_APPLIED = false
 PHX.MapVisualHidden = false
 PHX.MapVisualBackup = setmetatable({}, {__mode = "k"})
-
 local FOREST_GHOST_BLACKLIST = setmetatable({}, {__mode = "k"})
 local FOREST_DAMAGE_TRACK = setmetatable({}, {__mode = "k"})
 local ACTIVE_FOREST_MAGNET = {Enabled=false, Anchor=nil, Radius=0, Locked=setmetatable({}, {__mode="k"})}
@@ -626,23 +559,20 @@ local CHARACTER_EPOCH = 0
 PHX.BoatLifeCharacter = LP.Character
 PHX.BoatRebuyPending = false
 PHX.BoatPurchaseInFlight = false
-PHX.BoatPurchasePending = nil -- per-session pending receipt, never persist across respawns
-PHX.BoatFastForceDealer = false -- reset after respawn; only fallback after verified fast rejection
+PHX.BoatPurchasePending = nil
+PHX.BoatFastForceDealer = false
 PHX.BoatRespawnEpoch = 0
 PHX.RejectedBoats = setmetatable({}, {__mode="k"})
 PHX.VerifiedSpawnBoats = setmetatable({}, {__mode="k"})
 local lastPortalSuccessAt = -math.huge
 local boundHumanoids = {}
-
 PHX.UserConfigState={Schema=1,Loaded=false,Applying=false,Saving=false,Available=false,
     DesiredRunning=false,ResumePending=false,NextResumeAt=0,Status="Chưa đọc cấu hình",SelectedMaster=""}
-
 function PHX.userConfigAccountId()
     local value=tonumber(LP and LP.UserId)
     if not value or value~=value or value==math.huge or value<=0 or value~=math.floor(value) then return nil end
     return string.format("%.0f",value)
 end
-
 function PHX.userConfigApi()
     local function api(name,value)
         if type(value)=="function" then return value end
@@ -651,7 +581,6 @@ function PHX.userConfigApi()
     return {Read=api("readfile",readfile),Write=api("writefile",writefile),IsFile=api("isfile",isfile),
         MakeFolder=api("makefolder",makefolder),IsFolder=api("isfolder",isfolder)}
 end
-
 function PHX.sanitizeUserConfig(settings)
     local clean={masterRole=false,selectedMaster="",automationMode="TEAM",desiredRunning=false,
         debugEnabled=true,watchdogRestart=true,returnToTiki=true,randomFruit=false,autoStore=true,
@@ -688,7 +617,6 @@ function PHX.sanitizeUserConfig(settings)
     end
     return clean
 end
-
 function PHX.userConfigSnapshot()
     local state=PHX.UserConfigState
     local master=ENV.TeamConfig.MasterName
@@ -708,7 +636,6 @@ function PHX.userConfigSnapshot()
         golemBring=CONFIG.GOLEM_AURA.BRING_ENABLED,golemLocalKill=CONFIG.GOLEM_LOCAL_KILL.Enabled,
         questBring=CONFIG.FARM_COMBAT.QuestBringEnabled})}
 end
-
 function PHX.applyUserConfig(settings)
     local state=PHX.UserConfigState
     local clean=PHX.sanitizeUserConfig(settings)
@@ -752,11 +679,10 @@ function PHX.applyUserConfig(settings)
     ENV.TeamConfig.Role=clean.masterRole and "MASTER" or (selectedPlayer and "SLAVE" or "NONE")
     ENV.TeamConfig.IsMaster=clean.masterRole
     ENV.TeamConfig.ForceMasterRole=clean.masterRole
-    ENV.TeamConfig.IsRunning=false -- loading preferences cannot arm the runner
+    ENV.TeamConfig.IsRunning=false
     state.Applying=false
     return true
 end
-
 function PHX.loadUserConfig()
     local state=PHX.UserConfigState
     local account=PHX.userConfigAccountId()
@@ -787,7 +713,6 @@ function PHX.loadUserConfig()
     state.Status="Đã khôi phục cấu hình"
     return true,"CONFIG_LOADED"
 end
-
 function PHX.saveUserConfig()
     local state=PHX.UserConfigState
     if state.Applying then return false,"CONFIG_RESTORING" end
@@ -826,7 +751,6 @@ function PHX.saveUserConfig()
     end
     return true,"CONFIG_SAVED"
 end
-
 function PHX.setSavedAutomationIntent(enabled)
     if type(enabled)~="boolean" then return false,"CONFIG_INTENT_INVALID" end
     local state=PHX.UserConfigState
@@ -835,7 +759,6 @@ function PHX.setSavedAutomationIntent(enabled)
     state.NextResumeAt=0
     return PHX.saveUserConfig()
 end
-
 function PHX.userConfigRestoreReady()
     if not PHX.generationAlive() then return false,"CONFIG_RUNTIME_RETIRED" end
     if os.clock()<(PHX.Runtime.ExecutedAt or SCRIPT_EXECUTED_AT)+math.max(0,tonumber(CONFIG.STASH_UI.STARTUP_DELAY_SECONDS) or 7) then
@@ -855,7 +778,6 @@ function PHX.userConfigRestoreReady()
     if queue.Busy or PHX.StashSyncBusy or #queue.Jobs>0 then return false,"CONFIG_WAIT_STASH_UPDATE" end
     return true
 end
-
 function PHX.resumeSavedAutomation()
     local state=PHX.UserConfigState
     if not state.DesiredRunning or not state.ResumePending then return false,"CONFIG_NO_SAVED_START" end
@@ -869,13 +791,11 @@ function PHX.resumeSavedAutomation()
     if ok then state.ResumePending=false end
     return ok,why
 end
-
 function PHX.userConfigStatus()
     local state=PHX.UserConfigState
     local resume=state.DesiredRunning and state.ResumePending and " · Chờ đủ điều kiện để tự chạy farm" or ""
     return tostring(state.Status or "")..(state.Path and (" · "..state.Path) or "")..resume
 end
-
 function PHX.startUserConfigResume()
     local state=PHX.UserConfigState
     if state.CreateNew then PHX.saveUserConfig() end
@@ -890,12 +810,9 @@ function PHX.startUserConfigResume()
         end
     end)
 end
-
 PHX.loadUserConfig()
-
 local _nightStampOK, _nightStamp = pcall(function() return os.date("%Y%m%d_%H%M%S") end)
 if not _nightStampOK then _nightStamp = tostring(math.floor(os.clock())) end
-
 local NIGHT = {
     LogPath = "PH_Night_" .. tostring(LP.Name):gsub("[^%w_%-]", "_") .. "_" .. tostring(_nightStamp) .. ".txt",
     StartedAt = os.clock(),
@@ -908,12 +825,10 @@ local NIGHT = {
     MemoryLines = {},
     FileReady = false,
 }
-
 local function nightTime()
     local ok, t = pcall(function() return os.date("%Y-%m-%d %H:%M:%S") end)
     return ok and t or tostring(math.floor(os.clock()))
 end
-
 local function initNightLog()
     if not CONFIG.DEBUG.ENABLED or not CONFIG.DEBUG.LOG_TO_FILE then return end
     local header = table.concat({
@@ -931,7 +846,6 @@ local function initNightLog()
         NIGHT.FileReady = pcall(writefile, NIGHT.LogPath, header)
     end
 end
-
 local function flushNightLog()
     if not CONFIG.DEBUG.ENABLED or not CONFIG.DEBUG.LOG_TO_FILE then return end
     if type(appendfile) == "function" and NIGHT.FileReady then return end
@@ -942,14 +856,12 @@ local function flushNightLog()
     end
     pcall(writefile, NIGHT.LogPath, table.concat(NIGHT.MemoryLines, "\n"))
 end
-
 local function logLine(tag, message)
     if not CONFIG.DEBUG.ENABLED then return end
     local line = string.format("[%s] [%s] %s", nightTime(), tostring(tag), tostring(message))
     PHX.Runtime.Activity[#PHX.Runtime.Activity+1] = {Time=os.clock(), Tag=tostring(tag), Text=tostring(message)}
     if #PHX.Runtime.Activity > 120 then table.remove(PHX.Runtime.Activity, 1) end
     print("[PH-NIGHT] "..line)
-
     if CONFIG.DEBUG.LOG_TO_FILE then
         if type(appendfile) == "function" and NIGHT.FileReady then
             pcall(appendfile, NIGHT.LogPath, line.."\n")
@@ -961,7 +873,6 @@ local function logLine(tag, message)
         end
     end
 end
-
 local function noteProgress(signature)
     signature = tostring(signature or "progress")
     if signature ~= NIGHT.LastProgressSignature then
@@ -969,10 +880,8 @@ local function noteProgress(signature)
         NIGHT.LastProgressAt = os.clock()
     end
 end
-
 initNightLog()
 logLine("BOOT", "Script started | file="..NIGHT.LogPath.." | fileAPI="..tostring(NIGHT.FileReady or type(appendfile)=="function"))
-
 local function setStatus(s)
     s = tostring(s)
     if STATUS_LABEL then
@@ -980,7 +889,6 @@ local function setStatus(s)
     end
     PHX.Runtime.Status = s
     print("[PH-V2] " .. s)
-
     if NIGHT.LastStatus ~= s or (os.clock() - NIGHT.LastStatusLogAt) > 20 then
         NIGHT.LastStatus = s
         NIGHT.LastStatusLogAt = os.clock()
@@ -988,9 +896,6 @@ local function setStatus(s)
         noteProgress("STATUS:"..s)
     end
 end
-
--- V2.17.34: A separate material-only token; never arm TeamConfig.IsRunning.
--- This authorizes only the selected manual material worker, not Auto Volcano.
 PHX.ManualMaterialFarm={Active=false,Mode=nil,Token=nil,Worker=nil,Stopping=false,
     Message="OFF",LastError=nil,StartedAt=nil,WaveCount=0}
 local function isRunning(token)
@@ -1001,17 +906,14 @@ local function isRunning(token)
     end
     return ENV.TeamConfig.IsRunning==true and token == RUN_TOKEN
 end
-
 function PHX.sameName(a, b)
     return type(a) == "string" and type(b) == "string" and string.lower(a) == string.lower(b)
 end
-
 function PHX.playerByName(name)
     for _,player in ipairs(Players:GetPlayers()) do
         if PHX.sameName(player.Name, name) then return player end
     end
 end
-
 local function isTeamName(name)
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return PHX.sameName(name,LP.Name) end
     for _,member in ipairs(CONFIG.TEAM) do
@@ -1019,51 +921,41 @@ local function isTeamName(name)
     end
     return false
 end
-
 local function teamIndex(name)
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return PHX.sameName(name,LP.Name) and 1 or nil end
     for i,member in ipairs(CONFIG.TEAM) do
         if PHX.sameName(name, member) then return i end
     end
 end
-
 function PHX.automationMode()
     local mode=(PHX.Runtime and PHX.Runtime.AutomationMode) or CONFIG.AUTOMATION_MODE
     return mode=="SOLO" and "SOLO" or "TEAM"
 end
-
 function PHX.isSoloAutomation()
     return PHX.automationMode()=="SOLO"
 end
-
 function PHX.automationLeaderName()
     return PHX.isSoloAutomation() and LP.Name or ENV.TeamConfig.MasterName
 end
-
 function PHX.requiredFossilPlayers()
     return PHX.isSoloAutomation() and 1 or CONFIG.MIN_TEAM_NEAR_RELIC
 end
-
 local function isMaster()
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return true end
     return ENV.TeamConfig.Role == "MASTER" and PHX.sameName(LP.Name, ENV.TeamConfig.MasterName)
 end
-
 local function roleText()
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return "SOLO / BUY BOAT" end
     if isMaster() then return "MASTER / BUY BOAT" end
     return ENV.TeamConfig.Role == "SLAVE" and "SLAVE / PASSENGER" or "CHƯA CÓ ROLE"
 end
-
 function PHX.localRole()
     return ENV.TeamConfig.Role or "NONE"
 end
-
 function PHX.crewNames()
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return {LP.Name} end
     return CONFIG.TEAM
 end
-
 function PHX.refreshCrew(boat)
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return {LP.Name} end
     local masterName=ENV.TeamConfig.MasterName
@@ -1102,7 +994,6 @@ function PHX.refreshCrew(boat)
     CONFIG.TEAM=names
     return names
 end
-
 function PHX.freezeEventCrew(island)
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then
         PHX.SoloEventCrews=PHX.SoloEventCrews or setmetatable({}, {__mode="k"})
@@ -1125,7 +1016,6 @@ function PHX.freezeEventCrew(island)
     if #names >= (tonumber(CONFIG.MIN_SLAVES_TO_SAIL) or 3)+1 then PHX.EventCrews[island]=names end
     return names
 end
-
 function PHX.observeFossilCrew(island,pos,radius)
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return PHX.freezeEventCrew(island) end
     local frozen=PHX.EventCrews and PHX.EventCrews[island]
@@ -1165,7 +1055,6 @@ function PHX.observeFossilCrew(island,pos,radius)
     PHX.EventCrews[island]=names
     return names
 end
-
 function PHX.rewardCrewIndex(island,name)
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then
         PHX.freezeEventCrew(island)
@@ -1178,28 +1067,23 @@ function PHX.rewardCrewIndex(island,name)
     end
     return nil,#names
 end
-
 local function char()
     return LP.Character
 end
-
 local function hum()
     local c = char()
     return c and c:FindFirstChildOfClass("Humanoid")
 end
-
 local function root()
     local c = char()
     return c and c:FindFirstChild("HumanoidRootPart")
 end
-
 local function bindCharacter(c)
     if not c then return end
     local h = c:FindFirstChildOfClass("Humanoid") or c:WaitForChild("Humanoid", 10)
     if not h or boundHumanoids[h] then return end
     boundHumanoids[h] = true
     CHARACTER_EPOCH = CHARACTER_EPOCH + 1
-
     PHX.connect(h.Died, function()
         CHARACTER_EPOCH = CHARACTER_EPOCH + 1
         local r = c:FindFirstChild("HumanoidRootPart")
@@ -1209,28 +1093,24 @@ local function bindCharacter(c)
         setStatus("DIED -> automation paused until respawn")
     end)
 end
-
 function PHX.invalidatePreRespawnBoats(newCharacter)
     if PHX.releaseBoatMovementLock then pcall(PHX.releaseBoatMovementLock,nil,"CHARACTER_RESPAWN") end
     local old=PHX.BoatLifeCharacter
     if newCharacter==old then return end
     PHX.BoatLifeCharacter=newCharacter
-    if not old then return end -- initial spawn is not a reset
+    if not old then return end
     if not (ENV.TeamConfig.Role=="MASTER" or
         (PHX.isSoloAutomation and PHX.isSoloAutomation()) or
         (PHX.Runtime.AutomationMode or CONFIG.AUTOMATION_MODE)=="SOLO") then return end
-
     PHX.BoatRespawnEpoch=(PHX.BoatRespawnEpoch or 0)+1
-    -- V2.17.18: a replaced boat starts a NEW outward voyage. Never inherit an
-    -- offshore/possibly inverted heading from a prior character or boat.
     PHX.SeaHeading=nil
     PHX.SeaHeadingBoat=nil
     logLine("BOAT_HEADING_RESET","CHARACTER_RESPAWN epoch="..PHX.BoatRespawnEpoch)
     PHX.BoatRebuyPending=true
     PHX.BoatPurchaseInFlight=false
-    PHX.BoatPurchasePending=nil -- old character cannot claim a late-arriving pre-respawn boat
-    PHX.BoatFastForceDealer=false -- try one fast direct attempt on new character
-    PHX.NextBoatBuyAt=0 -- do not retain stale buy-backoff after a respawn
+    PHX.BoatPurchasePending=nil
+    PHX.BoatFastForceDealer=false
+    PHX.NextBoatBuyAt=0
     PHX.BoatPurchaseAmbiguousUntil=nil
     PHX.BoatsBeforePurchase=nil
     local rejected=0
@@ -1248,7 +1128,6 @@ function PHX.invalidatePreRespawnBoats(newCharacter)
     logLine("BOAT_RESPAWN", "epoch="..PHX.BoatRespawnEpoch..
         " rejected_prev_boats="..rejected.." action=BUY_NEW_AT_DEALER")
 end
-
 PHX.StashTrackedCharacter=LP.Character
 PHX.PostRespawnStashPending=false
 PHX.PostRespawnStashEpoch=0
@@ -1273,9 +1152,8 @@ function PHX.flagStashAfterRespawn(character)
     end
     logLine("RESPAWN_STASH", "QUEUED epoch="..PHX.PostRespawnStashEpoch.." | Scrap/Ember/Magnet")
 end
-
 PHX.connect(LP.CharacterAdded, function(c)
-    PHX.AFKRewardExit=nil -- an old egg receipt never authorizes the next life
+    PHX.AFKRewardExit=nil
     PHX.flagStashAfterRespawn(c)
     PHX.invalidatePreRespawnBoats(c)
     PHX.spawn(function()
@@ -1289,11 +1167,9 @@ PHX.connect(LP.CharacterAdded, function(c)
         end
     end)
 end)
-
 if LP.Character then
     PHX.spawn(function() bindCharacter(LP.Character) end)
 end
-
 local function waitAlive(token)
     while PHX.generationAlive() do
         if token and not isRunning(token) then return nil end
@@ -1307,17 +1183,12 @@ local function waitAlive(token)
         task.wait(.15)
     end
 end
-
 local function waitCharacter()
     local c = waitAlive(nil)
     return c
 end
-
 PHX.TravelState = {Tween=nil, Parts=nil, BoatParts=nil, Boat=nil, BoatMoving=false}
-
 function PHX.restoreTravel()
-    -- V2.17.14: movement resets may run while the player is still in the boat.
-    -- Never flash CanCollide=true during a seat/auto-pilot transition.
     local h=hum()
     local seat=h and h.SeatPart
     local seatedBoat=seat and PHX.boatForSeat and PHX.boatForSeat(seat)
@@ -1341,12 +1212,10 @@ function PHX.restoreTravel()
     end
     state.BoatMoving = false
 end
-
 function PHX.travelAlive(token)
     if PHX.generationAlive and not PHX.generationAlive() then return false end
     return token == nil or isRunning(token)
 end
-
 function PHX.boatForSeat(seat)
     local boats = workspace:FindFirstChild("Boats")
     local current = seat
@@ -1355,19 +1224,15 @@ function PHX.boatForSeat(seat)
         current = current.Parent
     end
 end
-
 function PHX.findDriverSeat(boat)
     if not boat then return nil end
     local named = boat:FindFirstChild("VehicleSeat", true)
     if named and named:IsA("VehicleSeat") then return named end
     return boat:FindFirstChildWhichIsA("VehicleSeat", true)
 end
-
 function PHX.stopBoat(boat)
     boat = boat or PHX.TravelState.Boat
     PHX.TravelState.BoatMoving = false
-    -- Keep collision disabled while still seated: hand off cleanup to seat-exit guard.
-    -- This prevents the next manual W press from crashing into a rock between re-arming passes.
     if PHX.restoreBoatNoclip and not PHX.boatNoclipActive(boat) then
         pcall(PHX.restoreBoatNoclip,"STOP_BOAT_NOT_SEATED")
     end
@@ -1390,7 +1255,6 @@ function PHX.stopBoat(boat)
     end
     return true
 end
-
 local function stopSit(token)
     local h = hum()
     if not h or h.Health <= 0 then return false end
@@ -1430,7 +1294,6 @@ local function stopSit(token)
     return h.SeatPart==nil
 end
 PHX.ensureSeatExit = stopSit
-
 local function safeTween(targetCFrame, speed, token, smoothFarm)
     if not targetCFrame or not PHX.travelAlive(token) or PHX.isMovementLocked() then return false end
     local c,h,r,epoch = waitAlive(token)
@@ -1547,20 +1410,16 @@ local function safeTween(targetCFrame, speed, token, smoothFarm)
     if not ok then logLine("MOVE_ERROR",tostring(err));return false end
     return success
 end
-
 local function highTween(targetCFrame, speed, token)
     return safeTween(targetCFrame,speed or CONFIG.PLAYER_TWEEN_SPEED,token)
 end
-
 do
     PHX.Runtime.HeldPointers = PHX.Runtime.HeldPointers or {}
-
     local function isOwnGui(object)
         if PHX.isOwnGui and PHX.isOwnGui(object) then return true end
         local custom = PHX.CustomGui or (PHX.UI and PHX.UI.Screen)
         return custom and (object == custom or object:IsDescendantOf(custom)) or false
     end
-
     local function visibleButton(button)
         if not button.Parent or not button:IsA("GuiButton") or isOwnGui(button) then return false end
         local size = button.AbsoluteSize
@@ -1584,11 +1443,9 @@ do
         local supported, interactable = pcall(function() return button.Interactable end)
         return not supported or interactable ~= false
     end
-
     local function associatedWith(object, target)
         return object and (object == target or object:IsDescendantOf(target)) or false
     end
-
     local function contextFor(button, target)
         local names, labels, associated = {}, {}, false
         local node, hops = button, 0
@@ -1613,7 +1470,6 @@ do
         end
         return table.concat(names, "/"), table.concat(labels, " "), associated
     end
-
     local function mobileButtonFor(target, egg)
         local candidates = {}
         for _, base in ipairs({PG, CoreGui}) do
@@ -1650,14 +1506,12 @@ do
         if candidates[2] and candidates[1].Score == candidates[2].Score and candidates[1].Score < 100 then return nil end
         return candidates[1] and candidates[1].Button
     end
-
     local function worldPart(target)
         if target:IsA("BasePart") then return target end
         if target:IsA("Attachment") and target.Parent and target.Parent:IsA("BasePart") then return target.Parent end
         if target:IsA("Model") and target.PrimaryPart then return target.PrimaryPart end
         return target:FindFirstChildWhichIsA("BasePart", true)
     end
-
     local function restoreInput(record)
         if record.UiOwned and record.Ui and record.Ui.setPassThrough then
             pcall(record.Ui.setPassThrough, false)
@@ -1670,7 +1524,6 @@ do
         end
         record.InputRestore = nil
     end
-
     local function passThrough(record)
         local ui = PHX.UI
         if ui and ui.setPassThrough then
@@ -1694,7 +1547,6 @@ do
             end
         end
     end
-
     function PHX.holdInteraction(target, duration, token)
         if typeof(target) ~= "Instance" or not target.Parent then return false, "TARGET_UNAVAILABLE" end
         local character, humanoid, playerRoot = char(), hum(), root()
@@ -1803,7 +1655,6 @@ do
         return attempted == true, reason
     end
 end
-
 local function resetCharacter(token)
     local function raidSafe(stage)
         if type(PHX.raidResetBlockReason) ~= "function" then
@@ -1865,9 +1716,7 @@ local function resetCharacter(token)
     end
     return false
 end
-
 local resetBackToTiki
-
 function PHX.validWebhookConfig(url, userId)
     url = type(url)=="string" and url:match("^%s*(.-)%s*$") or ""
     userId = type(userId)=="string" and userId:match("^%s*(.-)%s*$") or tostring(userId or "")
@@ -1880,14 +1729,12 @@ function PHX.validWebhookConfig(url, userId)
     end
     return true, url, userId
 end
-
 function PHX.setWebhook(url, userId)
     local ok, checkedUrl, checkedId = PHX.validWebhookConfig(url, userId)
     if not ok then return false, checkedUrl end
     CONFIG.WEBHOOK_URL, CONFIG.WEBHOOK_USER_ID = checkedUrl, checkedId
     return true, checkedUrl == "" and "Webhook đã tắt" or "Đã lưu webhook và ID ping trên client này"
 end
-
 function PHX.webhookPayload(title, description, fields, ping)
     local userId = tostring(CONFIG.WEBHOOK_USER_ID or "")
     local mention = ping and userId:match("^%d+$") and #userId >= 15 and #userId <= 22
@@ -1901,7 +1748,6 @@ function PHX.webhookPayload(title, description, fields, ping)
         }},
     }
 end
-
 local function sendWebhook(title, description, fields, ping)
     if not PHX.generationAlive() then return false end
     if tostring(title):upper():find("PREHISTORIC ISLAND",1,true) and not isMaster() then return false end
@@ -1921,21 +1767,18 @@ local function sendWebhook(title, description, fields, ping)
     end)
     return true
 end
-
 function PHX.normalizeItemName(v)
     local x = string.lower(tostring(v or ""))
     x = x:gsub("[%[%]{}<>]", "")
     x = x:gsub("%s+", " ")
     return x:match("^%s*(.-)%s*$") or x
 end
-
 PHX.InventoryBusy = false
 PHX.InventoryLastError = nil
 PHX.InventorySchemaLogged = false
 ENV.__PH_MATERIAL_CACHE = ENV.__PH_MATERIAL_CACHE or {}
 ENV.__PH_MATERIAL_CACHE[LP.Name] = ENV.__PH_MATERIAL_CACHE[LP.Name] or {}
 PHX.MaterialPersistent = ENV.__PH_MATERIAL_CACHE[LP.Name]
-
 function PHX.persistMaterial(itemName, count, source)
     local key = PHX.normalizeItemName(itemName)
     count = tonumber(count)
@@ -1951,7 +1794,6 @@ function PHX.persistMaterial(itemName, count, source)
         snapshot.Sources[key]=tostring(source or "CACHE_UPDATE")
     end
 end
-
 function PHX.consumeKnownMaterial(itemName, amount)
     local key = PHX.normalizeItemName(itemName)
     local t = ITEM_TRACK[key]
@@ -1967,19 +1809,16 @@ function PHX.consumeKnownMaterial(itemName, amount)
     end
     return nil
 end
-
 local function getInventory(force)
     local now = os.clock()
     if not force and INVENTORY_CACHE.Raw and (now - INVENTORY_CACHE.At) < CONFIG.ITEM_COUNTER.CACHE_SECONDS then
         return INVENTORY_CACHE.Raw
     end
-
     local deadline = now + 2.5
     while PHX.InventoryBusy and os.clock() < deadline do task.wait(.03) end
     if PHX.InventoryBusy then
         return INVENTORY_CACHE.Raw or {}
     end
-
     local inventoryLock=nil
     if PHX.acquireLock then
         inventoryLock=PHX.acquireLock(PHX,"InventoryBusy","inventory")
@@ -1989,7 +1828,6 @@ local function getInventory(force)
         return CommF:InvokeServer("getInventory")
     end)
     if inventoryLock then PHX.releaseLock(inventoryLock) else PHX.InventoryBusy=false end
-
     PHX.LastInventoryReadOK = ok and type(inv) == "table"
     if PHX.LastInventoryReadOK then
         INVENTORY_CACHE.Raw = inv
@@ -2003,12 +1841,10 @@ local function getInventory(force)
         end
         return inv
     end
-
     PHX.InventoryLastError = tostring(inv)
     logLine("INVENTORY_FAIL", "getInventory failed | "..tostring(inv))
     return INVENTORY_CACHE.Raw or {}
 end
-
 function PHX.entryCount(v)
     if type(v) == "number" then return math.max(0, v) end
     if type(v) ~= "table" then return nil end
@@ -2022,7 +1858,6 @@ function PHX.entryCount(v)
     end
     return nil
 end
-
 function PHX.exactMaterialCount(inv, itemName)
     if type(inv) ~= "table" then return nil end
     local wanted = PHX.normalizeItemName(itemName)
@@ -2038,7 +1873,6 @@ function PHX.exactMaterialCount(inv, itemName)
     end
     return nil
 end
-
 function PHX.smartTableCount(root, itemName)
     local wanted = PHX.normalizeItemName(itemName)
     local best = nil
@@ -2070,7 +1904,6 @@ function PHX.smartTableCount(root, itemName)
     scan(root, 0)
     return best
 end
-
 function PHX.guiTextNormalized(obj)
     local txt = ""
     pcall(function() txt = tostring(obj.Text or "") end)
@@ -2078,11 +1911,9 @@ function PHX.guiTextNormalized(obj)
     txt = txt:gsub("&nbsp;", " ")
     return PHX.normalizeItemName(txt)
 end
-
 function PHX.guiMaterialCount(itemName)
     local wanted = PHX.normalizeItemName(itemName)
     local best, bestScore = nil, -math.huge
-
     local function numericText(o)
         if not (o:IsA("TextLabel") or o:IsA("TextButton") or o:IsA("TextBox")) then return nil end
         local raw = tostring(o.Text or ""):gsub("<.->", ""):gsub(",", "")
@@ -2090,7 +1921,6 @@ function PHX.guiMaterialCount(itemName)
         if n and n >= 0 and n <= 999999 then return n end
         return nil
     end
-
     for _,label in ipairs(PHX.gameGuiDescendants(PG)) do
         if (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox"))
             and PHX.guiTextNormalized(label) == wanted then
@@ -2128,7 +1958,6 @@ function PHX.guiMaterialCount(itemName)
     end
     return best
 end
-
 function PHX.buttonAncestor(o)
     local p = o
     for _=1,12 do
@@ -2138,7 +1967,6 @@ function PHX.buttonAncestor(o)
     end
     return nil
 end
-
 function PHX.findStashButton()
     local best, bestScore = nil, -math.huge
     for _,o in ipairs(PHX.gameGuiDescendants(PG)) do
@@ -2163,7 +1991,6 @@ function PHX.findStashButton()
     end
     return best
 end
-
 function PHX.stashLooksOpen()
     local materialHits = 0
     local allHits = 0
@@ -2179,7 +2006,6 @@ function PHX.stashLooksOpen()
     end
     return materialHits > 0 or allHits >= 2
 end
-
 function PHX.findVisibleStashClose()
     for _,o in ipairs(PHX.gameGuiDescendants(PG)) do
         if o:IsA("TextButton") or o:IsA("ImageButton") then
@@ -2195,7 +2021,6 @@ function PHX.findVisibleStashClose()
     end
     return nil
 end
-
 function PHX.signalGuiButton(btn)
     if not btn then return false end
     local fired = false
@@ -2219,13 +2044,11 @@ function PHX.signalGuiButton(btn)
     task.wait(.08)
     return fired
 end
-
 function PHX.inventoryUiRoot()
     local top = PG:FindFirstChild("Inventory")
     if not top then return nil end
     return top:FindFirstChild("Inventory")
 end
-
 function PHX.readSelectedStashCard()
     local inv = PHX.inventoryUiRoot()
     local right = inv and inv:FindFirstChild("RightCard")
@@ -2245,7 +2068,6 @@ function PHX.readSelectedStashCard()
     local raw = tostring(count.Text or ""):gsub(",", "")
     return tostring(title.Text or ""), tonumber(raw:match("(%d+)")), category and tostring(category.Text or "") or ""
 end
-
 function PHX.stashTileClickTarget(tile)
     if not tile then return nil end
     if tile:IsA("TextButton") or tile:IsA("ImageButton") then return tile end
@@ -2256,13 +2078,11 @@ function PHX.stashTileClickTarget(tile)
     end
     return nil
 end
-
 PHX.StashBaselineReady = false
 PHX.StashSyncBusy = false
 PHX.StashLastError = nil
 PHX.PickupSuppress = {}
 PHX.MaterialNames = {"Scrap Metal", "Blaze Ember", "Volcanic Magnet"}
-
 function PHX.inputPassthrough(action)
     local ui = PHX.UI
     if ui and ui.setPassThrough then
@@ -2296,9 +2116,7 @@ function PHX.inputPassthrough(action)
     if PHX.Runtime.InputPassthroughRestore == saved then PHX.Runtime.InputPassthroughRestore=nil end
     return ok, result
 end
-
 PHX.withGuiPassThrough=PHX.inputPassthrough
-
 function PHX.inputClick(button)
     if not button or not PHX.guiVisible(button) then return false end
     local p,z = button.AbsolutePosition,button.AbsoluteSize
@@ -2315,7 +2133,6 @@ function PHX.inputClick(button)
     task.wait(.10)
     return ok
 end
-
 function PHX.activateOnce(button, physicalClick)
     if not button or not PHX.guiVisible(button) then return false end
     local click=physicalClick or PHX.stashInputClick or PHX.inputClick
@@ -2345,7 +2162,6 @@ function PHX.activateOnce(button, physicalClick)
     end
     return false
 end
-
 function PHX.waitGui(predicate, seconds)
     local untilAt = os.clock()+(seconds or 1)
     repeat
@@ -2356,13 +2172,11 @@ function PHX.waitGui(predicate, seconds)
     until os.clock() >= untilAt
     return false
 end
-
 function PHX.stashStepDelay(seconds)
     local speed=tonumber(CONFIG.STASH_UI and CONFIG.STASH_UI.SPEED_MULTIPLIER) or 1
     if speed<=0 then speed=1 end
     return math.max(0,tonumber(seconds) or 0)/speed
 end
-
 function PHX.stashInputClick(button)
     if not button or not PHX.guiVisible(button) then return false end
     local p,z=button.AbsolutePosition,button.AbsoluteSize
@@ -2377,19 +2191,16 @@ function PHX.stashInputClick(button)
     task.wait(PHX.stashStepDelay(.10))
     return ok
 end
-
 function PHX.stashGuiRendered(object)
     if not object or not object:IsA("GuiObject") or not PHX.guiVisible(object) then return false end
     local size=object.AbsoluteSize
     return size.X>0 and size.Y>0
 end
-
 function PHX.stashGuiGeometry(object)
     if not object or not object:IsA("GuiObject") or not PHX.guiVisible(object) then return nil end
     local p,z=object.AbsolutePosition,object.AbsoluteSize
     return table.concat({p.X,p.Y,z.X,z.Y},",")
 end
-
 function PHX.waitStashStable(predicate, timeout, settle)
     settle=PHX.stashStepDelay(settle)
     local signature,since=nil,nil
@@ -2400,7 +2211,6 @@ function PHX.waitStashStable(predicate, timeout, settle)
         return os.clock()-since>=settle
     end,timeout)
 end
-
 function PHX.inventoryActuallyOpen()
     local inv=PHX.inventoryUiRoot()
     if not inv or not PHX.guiVisible(inv) then return false end
@@ -2413,7 +2223,6 @@ function PHX.inventoryActuallyOpen()
     return main~=nil and PHX.guiVisible(main) and PHX.stashGuiRendered(PHX.stashGrid())
         and PHX.inventorySearchBox()~=nil
 end
-
 function PHX.itemsHudButton()
     local hudRoot = PG:FindFirstChild("HUDRoot")
     local f = hudRoot and hudRoot:FindFirstChild("Frame")
@@ -2423,7 +2232,6 @@ function PHX.itemsHudButton()
     local items = menu and menu:FindFirstChild("Items")
     return PHX.stashTileClickTarget(items)
 end
-
 function PHX.inventoryCloseButton()
     local inv = PHX.inventoryUiRoot()
     if not inv then return nil end
@@ -2438,7 +2246,6 @@ function PHX.inventoryCloseButton()
     end
     return nil
 end
-
 function PHX.inventorySearchBox()
     local inv=PHX.inventoryUiRoot()
     local main=inv and inv:FindFirstChild("Main")
@@ -2460,20 +2267,17 @@ function PHX.inventorySearchBox()
     end
     return nil
 end
-
 function PHX.stashGrid()
     local inv = PHX.inventoryUiRoot()
     local main = inv and inv:FindFirstChild("Main")
     local page = main and main:FindFirstChild("PageContent")
     return page and page:FindFirstChild("TileGrid")
 end
-
 function PHX.stashNavigation()
     local inv=PHX.inventoryUiRoot()
     local main=inv and inv:FindFirstChild("Main")
     return main and main:FindFirstChild("NavigationRail")
 end
-
 function PHX.stashCategoryLabel(category)
     if not category then return nil end
     local objects={category}
@@ -2488,7 +2292,6 @@ function PHX.stashCategoryLabel(category)
     end
     return first
 end
-
 function PHX.stashCategoryButton()
     local nav=PHX.stashNavigation()
     if not nav or not PHX.guiVisible(nav) then return nil,nil end
@@ -2506,7 +2309,6 @@ function PHX.stashCategoryButton()
     end
     return nil,nil
 end
-
 function PHX.stashSelectedCategory()
     local nav=PHX.stashNavigation()
     if not nav then return nil end
@@ -2553,7 +2355,6 @@ function PHX.stashSelectedCategory()
     end
     return selected
 end
-
 function PHX.stashCategoryConfirmed()
     local selected=PHX.stashSelectedCategory()
     if selected then
@@ -2567,7 +2368,6 @@ function PHX.stashCategoryConfirmed()
     end
     return false
 end
-
 function PHX.stashItemsTitle()
     local inv=PHX.inventoryUiRoot()
     local main=inv and inv:FindFirstChild("Main")
@@ -2588,7 +2388,6 @@ function PHX.stashItemsTitle()
     end
     return nil,nil
 end
-
 function PHX.stashResultObject(object)
     local inv=PHX.inventoryUiRoot()
     if not object or not inv or (object~=inv and not object:IsDescendantOf(inv)) then return false end
@@ -2597,7 +2396,6 @@ function PHX.stashResultObject(object)
     return not (right and (object==right or object:IsDescendantOf(right)))
         and not (nav and (object==nav or object:IsDescendantOf(nav)))
 end
-
 function PHX.stashResultObjects()
     local inv=PHX.inventoryUiRoot()
     local objects={}
@@ -2613,7 +2411,6 @@ function PHX.stashResultObjects()
     end
     return objects
 end
-
 function PHX.stashNoItemsFound()
     for _,object in ipairs(PHX.stashResultObjects()) do
         if (object:IsA("TextLabel") or object:IsA("TextButton")) and PHX.stashGuiRendered(object)
@@ -2624,7 +2421,6 @@ function PHX.stashNoItemsFound()
     end
     return false
 end
-
 function PHX.stashPageLoading()
     local grid=PHX.stashGrid()
     if not grid or not grid.Parent then return true end
@@ -2637,7 +2433,6 @@ function PHX.stashPageLoading()
     end
     return false
 end
-
 function PHX.stashVisibleTiles()
     local tiles={}
     local grid=PHX.stashGrid()
@@ -2651,7 +2446,6 @@ function PHX.stashVisibleTiles()
     end
     return tiles
 end
-
 function PHX.stashEmptyResultKind()
     local grid=PHX.stashGrid()
     if not grid or not PHX.guiVisible(grid) or PHX.stashPageLoading() then return nil end
@@ -2662,7 +2456,6 @@ function PHX.stashEmptyResultKind()
     if PHX.stashCategoryConfirmed() then return "QUIET_EMPTY_GRID" end
     return nil
 end
-
 function PHX.stashResultSignature()
     local title,_,titleObject=PHX.stashItemsTitle()
     local grid=PHX.stashGrid()
@@ -2687,14 +2480,12 @@ function PHX.stashResultSignature()
     end
     return table.concat(parts,"|")
 end
-
 function PHX.stashPageReady()
     local selected=PHX.stashSelectedCategory()
     if selected and PHX.stashCategoryLabel(selected)~="stash" then PHX.StashPageAuthority=nil;return false end
     return PHX.inventoryActuallyOpen() and PHX.stashResultSignature()~=nil
         and PHX.inventorySearchBox()~=nil
 end
-
 function PHX.observeStashFilter()
     local revision=0
     local connections={}
@@ -2732,9 +2523,8 @@ function PHX.observeStashFilter()
         end
     end
 end
-
 function PHX.openStashPageExact()
-    PHX.StashPageAuthority=nil -- exact-material proof never carries across tab transactions
+    PHX.StashPageAuthority=nil
     local state = {wasOpen=PHX.inventoryActuallyOpen()}
     local existing=PHX.inventoryUiRoot()
     local existingMain=existing and existing:FindFirstChild("Main")
@@ -2833,7 +2623,6 @@ function PHX.openStashPageExact()
     end
     return true,state,"STASH_OPEN"
 end
-
 function PHX.restoreInventoryUiState(state)
     if not state then return end
     if state.search and state.search.Parent and state.searchText ~= nil then state.search.Text=state.searchText end
@@ -2846,7 +2635,6 @@ function PHX.restoreInventoryUiState(state)
         if not PHX.waitGui(function() return not PHX.inventoryActuallyOpen() end,1.5) then PHX.activateOnce(button,function() return false end) end
     end
 end
-
 function PHX.readStashItemExact(itemName)
     if not PHX.stashPageReady() then return nil,"STASH_PAGE_UNCONFIRMED" end
     local search=PHX.inventorySearchBox()
@@ -2921,10 +2709,6 @@ function PHX.readStashItemExact(itemName)
     end
     return nil,"FILTER_RESULT_MISMATCH"
 end
-
--- DIRECT CLIENT CACHE: replaces UI-driven opening / searching Stash.
--- Commit all three items together only after successful GetItems().
--- No network calls, no UI navigation, no implicit module hook.
 PHX.DirectCache = {Service=nil, IdMap=nil, LastReadAt=0, LastError=nil, ScanCount=0, Absent={}}
 function PHX.directMaterialSnapshot()
     local reader=PHX.DirectCache
@@ -2945,7 +2729,6 @@ function PHX.directMaterialSnapshot()
     if quantityKey==nil then return nil,"QUANTITY_KEY_MISSING" end
     local materials=reader.IdMap and reader.IdMap.Material
     if type(materials)~="table" then return nil,"MATERIAL_MAP_MISSING" end
-
     local ids,byID,counts,matches={},{},{},{}
     local function normalized(name)
         return tostring(name):lower():gsub("[%s_%-]+","")
@@ -2981,7 +2764,6 @@ function PHX.directMaterialSnapshot()
     end
     return {Counts=counts,Matches=matches,IDs=ids,Scanned=scanned}
 end
-
 function PHX.authoritativeStash(force,reason)
     local reader=PHX.DirectCache
     if not PHX.generationAlive() then return false,"RUNTIME_RETIRED" end
@@ -3003,7 +2785,6 @@ function PHX.authoritativeStash(force,reason)
             local absent=(snapshot.Matches[name] or 0)==0
             reader.Absent[name]=absent
             sources[name]=absent and "DIRECT_CACHE_NO_RECORD" or "DIRECT_CACHE"
-            -- A missing record reads as 0, but is NOT proof of an empty Stash.
             local previous=PHX.cachedMaterialCount(name)
             if previous~=snapshot.Counts[name] or not PHX.StashBaselineReady then
                 PHX.setKnownMaterial(name,snapshot.Counts[name],sources[name])
@@ -3027,13 +2808,11 @@ function PHX.authoritativeStash(force,reason)
     PHX.releaseLock(lock)
     return success,errorText
 end
-
 function PHX.cachedMaterialCount(itemName)
     local t=ITEM_TRACK[PHX.normalizeItemName(itemName)]
     if t and t.Known then return math.max(0,tonumber(t.Server) or 0),t.Source or "CACHE" end
     return nil,"UNAVAILABLE"
 end
-
 function PHX.checkMagnetFromStash(force)
     if force==true then
         local ok,reason=PHX.authoritativeStash(true,"manual Magnet check")
@@ -3041,7 +2820,6 @@ function PHX.checkMagnetFromStash(force)
     end
     return PHX.cachedMaterialCount("Volcanic Magnet")
 end
-
 function PHX.scanStashTilesExact()
     local found=0
     for _,name in ipairs(PHX.MaterialNames) do
@@ -3050,18 +2828,15 @@ function PHX.scanStashTilesExact()
     end
     return found
 end
-
 function PHX.refreshMaterialViaStash(force)
     if force==true then return PHX.authoritativeStash(true,"manual material check") end
     return PHX.StashBaselineReady,PHX.StashBaselineReady and "STASH_CACHED" or "STARTUP_PENDING"
 end
-
 PHX.CounterSyncBusy=false
 function PHX.forceCounterSync(force)
     if force==true then return PHX.authoritativeStash(true,"manual sync") end
     return PHX.StashBaselineReady,PHX.StashBaselineReady and "STASH_CACHED" or "STARTUP_PENDING"
 end
-
 function PHX.inventoryHasMaterialSchema(inv)
     if type(inv) ~= "table" then return false end
     for _,entry in pairs(inv) do
@@ -3069,18 +2844,15 @@ function PHX.inventoryHasMaterialSchema(inv)
     end
     return false
 end
-
 function PHX.serverInventoryCount(itemName, _force)
     return PHX.cachedMaterialCount(itemName)
 end
-
 function PHX.valuePreview(v)
     local tv = type(v)
     if tv == "string" then return string.format("%q", v) end
     if tv == "number" or tv == "boolean" or tv == "nil" then return tostring(v) end
     return "<"..tv..">"
 end
-
 function PHX.dumpInventoryProbe(reason)
     if not writefile then return nil end
     local inv = getInventory(true)
@@ -3116,7 +2888,6 @@ function PHX.dumpInventoryProbe(reason)
         end
     end
     walk(inv, "inventory", 0)
-
     lines[#lines+1] = ""
     lines[#lines+1] = "===== PLAYER DATA CANDIDATES ====="
     local dataRoots = {LP:FindFirstChild("Data"), LP:FindFirstChild("Backpack")}
@@ -3132,7 +2903,6 @@ function PHX.dumpInventoryProbe(reason)
             end
         end
     end
-
     lines[#lines+1] = ""
     lines[#lines+1] = "===== VISIBLE GUI ITEM TEXT ====="
     for _,o in ipairs(PHX.gameGuiDescendants(PG)) do
@@ -3145,13 +2915,11 @@ function PHX.dumpInventoryProbe(reason)
             end
         end
     end
-
     local path = "PH_InventoryProbe_"..LP.Name.."_V294.txt"
     pcall(function() writefile(path, table.concat(lines, "\n")) end)
     logLine("INV_PROBE", "wrote "..path.." | nodes="..tostring(nodes))
     return path
 end
-
 PHX.InventoryProbeWritten = false
 function PHX.ensureInventoryProbeIfUnknown()
     if PHX.InventoryProbeWritten then return end
@@ -3162,7 +2930,6 @@ function PHX.ensureInventoryProbeIfUnknown()
         PHX.spawn(function() PHX.dumpInventoryProbe("material_count_unknown") end)
     end
 end
-
 function PHX.trackerFor(itemName)
     local key=PHX.normalizeItemName(itemName)
     local t=ITEM_TRACK[key]
@@ -3172,17 +2939,14 @@ function PHX.trackerFor(itemName)
     end
     return t,key
 end
-
 local function inventoryCount(itemName, _force)
     local count=PHX.cachedMaterialCount(itemName)
     return count or 0
 end
-
 function PHX.materialCountInfo(itemName, _force)
     local count,source=PHX.cachedMaterialCount(itemName)
     return count or 0,source,count ~= nil
 end
-
 function PHX.setKnownMaterial(itemName,count,source)
     count=tonumber(count)
     if count == nil then return false end
@@ -3194,7 +2958,6 @@ function PHX.setKnownMaterial(itemName,count,source)
     logLine("ITEM_SYNC",tostring(itemName).."="..tostring(count).." | "..tostring(t.Source))
     return true
 end
-
 function PHX.guiVisible(obj)
     if not obj then return false end
     local p=obj
@@ -3206,7 +2969,6 @@ function PHX.guiVisible(obj)
     end
     return true
 end
-
 function PHX.guiRequirementCount(itemName, required)
     local wanted = PHX.normalizeItemName(itemName)
     local best, bestDist = nil, math.huge
@@ -3247,20 +3009,16 @@ function PHX.guiRequirementCount(itemName, required)
     if best ~= nil and bestDist < 420 then return best end
     return nil
 end
-
 function PHX.syncCraftMaterialCounts()
     return PHX.guiRequirementCount("Scrap Metal",10),PHX.guiRequirementCount("Blaze Ember",15)
 end
-
 function PHX.warmMaterialInventory(_seconds)
     return PHX.StashBaselineReady == true
 end
-
 function PHX.clearOptimisticCount(itemName)
     local count=PHX.cachedMaterialCount(itemName)
     return count or 0
 end
-
 function PHX.recordItemGain(itemName,amount,sourceText)
     if PHX.generationAlive and not PHX.generationAlive() then return end
     amount=math.max(1,math.floor(tonumber(amount) or 1))
@@ -3270,7 +3028,6 @@ function PHX.recordItemGain(itemName,amount,sourceText)
     PHX.setKnownMaterial(itemName,count+amount,"PICKUP")
     logLine("ITEM_GAIN",itemName.." +"..amount.." | "..tostring(sourceText))
 end
-
 local TRACKED_PICKUPS = {
     ["scrap metal"] = "Scrap Metal",
     ["blaze ember"] = "Blaze Ember",
@@ -3278,7 +3035,6 @@ local TRACKED_PICKUPS = {
     ["dinosaur bones"] = "Dinosaur Bones",
     ["dinosaur bone"] = "Dinosaur Bones",
 }
-
 function PHX.parsePickupText(text)
     local raw=tostring(text or "")
     local low=PHX.normalizeItemName(raw:gsub("<.->",""))
@@ -3289,10 +3045,8 @@ function PHX.parsePickupText(text)
     end
     return nil,nil
 end
-
 PHX.SeenPickupContainers=setmetatable({}, {__mode="k"})
 PHX.StashScanQueue={StartupPending=true,StartupDone=false,StartupFailures=0,NextStartupAttemptAt=0,Jobs={},Busy=false,NextId=0,CompletedId=0}
-
 function PHX.isMagnetCraftPopup(text)
     local low=PHX.normalizeItemName(tostring(text or ""):gsub("<[^>]+>",""))
     if not low:find("volcanic magnet",1,true) or not low:match("%f[%a]crafted%f[%A]") then return false end
@@ -3301,7 +3055,6 @@ function PHX.isMagnetCraftPopup(text)
     end
     return true
 end
-
 function PHX.queueCraftStashScan(container,signature,text)
     local queue=PHX.StashScanQueue
     if PHX.StashSession then PHX.StashSession.Verified=false end
@@ -3310,7 +3063,6 @@ function PHX.queueCraftStashScan(container,signature,text)
     logLine("STASH_SCAN_QUEUED","crafted Volcanic Magnet popup #"..queue.NextId)
     return queue.NextId
 end
-
 function PHX.inspectPickupContainer(container,allowGain)
     if not PHX.generationAlive() or not container then return end
     if not container.Parent or not PHX.guiVisible(container) then
@@ -3330,7 +3082,7 @@ function PHX.inspectPickupContainer(container,allowGain)
     local signature=PHX.normalizeItemName(text:gsub("<[^>]+>",""))
     if PHX.SeenPickupContainers[container] == signature then return end
     PHX.SeenPickupContainers[container]=signature
-    if not allowGain then return end -- old notifications precede the fresh baseline
+    if not allowGain then return end
     if crafted then
         PHX.queueCraftStashScan(container,signature,text)
         return
@@ -3343,7 +3095,6 @@ function PHX.inspectPickupContainer(container,allowGain)
         end
     end
 end
-
 function PHX.inspectPickupStack(allowGain)
     if not PHX.generationAlive() then return end
     local notifications=PG:FindFirstChild("Notifications")
@@ -3351,7 +3102,6 @@ function PHX.inspectPickupStack(allowGain)
     if not stack then return end
     for _,container in ipairs(stack:GetChildren()) do PHX.inspectPickupContainer(container,allowGain) end
 end
-
 function PHX.cacheStashSession(counts,sources)
     local snapshot={SchemaVersion="STASH_V214_CONFIRMED",JobId=tostring(game.JobId),PlaceId=game.PlaceId,UserId=LP.UserId,Counts={},Sources={},
         Verified=not PHX.StashScanQueue or #PHX.StashScanQueue.Jobs==0}
@@ -3366,7 +3116,6 @@ function PHX.cacheStashSession(counts,sources)
     ENV.__PH_STASH_SESSION=snapshot
     return true
 end
-
 function PHX.restoreStashSession()
     local snapshot=ENV.__PH_STASH_SESSION
     if type(snapshot)~="table" or snapshot.SchemaVersion~="STASH_V214_CONFIRMED"
@@ -3388,7 +3137,6 @@ function PHX.restoreStashSession()
     PHX.updateMagnetCache(counts["Volcanic Magnet"],"SESSION_CACHE")
     return true
 end
-
 function PHX.materialGameGuiReady()
     local items=PHX.itemsHudButton()
     if items and PHX.guiVisible(items) and items.AbsoluteSize.X>0 and items.AbsoluteSize.Y>0 then return true end
@@ -3400,12 +3148,10 @@ function PHX.materialGameGuiReady()
     local toggle=menu and PHX.stashTileClickTarget(menu:FindFirstChild("Menu"))
     return toggle~=nil and PHX.guiVisible(toggle) and toggle.AbsoluteSize.X>0 and toggle.AbsoluteSize.Y>0
 end
-
 function PHX.stashScanSafe()
     return PHX.generationAlive() and not PHX.StashSyncBusy
         and not PHX.StashScanQueue.Busy and CONFIG.DIRECT_CACHE.Enabled
 end
-
 function PHX.processStashScanQueue()
     local queue=PHX.StashScanQueue
     if not PHX.stashScanSafe() then return false,"DEFERRED" end
@@ -3479,7 +3225,6 @@ function PHX.processStashScanQueue()
     end
     return success,why
 end
-
 function PHX.waitForCraftInventory(token,afterId,seconds)
     local permit={Token=token,Owner=coroutine.running()}
     PHX.StashScanPermit=permit
@@ -3499,7 +3244,6 @@ function PHX.waitForCraftInventory(token,afterId,seconds)
     release()
     return false,isRunning(token) and "CRAFT_POPUP_NOT_VERIFIED" or "CANCELED"
 end
-
 function PHX.startMaterialNotifications()
     PHX.restoreStashSession()
     local watched=setmetatable({}, {__mode="k"})
@@ -3562,29 +3306,24 @@ function PHX.startMaterialNotifications()
         end
     end)
 end
-
 PHX.MagnetCache={Checked=false,Count=nil,Reason="STARTUP_PENDING",RefreshNeeded=false}
-
 function PHX.updateMagnetCache(count,reason)
     PHX.MagnetCache.Count=tonumber(count)
     PHX.MagnetCache.Checked=true
     PHX.MagnetCache.RefreshNeeded=false
     PHX.MagnetCache.Reason=reason or (count~=nil and "STASH" or "UNKNOWN")
 end
-
 function PHX.invalidateMagnetCache()
     PHX.SeaHeading=nil
     PHX.SeaHeadingBoat=nil
     PHX.MagnetCache.RefreshNeeded=false
 end
-
 local function hasVolcanicMagnet()
     local count,source=PHX.cachedMaterialCount("Volcanic Magnet")
     PHX.updateMagnetCache(count,source)
     if count==nil then return nil end
     return count>0
 end
-
 function PHX.nativeDiagnostics()
     local lines={"PH NATIVE UI V2.16.0"}
     local function add(key,value)
@@ -3661,7 +3400,6 @@ function PHX.nativeDiagnostics()
     end
     return table.concat(lines,"\n")
 end
-
 function PHX.isPressureSensorVFX(obj)
     local p = obj
     local sawRocks = false
@@ -3673,7 +3411,6 @@ function PHX.isPressureSensorVFX(obj)
     end
     return sawRocks and sawPrehistoric
 end
-
 function PHX.isDynamicGameplayPart(obj)
     if not obj then return false end
     local c = LP.Character
@@ -3687,10 +3424,8 @@ function PHX.isDynamicGameplayPart(obj)
     end
     return false
 end
-
 function PHX.optimizeVisualObject(obj)
     if not SAVE_CPU_APPLIED or not obj or not obj.Parent then return end
-
     if obj:IsA("BasePart") then
         pcall(function() obj.CastShadow = false end)
         pcall(function() obj.Reflectance = 0 end)
@@ -3705,12 +3440,10 @@ function PHX.optimizeVisualObject(obj)
         end
         return
     end
-
     if CONFIG.SAVE_CPU.HIDE_TEXTURES_DECALS and (obj:IsA("Texture") or obj:IsA("Decal")) then
         pcall(function() obj.Transparency = 1 end)
         return
     end
-
     if CONFIG.SAVE_CPU.DISABLE_NONESSENTIAL_VFX then
         if PHX.isPressureSensorVFX(obj) then
             return
@@ -3730,17 +3463,14 @@ function PHX.optimizeVisualObject(obj)
         end
     end
 end
-
 function PHX.setMapVisualHidden(hidden)
     hidden = hidden and true or false
     PHX.MapVisualHidden = hidden
-
     local map = workspace:FindFirstChild("Map")
     if not map then
         logLine("MAP_VISUAL", "Map missing | hidden="..tostring(hidden))
         return false
     end
-
     local n = 0
     for _,obj in ipairs(map:GetDescendants()) do
         if obj:IsA("BasePart") and not PHX.isDynamicGameplayPart(obj) then
@@ -3758,26 +3488,21 @@ function PHX.setMapVisualHidden(hidden)
             if n % 350 == 0 then task.wait() end
         end
     end
-
     logLine("MAP_VISUAL", (hidden and "HIDDEN" or "RESTORED").." parts="..tostring(n))
     return true
 end
-
 function PHX.applySaveCpu()
     if SAVE_CPU_APPLIED or not CONFIG.SAVE_CPU.ENABLED then return end
     SAVE_CPU_APPLIED = true
-
     pcall(function()
         if type(setfpscap) == "function" then setfpscap(CONFIG.SAVE_CPU.FPS_CAP) end
     end)
     if CONFIG.SAVE_CPU.LOW_GRAPHICS_QUALITY then
         pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
     end
-
     pcall(function() Lighting.GlobalShadows = false end)
     pcall(function() Lighting.EnvironmentDiffuseScale = 0 end)
     pcall(function() Lighting.EnvironmentSpecularScale = 0 end)
-
     if CONFIG.SAVE_CPU.REDUCE_TERRAIN then
         local terrain = workspace:FindFirstChildOfClass("Terrain")
         if terrain then
@@ -3788,7 +3513,6 @@ function PHX.applySaveCpu()
             pcall(function() terrain.WaterTransparency = 1 end)
         end
     end
-
     local cpuObjects = workspace:GetDescendants()
     for i,obj in ipairs(cpuObjects) do
         PHX.optimizeVisualObject(obj)
@@ -3798,19 +3522,15 @@ function PHX.applySaveCpu()
     PHX.connect(workspace.DescendantAdded, function(obj)
         PHX.defer(function() pcall(PHX.optimizeVisualObject, obj) end)
     end)
-
     if CONFIG.SAVE_CPU.FULL_3D_RENDER_OFF then
         pcall(function() RunService:Set3dRenderingEnabled(false) end)
     end
-
     logLine("SAVE_CPU", "ON | fps="..tostring(CONFIG.SAVE_CPU.FPS_CAP).." mapRemoval=SEPARATE_TOGGLE preservePressureVFX=true")
 end
-
 PHX.spawn(function()
     task.wait(1)
     PHX.applySaveCpu()
 end)
-
 local function ensureMarines()
     if not PHX.generationAlive() then return false end
     if LP.Team and LP.Team.Name == "Marines" then
@@ -3834,20 +3554,17 @@ local function ensureMarines()
     until os.clock() > deadline
     return false
 end
-
 function PHX.startupStashReady()
     local runtime=PHX.Runtime
     if not PHX.generationAlive() then return false,"RUNTIME_RETIRED" end
     if not CONFIG.DIRECT_CACHE.Enabled then return false,"DIRECT_CACHE_DISABLED" end
     if not runtime.UiReady or not PHX.UI then return false,"WAIT_MAIN_UI" end
-    -- No need to join Marines or open Menu > Items > Stash for client cache.
     local queue=PHX.StashScanQueue
     if queue and queue.StartupPending and os.clock()<(queue.NextStartupAttemptAt or 0) then
         return false,"CACHE_RETRY: "..tostring(PHX.StashLastError or "WAITING")
     end
     return true,"Đang đọc ItemReplicationService · không mở Stash"
 end
-
 PHX.spawn(function()
     for attempt=1,4 do
         if ensureMarines() then
@@ -3858,7 +3575,6 @@ PHX.spawn(function()
     end
     logLine("TEAM", "Marine auto-join not confirmed after startup retries")
 end)
-
 local function getToolByTooltip(tooltip)
     local c = char()
     local backpack = LP:FindFirstChildOfClass("Backpack")
@@ -3873,7 +3589,6 @@ local function getToolByTooltip(tooltip)
     end
     return nil
 end
-
 local function equipTooltip(tooltip)
     local tool=getToolByTooltip(tooltip)
     if not tool then return nil end
@@ -3885,16 +3600,10 @@ local function equipTooltip(tooltip)
     task.wait(CONFIG.FARM_COMBAT.EquipSettle)
     return tool.Parent==char() and tool or nil
 end
-
--- V2.17.23 | CROSS-PLATFORM SKILL INPUT:
--- This is NOT a generic skill RemoteEvent: per-ability RPC signatures are not verified.
--- Android activates the GAME'S own touch skill controls, which then invoke its normal
--- client action/network pipeline. PC keeps native key input. Never fire guessed remotes.
 PHX.SkillBridge = { LastLogAt={}, ButtonCache={}, LastMethod="NONE", Sent=0, Failures=0, Busy=false }
 function PHX.mobileSkillText(value, keyName)
     if type(value)~="string" then return false end
     value=value:gsub("<[^>]*>",""):gsub("^%s+",""):gsub("%s+$",""):upper()
-    -- Only stand-alone skill labels; NEVER match long UI labels/menu entries.
     return value==keyName or value=="["..keyName.."]" or value=="("..keyName..")"
         or value=="KEY "..keyName or value=="SKILL "..keyName
 end
@@ -4056,7 +3765,6 @@ local function pressKey(keyCode,hold)
     if not ok then error("SKILL_DISPATCH_FAILED("..tostring(keyCode.Name).."): "..tostring(why)) end
     return true
 end
-
 local function aimAt(pos)
     local r = root()
     if r and not PHX.isMovementLocked() then
@@ -4070,9 +3778,6 @@ local function aimAt(pos)
         cam.CFrame = CFrame.lookAt(cam.CFrame.Position, pos)
     end
 end
-
--- V2.17.12: Weapon-specific skill allowlist. Never fire unavailable melee V/F.
--- Fruit Z/C/V/F remains usable for Pressure Rocks and Quest Trees.
 local SKILL_KEYS = {
     ["Melee"] = {Enum.KeyCode.X, Enum.KeyCode.C},
     ["Blox Fruit"] = {Enum.KeyCode.Z, Enum.KeyCode.C, Enum.KeyCode.V, Enum.KeyCode.F},
@@ -4083,7 +3788,6 @@ end
 local function skillNamesForTooltip(tooltip)
     return tooltip == "Melee" and "XC" or (tooltip == "Blox Fruit" and "ZCVF" or "NONE")
 end
-
 local function useConfiguredSkills(targetPos)
     local function castSet(tooltip)
         local tool = equipTooltip(tooltip)
@@ -4092,7 +3796,6 @@ local function useConfiguredSkills(targetPos)
             return false
         end
         task.wait(.18)
-
         for pass=1,2 do
             for _,k in ipairs(skillKeysForTooltip(tooltip)) do
                 if targetPos then aimAt(targetPos) end
@@ -4108,17 +3811,13 @@ local function useConfiguredSkills(targetPos)
         logLine("SKILL_CAST", tostring(tooltip).." "..skillNamesForTooltip(tooltip).." x2 | "..tostring(tool.Name))
         return true
     end
-
     if targetPos then aimAt(targetPos) end
     castSet("Melee")
     task.wait(.08)
     castSet("Blox Fruit")
 end
-
 local CombatState = nil
 local NetAttackCache = { Net = nil, RegisterAttack = nil, RegisterHit = nil }
--- Only treat HP decrease on the SAME live Humanoid as observed damage.
--- The sum of all HP can drop when a mob streams out/dies/despawns, creating a false positive.
 function PHX.waveHpDelta(models, previous)
     local total,delta,current=0,0,{}
     for _,model in ipairs(models or {}) do
@@ -4149,9 +3848,6 @@ local function networkOwned(part)
     if ok then return value==true end
     return nil
 end
--- PHX V2.17.26: Maintain the NPC at a ground-relative, reachable hit position.
--- Avoid CanCollide=false on every NPC body part: an unsupported Humanoid can fall
--- through the map. A physics mover only runs on a nearby, locally movable NPC.
 function PHX.holdFarmNpc(part,targetPos,holds,prefix)
     if not part or not part.Parent or not targetPos then return false,"INVALID_PART" end
     local hold=holds[part]
@@ -4176,30 +3872,22 @@ function PHX.releaseFarmNpcHolds(holds)
         holds[part]=nil
     end
 end
--- V2.17.10: No physical M1 in the combat dispatcher. UI/NPC interactions
--- elsewhere in main remain unchanged.
-
 local function resolveCombatState()
     if type(CombatState) == "table" and CombatState.activeController then
         return CombatState
     end
-
     local ps = LP:FindFirstChild("PlayerScripts")
     local module = ps and ps:FindFirstChild("CombatFramework")
     if not module then return nil end
-
     local ok, framework = pcall(require, module)
     if not ok then return nil end
-
     if type(framework) == "table" and framework.activeController then
         CombatState = framework
         return CombatState
     end
-
     local candidates = {}
     if type(getupvalues) == "function" then candidates[#candidates+1] = getupvalues end
     if debug and type(debug.getupvalues) == "function" then candidates[#candidates+1] = debug.getupvalues end
-
     for _,getter in ipairs(candidates) do
         local ok2, ups = pcall(getter, framework)
         if ok2 and type(ups) == "table" then
@@ -4216,26 +3904,21 @@ local function resolveCombatState()
             end
         end
     end
-
     return nil
 end
-
 local function resolveNetAttack()
     if NetAttackCache.RegisterAttack and NetAttackCache.RegisterAttack.Parent
         and NetAttackCache.RegisterHit and NetAttackCache.RegisterHit.Parent then
         return NetAttackCache.RegisterAttack, NetAttackCache.RegisterHit
     end
-
     local modules = ReplicatedStorage:FindFirstChild("Modules")
     local net = modules and modules:FindFirstChild("Net")
     if not net then return nil, nil end
-
     NetAttackCache.Net = net
     NetAttackCache.RegisterAttack = net:FindFirstChild("RE/RegisterAttack")
     NetAttackCache.RegisterHit = net:FindFirstChild("RE/RegisterHit")
     return NetAttackCache.RegisterAttack, NetAttackCache.RegisterHit
 end
-
 function PHX.farmMobRoot(model)
     if not model or not model.Parent or not model:IsA("Model") then return nil,nil end
     local humanoid=model:FindFirstChildOfClass("Humanoid")
@@ -4243,7 +3926,6 @@ function PHX.farmMobRoot(model)
     if not humanoid or not part or humanoid.Health<=0 then return nil,nil end
     return humanoid,part
 end
-
 function PHX.magnetName(value)
     return string.lower(tostring(value or ""))
         :gsub("<.->","")
@@ -4251,7 +3933,6 @@ function PHX.magnetName(value)
         :gsub("^%s+","")
         :gsub("%s+$","")
 end
-
 function PHX.farmMobsNamed(name, center, radius)
     local folder = workspace:FindFirstChild("Enemies")
     if not folder then return {} end
@@ -4269,19 +3950,15 @@ function PHX.farmMobsNamed(name, center, radius)
     end
     return out
 end
-
 local function farmV19BoostSim()
     pcall(function() if setsimulationradius then setsimulationradius(math.huge,math.huge) end end)
     pcall(function() if sethiddenproperty then sethiddenproperty(LP,"SimulationRadius",math.huge) end end)
 end
-
--- Forest Pirates use a separately sized root hitbox; Golem stays unchanged.
 PHX.ForestGolemPrepared=setmetatable({}, {__mode="k"})
 PHX.ForestGolemLastBring=setmetatable({}, {__mode="k"})
 PHX.ForestGolemOriginal=setmetatable({}, {__mode="k"})
 PHX.ForestGolemOriginalHumanoids=setmetatable({}, {__mode="k"})
 PHX.ForestBringHolds=setmetatable({}, {__mode="k"})
-
 function PHX.restoreForestGolemBring()
     PHX.releaseFarmNpcHolds(PHX.ForestBringHolds)
     for part,prior in pairs(PHX.ForestGolemOriginal) do
@@ -4306,9 +3983,6 @@ function PHX.restoreForestGolemBring()
     PHX.ForestGolemPrepared=setmetatable({}, {__mode="k"})
     PHX.ForestGolemLastBring=setmetatable({}, {__mode="k"})
 end
-
--- Forest Pirate Bring reverted to V2.16.38 defaults.
--- V2.17.08: Reverted Forest Pirate Bring from the original V2.16.38 lineage.
 function PHX.bringForestPiratesLikeGolem(models,anchor)
     if not anchor then return 0,0,0,{} end
     local playerRoot=root()
@@ -4317,8 +3991,6 @@ function PHX.bringForestPiratesLikeGolem(models,anchor)
     local moved,near,owned,skipped=0,0,0,0
     local candidates={}
     local attackTargets={}
-    -- Public Bring implementations commonly use short (~300-400 stud) pickup ranges.
-    -- A local 2,200-stud PivotTo can look successful while the server still owns the NPC.
     local pickup=math.min(tonumber(CONFIG.FARM_COMBAT.BringRadius) or 350,
         tonumber(CONFIG.FARM_COMBAT.SafeBringPickupRadius) or 350)
     local unknownPickup=tonumber(CONFIG.FARM_COMBAT.UnknownOwnerPickupRadius) or 95
@@ -4336,8 +4008,6 @@ function PHX.bringForestPiratesLikeGolem(models,anchor)
         local mob,humanoid,mr=entry.mob,entry.humanoid,entry.root
         local owner=networkOwned(mr)
         if owner==true then owned+=1 end
-        -- False means server/another client owns the assembly: do not fake a Bring.
-        -- Nil means executor lacks ownership API: allow only very close experiments.
         local movable=not mr.Anchored and (owner==true or (owner==nil and entry.dist<=unknownPickup))
         if movable then
             if not PHX.ForestGolemPrepared[mob] then
@@ -4352,15 +4022,12 @@ function PHX.bringForestPiratesLikeGolem(models,anchor)
                 end
             end
             pcall(function()
-                -- Keep NPC ground collision: V2.17.25 turned every body part
-                -- into noclip and the mob fell below the NET hit radius.
                 local size=math.min(tonumber(CONFIG.FARM_COMBAT.ForestHitboxSize) or 3,3)
                 mr.Size=Vector3.new(size,size,size)
                 mr.CanCollide=true
                 humanoid.WalkSpeed=0
                 humanoid.JumpPower=0
                 humanoid.AutoRotate=false
-                -- Other body parts keep THEIR ORIGINAL CanCollide values.
             end)
             local angle=(i-1)/math.max(#candidates,1)*math.pi*2
             local slot=CFrame.new(anchor.Position+Vector3.new(math.cos(angle)*spread,0,math.sin(angle)*spread))
@@ -4375,8 +4042,6 @@ function PHX.bringForestPiratesLikeGolem(models,anchor)
                 end)
                 if ok then moved+=1 end
             end
-            -- Physics hold prevents gravity falling through even if this NPC's
-            -- default limb collision is disabled by the Roblox rig.
             if owner==true or owner==nil then
                 pcall(PHX.holdFarmNpc,mr,slot.Position,PHX.ForestBringHolds,"PH_ForestGroundSupport")
             end
@@ -4388,7 +4053,6 @@ function PHX.bringForestPiratesLikeGolem(models,anchor)
             local prior=PHX.ForestBringHolds[mr]
             if prior then pcall(function() prior:Destroy() end); PHX.ForestBringHolds[mr]=nil end
         end
-        -- Collect targets in the real NET radius, not the broader visual Bring radius.
         local netRange=math.min(CONFIG.FARM_COMBAT.ForestAttackRange,
             tonumber(CONFIG.KILL_AURA.NetRange) or 35)
         if (mr.Position-playerRoot.Position).Magnitude<=netRange then
@@ -4402,10 +4066,8 @@ function PHX.bringForestPiratesLikeGolem(models,anchor)
     PHX.FarmCombatDebug.NetTargets=#attackTargets
     return moved,near,owned,attackTargets
 end
-
 function PHX.farmFixedScrapWave(camp,token,completed)
     if not camp or not isRunning(token) then return false end
-    -- Keep the player hovering 18 studs above the mob cluster, never chase mobs.
     local mobAnchor=camp*CFrame.new(0,5,0)
     local playerHover=camp*CFrame.new(0,23,0)
     if not highTween(camp*CFrame.new(0,18,0),340,token) then return false end
@@ -4452,8 +4114,6 @@ function PHX.farmFixedScrapWave(camp,token,completed)
             else
                 zeroTargetsSince=zeroTargetsSince or now
             end
-            -- If there is no owned/bringable mob, hover above a natural live
-            -- target instead of doing nothing at a distant fixed camp position.
             if zeroTargetsSince and now-zeroTargetsSince>=2.2 and reacquires<2 then
                 local nearest,dist=nil,math.huge
                 for _,candidate in ipairs(models) do
@@ -4479,7 +4139,6 @@ function PHX.farmFixedScrapWave(camp,token,completed)
                 end
                 zeroTargetsSince=nil
             end
-            -- Use shared NET dispatcher; do not infer hit from FireServer.
             local tool=equipTooltip("Melee")
             local hitOk=false
             if tool and tool.Parent==char() then
@@ -4492,8 +4151,6 @@ function PHX.farmFixedScrapWave(camp,token,completed)
                 PHX.FarmCombatDebug.LastDamageAt=now
             end
             PHX.netHitFeedback(hpDelta,now-damageAt,#attackTargets)
-            -- NET dispatch sends RegisterAttack/RegisterHit; do not send
-            -- a second attack that would duplicate remote requests.
             if (not hitOk or now-damageAt>=CONFIG.FARM_COMBAT.DamageTimeout)
                 and now-lastFallback>=2 then
                 logLine("SCRAP_NET_STALL", "NO_VERIFIED_DAMAGE_OR_INPUT_FAILED | targets="..tostring(#attackTargets)
@@ -4517,14 +4174,10 @@ function PHX.farmFixedScrapWave(camp,token,completed)
     if not ok then logLine("SCRAP_GOLEM_NET_ERROR",tostring(finished));return false end
     return finished==true
 end
-
--- Hydra/Venom use their own small hitbox and a stationary aerial combat wave.
--- The old fallback chased the closest enemy and broke hover/bring coherence.
 PHX.QuestFarmOriginalParts=setmetatable({}, {__mode="k"})
 PHX.QuestFarmOriginalHumanoids=setmetatable({}, {__mode="k"})
 PHX.QuestFarmLastBring=setmetatable({}, {__mode="k"})
 PHX.QuestBringHolds=setmetatable({}, {__mode="k"})
-
 function PHX.restoreQuestFarmBring()
     PHX.releaseFarmNpcHolds(PHX.QuestBringHolds)
     for part,prior in pairs(PHX.QuestFarmOriginalParts) do
@@ -4548,10 +4201,6 @@ function PHX.restoreQuestFarmBring()
     end
     PHX.QuestFarmLastBring=setmetatable({}, {__mode="k"})
 end
-
--- V2.17.06: Only move network-owned NPCs; keep the original root size.
--- A successful PivotTo on the client is NOT proof that the server moved the mob.
--- V2.17.08: Reverted Hydra/Venom Bring from the original V2.16.38 lineage.
 function PHX.bringQuestMobCluster(models,anchor)
     local rr=root()
     if not rr or not anchor then return 0,0,0,0,{} end
@@ -4573,7 +4222,6 @@ function PHX.bringQuestMobCluster(models,anchor)
         local slot=CFrame.new(anchor.Position+offset)
         local owned=networkOwned(mr)
         if owned==false then unowned+=1 elseif owned==nil then unknown+=1 end
-        -- Unknown ownership is allowed only for very nearby NPCs; false is never movable.
         local canMove=(owned==true or (owned==nil and (mr.Position-rr.Position).Magnitude
             <=(tonumber(CONFIG.FARM_COMBAT.UnknownOwnerPickupRadius) or 95)))
         if CONFIG.FARM_COMBAT.QuestBringEnabled~=false and canMove and not mr.Anchored then
@@ -4584,7 +4232,6 @@ function PHX.bringQuestMobCluster(models,anchor)
                 PHX.QuestFarmOriginalHumanoids[h]={WalkSpeed=h.WalkSpeed,JumpPower=h.JumpPower,AutoRotate=h.AutoRotate}
             end
             pcall(function()
-                -- Do not disable ground collision on the enlarged root.
                 local size=math.min(tonumber(CONFIG.FARM_COMBAT.QuestHitboxSize) or 3,3)
                 mr.Size=Vector3.new(size,size,size)
                 mr.CanCollide=true
@@ -4617,7 +4264,6 @@ function PHX.bringQuestMobCluster(models,anchor)
     end
     return moved,near,unowned,unknown,targets
 end
-
 function PHX.farmStableQuestWave(name,camp,token,completed)
     if not camp or not isRunning(token) then return false end
     local epoch=CHARACTER_EPOCH
@@ -4632,7 +4278,6 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
         task.wait(.2)
     until os.clock()>=waitUntil
     if #models==0 then logLine("QUEST_NET","NO_MOBS | "..name); return false end
-    -- Pick a new fixed point per wave. Never chase individual enemies mid-wave.
     local centerPart,smallest=nil,math.huge
     for _,mob in ipairs(models) do
         local _,mr=PHX.farmMobRoot(mob)
@@ -4719,7 +4364,6 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
             local hpDelta=PHX.waveHpDelta(localModels,previousHP)
             if hpDelta>.2 then damageAt=now end
             PHX.netHitFeedback(hpDelta,now-damageAt,#targets)
-            -- NET dispatcher sends the attack pair; never send native M1.
             if (not attackOK or now-damageAt>=CONFIG.FARM_COMBAT.DamageTimeout)
                 and now-lastFallback>=2 then
                 logLine("QUEST_NET_STALL",name.." | no verified HP loss"
@@ -4741,16 +4385,12 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
     if not ok then logLine("QUEST_NET_ERROR",tostring(result));return false end
     return result==true
 end
-
--- V2.17.28: SHORT BRING ONCE -> M1 -> NEXT PACK. NO continuous re-PivotTo loop.
--- Preserve the V2.17.26 NET attack dispatcher and V2.17.27 smoothTween routing.
--- IMPORTANT: client PivotTo is not evidence of server-authoritative NPC relocation.
 function PHX.farmAdaptiveMobWave(name,camp,token,completed)
     if not camp or not isRunning(token) then return false end
     local epoch=CHARACTER_EPOCH
     local isForest=name=="Forest Pirate"
     local label=isForest and "SCRAP_ROUTE_V28" or "QUEST_ROUTE_V28"
-    local height=13 -- within NET radius 35, below is the NPC pack position
+    local height=13
     local radius=math.min(100,math.max(20,tonumber(CONFIG.FARM_COMBAT.ShortBringRadius) or 80))
     local unknownRadius=math.min(radius,math.max(10,tonumber(CONFIG.FARM_COMBAT.ShortBringUnknownOwnerRadius) or 48))
     local netRange=math.min(35,tonumber(CONFIG.KILL_AURA.NetRange) or 35)
@@ -4764,10 +4404,8 @@ function PHX.farmAdaptiveMobWave(name,camp,token,completed)
     local focus,hoverTarget=nil,nil
     local totalSends,totalHops,totalMoved,totalDamage=0,0,0,0
     local moveFailures,lastDiag,lastBoost=0,0,0
-
     local function restorePack()
         if not pack then return end
-        -- Restore movement once we leave the pack. Preserve ALL NPC collisions.
         for humanoid,original in pairs(pack.Frozen or {}) do
             if humanoid and humanoid.Parent then
                 pcall(function()
@@ -4782,7 +4420,6 @@ function PHX.farmAdaptiveMobWave(name,camp,token,completed)
     local function cleanup()
         restorePack()
         if PHX.stopFarmHover then PHX.stopFarmHover() end
-        -- Cleanup any older worker holds; these are NOT used by short Bring.
         if isForest then PHX.restoreForestGolemBring()
         else PHX.restoreQuestFarmBring() end
     end
@@ -4838,8 +4475,6 @@ function PHX.farmAdaptiveMobWave(name,camp,token,completed)
             Owned=0,Unknown=0,NotOwned=0,TooFar=0,Attempted=0,Reason=reason}
         pack=current
         local choices={}
-        -- Close to the PLAYER (not the distant camp spawn).
-        -- Keep mobs from similar ground level; never move a mob through an elevated platform.
         for _,mob in ipairs(models or {}) do
             local mh,mp=PHX.farmMobRoot(mob)
             if mh and mp and math.abs(mp.Position.Y-anchor.Y)<=10 then
@@ -4862,8 +4497,6 @@ function PHX.farmAdaptiveMobWave(name,camp,token,completed)
             local canMove=not mp.Anchored and (ownership==true or (ownership==nil and entry.Distance<=unknownRadius))
             local allowed=isForest or CONFIG.FARM_COMBAT.QuestBringEnabled~=false
             if allowed and canMove then
-                -- Bring ONCE, horizontally to a small ring directly underneath the player.
-                -- Never change CanCollide or resize any NPC body parts.
                 local angle=(i-1)*2*math.pi/math.max(#choices,1)
                 local offset=Vector3.new(math.cos(angle),0,math.sin(angle)) * (i==1 and 0 or 2.5)
                 local target=Vector3.new(anchor.X+offset.X,mp.Position.Y,anchor.Z+offset.Z)
@@ -4875,7 +4508,6 @@ function PHX.farmAdaptiveMobWave(name,camp,token,completed)
                     end)
                     if ok then current.MoveCount+=1;totalMoved+=1 end
                 end
-                -- Stop NPC walking while player M1s. No BodyPosition and no re-PivotTo.
                 if not current.Frozen[mh] then
                     current.Frozen[mh]={WalkSpeed=mh.WalkSpeed,JumpPower=mh.JumpPower,AutoRotate=mh.AutoRotate}
                     pcall(function() mh.WalkSpeed=0;mh.JumpPower=0;mh.AutoRotate=false end)
@@ -4985,7 +4617,6 @@ function PHX.farmAdaptiveMobWave(name,camp,token,completed)
                     tostring(focus and focus.Name),tostring(PHX.KillAura.LastMessage)))
                 lastDiag=now
             end
-            -- No bring calls here. Every combat tick is M1-only until pack ends.
             task.wait(isForest and CONFIG.GOLEM_AURA.ATTACK_INTERVAL or CONFIG.MELEE_ATTACK_INTERVAL)
         end
         logLine(label,string.format("WAVE_END | hops=%d netSent=%d bringMoves=%d verifiedHpDecrease=%.0f",totalHops,totalSends,totalMoved,totalDamage))
@@ -4995,10 +4626,6 @@ function PHX.farmAdaptiveMobWave(name,camp,token,completed)
     if not ok then logLine(label.."_ERROR",tostring(finished));return false end
     return finished==true
 end
-
--- V2.17.33 material-only combat: V1.2 XZ rebring + OriginalY+5 + NET M1; soft-pause conflict diagnostic.
--- No calls to the shared Golem dispatcher/hover; no Prehistoric changes.
--- MATERIAL FARM CORE BEGIN
 function PHX.newMaterialCombatWave(name,camp,token)
     if name~="Forest Pirate" and name~="Hydra Enforcer" and name~="Venomous Assailant" then return nil end
     local Config={Interval=.11,EquipWait=.10,Radius=60,Segment=48,TargetEps=3,
@@ -5031,9 +4658,6 @@ end
 function K.ContextValid(context,tool)
     if not context or not K.Alive() or context.Generation~=State.Generation
         or context.Epoch~=CHARACTER_EPOCH or context.Token~=token or not isRunning(token) then return false end
-    -- Hard cancellation only: a true movement handoff, dead/changed actor, or stopped main.
-    -- V2.17.33: temporary inventory/fruit/GUI locks must NOT destroy the Material wave
-    -- from the Hover Stepped callback (which checks ContextValid every frame).
     local runtime=PHX.Runtime
     if (PHX.isMovementLocked and PHX.isMovementLocked()) or (runtime and runtime.MovementLockLease) then
         return false
@@ -5043,8 +4667,6 @@ function K.ContextValid(context,tool)
         and current.Root==context.Root and (not tool or (tool.Parent==current.Character and tool.Enabled~=false and K.IsMelee(tool))) or false
 end
 function K.TemporaryBusyReason()
-    -- Soft pause while another subsystem owns an interaction or inventory operation.
-    -- Do not destroy Hover / NPC backup / BringTracked; resume the wave when released.
     local runtime=PHX.Runtime
     if PHX.InventoryBusy then return "INVENTORY_RPC" end
     if runtime and runtime.FruitGuiBusy then return "FRUIT_GUI" end
@@ -5142,7 +4764,6 @@ function K.RestoreBucket(bucket)
             if object.Parent and (object.Parent==record.Owner or object:IsDescendantOf(record.Owner)) then
                 for property,value in pairs(record.Values) do pcall(function()
                     if bucket==State.NpcBackup and property=="AssemblyLinearVelocity" then
-                        -- Only horizontal velocity was changed; leave current gravity/ground motion intact.
                         object[property]=Vector3.new(value.X,object[property].Y,value.Z)
                     else object[property]=value end
                 end) end
@@ -5151,7 +4772,6 @@ function K.RestoreBucket(bucket)
     end
     table.clear(bucket)
 end
-
 function K.RestoreNpcOwner(owner)
     for object,record in pairs(State.NpcBackup) do
         if record.Owner==owner then
@@ -5169,7 +4789,6 @@ function K.RestoreNpcOwner(owner)
     end
     State.BringTracked[owner]=nil
 end
-
 function K.PruneNpcBackups()
     local folder=S.Workspace:FindFirstChild("Enemies")
     local retired={}
@@ -5213,7 +4832,6 @@ function K.StopHover()
     if not hover then return end
     if hover.Connection then K.Disconnect(hover.Connection) end
     for _,object in ipairs(hover.Objects) do K.DestroyObject(object) end
-    -- Restore only the original humanoid; never apply old values to a respawn.
     if hover.Humanoid.Parent==hover.Character then
         pcall(function() hover.Humanoid.AutoRotate=hover.AutoRotate end)
     end
@@ -5242,7 +4860,6 @@ function K.Hold(context,cf)
     local hover=State.Hover
     if hover and hover.Root==context.Root and hover.Generation==context.Generation
         and hover.Position.Parent==context.Root and hover.Attachment.Parent==context.Root then
-        -- Update the force target only when it actually changes. No CFrame reset.
         if (hover.Frame.Position-cf.Position).Magnitude>.01 then
             hover.Frame=cf;hover.Position.Position=cf.Position
         end
@@ -5292,8 +4909,6 @@ function K.BringAllowed()
 end
 function K.SkipBring()
     K.RestoreBucket(State.NpcBackup)
-    -- Preserve the first-seen Y while the same quest/NPC identity survives OFF/ON.
-    -- Re-enable allows an initial dispatch again, always to the same OriginalY+5.
     for _,record in pairs(State.BringTracked) do record.InitialAttempted=false;record.Brought=false end
     State.LocalStacked=0;State.OwnedTrue=0;State.OwnedFalse=0;State.OwnershipUnknown=0;State.BodyColliders=0
     return true,"QUEST_BRING_OFF"
@@ -5302,7 +4917,6 @@ function K.HorizontalDistance(a,b)
     local dx,dz=a.X-b.X,a.Z-b.Z
     return math.sqrt(dx*dx+dz*dz)
 end
-
 function K.BringIdentityValid(npc)
     local folder=S.Workspace:FindFirstChild("Enemies")
     local model=npc.Model
@@ -5311,7 +4925,6 @@ function K.BringIdentityValid(npc)
     return folder~=nil and model.Parent==folder and h==npc.Humanoid and r==npc.Part
         and h.Health>0 and K.Matches(model) and not S.Players:GetPlayerFromCharacter(model)
 end
-
 function K.Bring(context,targets,anchor)
     if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
     if not K.BringAllowed() then return K.SkipBring() end
@@ -5354,9 +4967,6 @@ function K.Bring(context,targets,anchor)
                 if npc.Humanoid.JumpHeight~=0 then npc.Humanoid.JumpHeight=0 end
                 if npc.Humanoid.AutoRotate~=false then npc.Humanoid.AutoRotate=false end
                 if moveReason then
-                    -- Translate the rig in XZ and place its root at ORIGINAL spawn/first-seen Y + 5.
-                    -- tracked.OriginalY never changes during rebrings; no extra +5 on each move.
-                    -- PivotTo(pivot + shift) preserves the NPC's original rotation and rig offsets.
                     local original=npc.Part.CFrame
                     local goalY=tracked.OriginalY+Config.BringYOffset
                     local shift=Vector3.new(anchor.Position.X-original.Position.X,
@@ -5368,14 +4978,11 @@ function K.Bring(context,targets,anchor)
                         if not K.BringIdentityValid(npc) then K.RestoreNpcOwner(npc.Model) end
                         return
                     end
-                    -- Back up only properties that this movement will change. Other body collisions stay intact.
                     for _,part in ipairs(npc.Model:GetDescendants()) do
                         if part:IsA("BasePart") then
                             K.Backup(State.NpcBackup,npc.Model,part,{"AssemblyLinearVelocity","AssemblyAngularVelocity"})
                         end
                     end
-                    -- An initial dispatch is attempted once even if replication does not retain it.
-                    -- Later attempts require actual horizontal distance > RebringDistance.
                     tracked.InitialAttempted=true
                     if not K.BringAllowed() then K.SkipBring();return end
                     npc.Model:PivotTo(pivot+shift)
@@ -5419,7 +5026,7 @@ function K.Bring(context,targets,anchor)
 end
 function K.Tween(context,target,speed)
     if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
-    K.StopHover() -- travel owns movement; hover never fights an active tween.
+    K.StopHover()
     local deadline=os.clock()+Config.TweenDeadline
     local ok,reached,reason=pcall(function()
         K.PrepareCharacter(context)
@@ -5595,8 +5202,6 @@ function K.Run(completed)
                 State.Message="COMPLETED";return true
             end
             if not K.ContextValid(context) then return false end
-            -- V2.17.33: competing inventory/UI jobs only pause the combat *tick*.
-            -- A fleeting soft busy must not reset Hover, BringTracked or the whole wave.
             local softBusy=K.TemporaryBusyReason()
             if softBusy then
                 if State.SoftBusy~=softBusy then
@@ -5621,7 +5226,6 @@ function K.Run(completed)
             State.NearCount=#nearby
             local tool,equipWhy=K.Equip(context)
             if not tool then
-                -- Another controller may temporarily switch tools; retry without resetting NPCs.
                 State.Message="EQUIP_WAIT:"..tostring(equipWhy)
                 if State.LastEquipReason~=equipWhy and type(logLine)=="function" then
                     logLine("MATERIAL_EQUIP_WAIT",name.." | "..tostring(equipWhy))
@@ -5634,7 +5238,6 @@ function K.Run(completed)
             local sent,sendWhy=K.Net(context,tool,nearby)
             State.LastNetReason=sendWhy
             State.Message=sendWhy
-            -- Tool switches are recoverable; only hard actor/session changes retire the wave.
             if not K.ContextValid(context) then return false end
             if os.clock()-lastDiag>=2.4 then
                 if type(logLine)=="function" then
@@ -5652,8 +5255,6 @@ function K.Run(completed)
     pcall(K.ObserveDamage,{})
     if not ok then State.LastError=tostring(result);State.Message="MATERIAL_FARM_ERROR" end
     if ok and State.KeepHover then
-        -- Check the goal again before retaining hover across the outer farm loop.
-        -- This callback may yield; stale actors/locks never authorize a new tick.
         local checked,finished=pcall(function() return completed and completed()==true end)
         if not checked then
             ok=false;State.LastError=tostring(finished);State.Message="MATERIAL_FARM_ERROR"
@@ -5668,10 +5269,8 @@ function K.Run(completed)
 end
     return K
 end
-
 PHX.MaterialCombat={Current=nil,Busy=false,Worker=nil,LastReport={Message="IDLE"}}
 function PHX.MaterialCombat.RunWave(name,camp,token,completed)
-    -- Only material quests; Golem/unknown callers remain outside this controller.
     if name~="Forest Pirate" and name~="Hydra Enforcer" and name~="Venomous Assailant" then return false end
     if not camp or not isRunning(token) or PHX.MaterialCombat.Busy then return false end
     local wave=PHX.MaterialCombat.Current
@@ -5694,7 +5293,6 @@ function PHX.MaterialCombat.RunWave(name,camp,token,completed)
         if not ok or not wave.KeepHover() then wave.Stop(message);PHX.MaterialCombat.Current=nil end
         PHX.MaterialCombat.LastReport=wave.GetStatus()
     else
-        -- Cancelled old worker cleanup is local to that wave, never a new wave.
         wave.Stop("SUPERSEDED")
     end
     if PHX.MaterialCombat.Worker==wave then PHX.MaterialCombat.Busy=false;PHX.MaterialCombat.Worker=nil end
@@ -5713,11 +5311,6 @@ function PHX.MaterialCombat.GetStatus()
     local wave=PHX.MaterialCombat.Current
     return wave and wave.GetStatus() or PHX.MaterialCombat.LastReport
 end
--- MATERIAL FARM CORE END
-
--- Register only this controller's cleanup. Old movement/Prehistoric function
--- definitions remain untouched; idle material cleanup has no effects.
--- MATERIAL FARM LIFECYCLE BEGIN
 do
     local oldTravel=PHX.restoreTravel
     PHX.restoreTravel=function(...)
@@ -5729,56 +5322,42 @@ do
         if PHX.MaterialCombat.Current or PHX.MaterialCombat.Worker then PHX.MaterialCombat.Stop("RESTORE_MOVEMENT") end
         if oldMovement then return oldMovement(...) end
     end
-    -- A quest receipt can arrive between batches, so collect/drop travel may
-    -- start without another completed callback. Hand off the retained force.
     local oldTween=safeTween
     safeTween=function(...)
         if PHX.MaterialCombat.Current or PHX.MaterialCombat.Worker then PHX.MaterialCombat.Stop("TRAVEL_HANDOFF") end
         return oldTween(...)
     end
-    -- A separately executing proven test would otherwise compete with main.
     local test=ENV.__PH_TWEEN_BRING_FAST_ATTACK
     if type(test)=="table" and type(test.Stop)=="function" then pcall(test.Stop) end
 end
--- MATERIAL FARM LIFECYCLE END
-
--- Replace only the three farm combat loops; quest/boat/volcano/egg logic is unchanged.
 function PHX.farmFixedScrapWave(camp,token,completed)
     return PHX.MaterialCombat.RunWave("Forest Pirate",camp,token,completed)
 end
 function PHX.farmStableQuestWave(name,camp,token,completed)
     return PHX.MaterialCombat.RunWave(name,camp,token,completed)
 end
-
 function PHX.farmMobWave(name,camp,token,completed)
     if name=="Forest Pirate" then
         return PHX.farmFixedScrapWave(camp,token,completed)
     end
     return PHX.farmStableQuestWave(name,camp,token,completed)
 end
-
 local function farmNamedMob(name, fallbackCFrame, token)
     return PHX.farmMobWave(name,fallbackCFrame,token,function()
         return PHX.QuestCompletedAt >= (PHX.LastQuestAcceptedAt or math.huge)
     end)
 end
-
--- REMOVE LAVA V1 integrated: auto-discover Core.InteriorLava from startup.
--- Client-only appearance/touch/collision. Not confirmed against server damage.
 PHX.RemoveLava = {
     Enabled=CONFIG.REMOVE_LAVA.Enabled, Root=nil, Snapshots=setmetatable({}, {__mode="k"}),
     Parts=0, Visuals=0, LastError=nil, LastStatus=nil, LastScanAt=nil,
 }
 local function lavaRootNow()
-    -- Primary path from the confirmed standalone donor. Keep the scan scoped
-    -- to PrehistoricIsland so unrelated lava/effects are never changed.
     local map=workspace:FindFirstChild("Map")
     local island=map and map:FindFirstChild("PrehistoricIsland")
     if not island then return nil end
     local core=island:FindFirstChild("Core")
     local exact=core and core:FindFirstChild("InteriorLava")
     if exact then return exact end
-    -- Robust against an added intermediate Model/Folder in future map streams.
     return island:FindFirstChild("InteriorLava",true)
 end
 local function lavaBelongs(object,parent)
@@ -5877,11 +5456,9 @@ function PHX.removeLavaStop()
     lavaRestoreAll()
 end
 local function enableLavaProtection(_island)
-    -- Main event phase does not own the client lava scanner; it is always ready.
     PHX.removeLavaRescan()
 end
 local function disableLavaProtection()
-    -- Auto lava survives event completion. Stop/Settings OFF restores values.
 end
 PHX.connect(workspace.DescendantAdded,function(object)
     local sys=PHX.RemoveLava
@@ -5891,8 +5468,6 @@ PHX.connect(workspace.DescendantAdded,function(object)
         if not ok then sys.LastError=tostring(err) end
     elseif object.Name=="PrehistoricIsland" or object.Name=="Core"
         or object.Name=="InteriorLava" then
-        -- Scan immediately on significant map stream events; the polling
-        -- loop below still catches fully populated/renamed descendants.
         local ok,err=pcall(PHX.removeLavaRescan)
         if not ok then sys.LastError=tostring(err) end
     end
@@ -5906,35 +5481,29 @@ PHX.spawn(function()
         task.wait(math.max(.2,tonumber(CONFIG.REMOVE_LAVA.Interval) or .5))
     end
 end)
-
 local function nearestDistance(pos)
     local r = root()
     if not r then return math.huge end
     return (r.Position - pos).Magnitude
 end
-
 local function getRegion()
     local r = root()
     if not r then return "UNKNOWN", math.huge end
     local p = r.Position
-
     local hydraD = (p - CONFIG.DRAGON_HUNTER.STAND.Position).Magnitude
     local turtleD = (p - CONFIG.MOB_CAMPS.ForestPirate.Position).Magnitude
     local tikiD = (p - CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude
     local castleD = (p - CONFIG.PORTALS.Castle_To_Hydra.Position).Magnitude
-
     if hydraD <= 5200 then return "HYDRA", hydraD end
     if turtleD <= 6500 then return "TURTLE", turtleD end
     if tikiD <= 5200 then return "TIKI", tikiD end
     if castleD <= 4200 then return "CASTLE", castleD end
-
     local regions = {
         TIKI = CONFIG.PORTALS.Tiki_To_Castle.Position,
         CASTLE = CONFIG.PORTALS.Castle_To_Hydra.Position,
         TURTLE = CONFIG.PORTALS.Turtle_To_Castle.Position,
         HYDRA = CONFIG.PORTALS.Hydra_To_Castle.Position,
     }
-
     local best,bestD = "UNKNOWN", math.huge
     for name,pos in pairs(regions) do
         local d = (p-pos).Magnitude
@@ -5943,7 +5512,6 @@ local function getRegion()
     if bestD > 8000 then return "UNKNOWN", bestD end
     return best, bestD
 end
-
 local function waitPortalChainDelay(token)
     local remain = CONFIG.PORTAL_CHAIN_DELAY - (os.clock() - lastPortalSuccessAt)
     if remain <= 0 then return true end
@@ -5956,11 +5524,9 @@ local function waitPortalChainDelay(token)
     end
     return true
 end
-
 local function markPortalSuccess()
     lastPortalSuccessAt = os.clock()
 end
-
 local function usePortal(cf,expectedRegion,token)
     for attempt=1,4 do
         if not PHX.travelAlive(token) or not waitPortalChainDelay(token) or not waitAlive(token) then return false end
@@ -5994,7 +5560,7 @@ local function usePortal(cf,expectedRegion,token)
             local _,moved=confirm()
             if moved then return end
             if not approached or not PHX.travelAlive(token) then return end
-            safeTween(cf,200,token) -- donor final exact gate settle
+            safeTween(cf,200,token)
             local _,crossed=confirm()
             if crossed then return end
             local deadline=os.clock()+5
@@ -6017,7 +5583,6 @@ local function usePortal(cf,expectedRegion,token)
     setStatus("PORTAL FAILED -> "..expectedRegion.."; route paused")
     return false
 end
-
 local function goCastle(token)
     local region = getRegion()
     if region == "CASTLE" then return true end
@@ -6026,11 +5591,9 @@ local function goCastle(token)
     if region == "HYDRA" then return usePortal(CONFIG.PORTALS.Hydra_To_Castle, "CASTLE", token) end
     return false
 end
-
 local function goTiki(token)
     local region = getRegion()
     if region == "TIKI" then return true end
-
     if region ~= "CASTLE" then
         if not goCastle(token) then
             setStatus("PORTAL: failed to reach Castle")
@@ -6038,16 +5601,13 @@ local function goTiki(token)
         end
         task.wait(1.0)
     end
-
     if getRegion() == "TIKI" then return true end
     local ok = usePortal(CONFIG.PORTALS.Castle_To_Tiki, "TIKI", token)
     task.wait(1.0)
     if getRegion() == "TIKI" then return true end
-
     setStatus("PORTAL: Castle -> Tiki not confirmed")
     return ok and true or false
 end
-
 local function goTurtle(token)
     local region = getRegion()
     if region == "TURTLE" then return true end
@@ -6058,7 +5618,6 @@ local function goTurtle(token)
     if getRegion() ~= "CASTLE" then return false end
     return usePortal(CONFIG.PORTALS.Castle_To_Turtle, "TURTLE", token)
 end
-
 local function goHydra(token)
     local region = getRegion()
     if region == "HYDRA" then return true end
@@ -6069,29 +5628,23 @@ local function goHydra(token)
     if getRegion() ~= "CASTLE" then return false end
     return usePortal(CONFIG.PORTALS.Castle_To_Hydra, "HYDRA", token)
 end
-
 resetBackToTiki = function(token)
     if not CONFIG.RESET_TO_TIKI_AFTER_EVENT then return true end
-
     setStatus("Rewards collected -> reset back to Tiki")
     logLine("RESET_PATH", "POST_EVENT_REWARDS_DEPARTURE")
     if not resetCharacter(token) then return false end
     if token and not isRunning(token) then return false end
-
     if getRegion() ~= "TIKI" then
         goTiki(token)
     end
-
     if getRegion() == "TIKI" then
         if not PHX.isMovementLocked() then pcall(function() CommF:InvokeServer("SetSpawnPoint") end) end
         setStatus("Returned to Tiki Outpost")
         return true
     end
-
     setStatus("WARNING: reset completed but Tiki position not confirmed")
     return false
 end
-
 local function boatOwnerName(boat)
     if not boat then return nil end
     local owner=boat:FindFirstChild("Owner",true)
@@ -6102,22 +5655,18 @@ local function boatOwnerName(boat)
     end
     return value~=nil and tostring(value) or nil
 end
-
 function PHX.boatHealth(boat)
     if not boat then return nil,nil end
     local health,maxHealth=boat:FindFirstChild("Health",true),boat:FindFirstChild("MaxHealth",true)
     return tonumber(health and health:IsA("ValueBase") and health.Value or boat:GetAttribute("Health")),
         tonumber(maxHealth and maxHealth:IsA("ValueBase") and maxHealth.Value or boat:GetAttribute("MaxHealth"))
 end
-
 function PHX.boatAlive(boat)
     if not boat or not boat.Parent then return false end
     local hp=PHX.boatHealth(boat)
     return hp==nil or hp>0
 end
-
 PHX.RejectedBoats=PHX.RejectedBoats or setmetatable({},{__mode="k"})
-
 local function getMasterBoat()
     local boats=workspace:FindFirstChild("Boats")
     if not boats then return nil end
@@ -6154,7 +5703,6 @@ local function getMasterBoat()
     end
     return best
 end
-
 local function sortPassengerSeats(boat)
     local driver=PHX.findDriverSeat(boat)
     if not driver then return {} end
@@ -6174,14 +5722,12 @@ local function sortPassengerSeats(boat)
     for _,entry in ipairs(decorated) do seats[#seats+1]=entry.seat end
     return seats
 end
-
 local function slaveIndex()
     local n=0
     for _,name in ipairs(CONFIG.TEAM) do
         if not PHX.sameName(name,ENV.TeamConfig.MasterName) then n=n+1; if PHX.sameName(name,LP.Name) then return n end end
     end
 end
-
 function PHX.passengerSeatCandidates(boat)
     local seats=sortPassengerSeats(boat)
     local candidates={}
@@ -6192,7 +5738,6 @@ function PHX.passengerSeatCandidates(boat)
     end
     return candidates
 end
-
 local function sitOn(seat,token)
     local c,h=waitAlive(token)
     if not c or not h or not seat or not seat.Parent then return false end
@@ -6215,7 +5760,6 @@ local function sitOn(seat,token)
     end
     return false
 end
-
 local function nearestNativeBoatDealer()
     local folder=workspace:FindFirstChild("NPCs")
     if not folder then return nil,nil,"NPC_FOLDER_MISSING" end
@@ -6241,11 +5785,6 @@ local function nearestNativeBoatDealer()
     end
     return best,part,best and "NPC_FOUND" or "NO_TIKI_MARINE_BOAT_DEALER"
 end
-
--- V2.17.15: Return to the Tiki REGION only for purchasing a boat.
--- Buying through CommF_ does not require walking/tweening to the Boat Dealer.
--- Keep this separate from returnToDealer: that NPC approach is only a verified
--- rejection fallback, not the normal route after crafting a Magnet/respawning.
 function PHX.returnToTikiForBoat(token,reason)
     if not PHX.travelAlive(token) then return false end
     reason=tostring(reason or "BOAT_PURCHASE")
@@ -6256,7 +5795,6 @@ function PHX.returnToTikiForBoat(token,reason)
     end
     logLine("BOAT_TIKI_ROUTE",reason.." from="..tostring(region).." to=TIKI noDealerTween=true")
     if region=="UNKNOWN" then
-        -- Existing offshore safety path: reset only after Dragon/item guard.
         setStatus("BOAT: offshore -> secure inventory and return to Tiki spawn")
         if PHX.secureDragonWindow and not PHX.secureDragonWindow(1.0,token) then return false end
         if not resetCharacter(token) then
@@ -6279,7 +5817,6 @@ function PHX.returnToTikiForBoat(token,reason)
     logLine("BOAT_TIKI_READY",reason.." region=TIKI noDealerTween=true")
     return true
 end
-
 function PHX.returnToDealer(token)
     if getRegion()=="UNKNOWN" then
         setStatus("RECOVERY offshore -> respawn at saved Tiki spawn")
@@ -6322,7 +5859,6 @@ function PHX.returnToDealer(token)
     noteProgress("TIKI_DEALER:"..CHARACTER_EPOCH)
     return true
 end
-
 local function boatBeli()
     for _,parentName in ipairs({"Data","leaderstats"}) do
         local parent=LP:FindFirstChild(parentName)
@@ -6337,9 +5873,6 @@ local function boatBeli()
     end
     return nil
 end
-
--- V2.16.38: exclusive player-movement transaction for the *full* SOLO/TEAM main.
--- Never call tween:Play() then tween:Cancel() immediately: arrival must precede lock.
 local function acquireBoatMovementLock(token)
     if not PHX.travelAlive(token) or PHX.isMovementLocked() then return nil,"LOCK_BUSY_OR_STOPPED" end
     local character=LP.Character
@@ -6349,17 +5882,13 @@ local function acquireBoatMovementLock(token)
     local lease={Character=character,Humanoid=h,Root=rr,Owner=coroutine.running(),StartedAt=os.clock(),
         WalkSpeed=h.WalkSpeed,JumpPower=h.JumpPower,JumpHeight=h.JumpHeight,AutoRotate=h.AutoRotate,
         ActionName="PX_BoatBuy_Lock_"..tostring(SCRIPT_GENERATION)}
-    -- Atomic gate FIRST: all other movement creators will now refuse new work.
     PHX.Runtime.MovementLockLease=lease
     logLine("MOVEMENT_LOCKED","owner=BUY_BOAT generation="..tostring(SCRIPT_GENERATION))
-
-    -- Stop every known source of motion. Cleanup procedures can run without yielding.
     local rt=PHX.Runtime
     if rt.FruitApproachCleanup then pcall(rt.FruitApproachCleanup) end
     if PHX.stopFarmHover then pcall(PHX.stopFarmHover) end
     if PHX.stopBoat then pcall(PHX.stopBoat) end
     if PHX.restoreTravel then pcall(PHX.restoreTravel) end
-    -- Snapshot normal humanoid state *after* retiring a prior hover controller.
     lease.AutoRotate=h.AutoRotate
     lease.WalkSpeed=h.WalkSpeed
     lease.JumpPower=h.JumpPower
@@ -6379,7 +5908,6 @@ local function acquireBoatMovementLock(token)
         pcall(function() VirtualInputManager:SendKeyEvent(false,key,false,game) end)
         rt.HeldKeys[key]=nil
     end
-    -- Sink ordinary character controls for this short-lived purchase window.
     local sink=function() return Enum.ContextActionResult.Sink end
     local bound=pcall(function()
         ContextActionService:BindActionAtPriority(lease.ActionName,sink,false,10000,
@@ -6389,13 +5917,11 @@ local function acquireBoatMovementLock(token)
     end)
     if not bound then lease.ActionName=nil end
     pcall(function() h.AutoRotate=false;h.WalkSpeed=0;h.JumpPower=0;h.JumpHeight=0 end)
-    -- A short Heartbeat guard prevents residual velocity and humanoid input.
     lease.Heartbeat=RunService.Heartbeat:Connect(function()
         if PHX.Runtime.MovementLockLease~=lease then return end
         if not PHX.generationAlive() or LP.Character~=character or h.Health<=0
             or os.clock()-lease.StartedAt>25 then
             lease.TimedOut=true
-            -- If a remote may already have been issued, do not ever duplicate the charge.
             local pending=PHX.BoatPurchasePending
             if pending and pending.Lease==lease and pending.CallIssued then
                 pending.Stage="PAYMENT_UNCERTAIN"
@@ -6416,7 +5942,6 @@ local function acquireBoatMovementLock(token)
         " movementConnections="..connections.." movementObjects="..objects)
     return lease
 end
-
 local function settleBoatMovement(lease,npcPart,token)
     local stableSince=nil
     local prior=nil
@@ -6443,7 +5968,6 @@ local function settleBoatMovement(lease,npcPart,token)
     end
     return false,"MOVEMENT_NOT_SETTLED"
 end
-
 local function snapshotBoatsForPurchase()
     local folder=workspace:FindFirstChild("Boats")
     if not folder then return nil,nil end
@@ -6451,7 +5975,6 @@ local function snapshotBoatsForPurchase()
     for _,boat in ipairs(folder:GetChildren()) do snapshot[boat]=true end
     return folder,snapshot
 end
-
 local function findVerifiedPurchasedBoat(pending)
     local folder=workspace:FindFirstChild("Boats")
     if not folder or not pending or not pending.Snapshot then return nil,nil end
@@ -6465,9 +5988,6 @@ local function findVerifiedPurchasedBoat(pending)
             seen=owner or "OWNER_PENDING"
         end
     end
-    -- Same proof used by the supplied one-shot BuyBoat test: a fresh boat plus
-    -- precisely 2000 Beli charged. Accept only ONE ownerless candidate; if the
-    -- Owner identifies another player, never associate their boat with us.
     if ownerlessCount==1 and pending.BeliBefore~=nil then
         local after=boatBeli()
         if after~=nil and pending.BeliBefore-after==2000 then
@@ -6478,7 +5998,6 @@ local function findVerifiedPurchasedBoat(pending)
     end
     return nil,seen
 end
-
 local function finishVerifiedBoatBuy(pending,boat)
     if not boat or not PHX.boatAlive(boat) then return nil end
     if pending.VerifiedByBeli then PHX.VerifiedSpawnBoats[boat]=true end
@@ -6500,7 +6019,6 @@ local function finishVerifiedBoatBuy(pending,boat)
         end
     end
     PHX.releaseBoatMovementLock(pending.Lease,"SPAWN_VERIFIED")
-    -- Spawn point is strictly after purchase verification and movement unlock.
     if PHX.travelAlive(pending.Token) and CommF and PHX.BoatSpawnpointCharacter~=LP.Character then
         PHX.BoatSpawnpointCharacter=LP.Character
         local ok,value=pcall(function() return CommF:InvokeServer("SetSpawnPoint") end)
@@ -6508,7 +6026,6 @@ local function finishVerifiedBoatBuy(pending,boat)
     end
     return boat
 end
-
 local function buyGrandBrigade(token)
     if not isMaster() or not PHX.travelAlive(token) then return nil end
     local pending=PHX.BoatPurchasePending
@@ -6522,8 +6039,6 @@ local function buyGrandBrigade(token)
         local boat,seen=findVerifiedPurchasedBoat(pending)
         if boat then return finishVerifiedBoatBuy(pending,boat) end
         if pending.Stage=="FAST_REJECT_OBSERVE" then
-            -- A negative RPC response alone does not prove that the purchase is
-            -- harmless to retry. Allow replication time before dealer fallback.
             if os.clock()>=(pending.ObserveUntil or math.huge) then
                 local currentBeli=boatBeli()
                 if pending.BeliBefore==nil or currentBeli==nil or currentBeli<pending.BeliBefore or seen then
@@ -6532,7 +6047,6 @@ local function buyGrandBrigade(token)
                     logLine("BOAT_FAST_DIRECT","AMBIGUOUS_AFTER_REJECTION old="..tostring(pending.BeliBefore)..
                         " new="..tostring(currentBeli).." seen="..tostring(seen).." NO_DUPLICATE_BUY=true")
                 else
-                    -- Now it is safe to use the established dealer route.
                     PHX.BoatFastForceDealer=true
                     PHX.BoatPurchasePending=nil;PHX.BoatsBeforePurchase=nil
                     PHX.NextBoatBuyAt=os.clock()+0.2
@@ -6553,7 +6067,6 @@ local function buyGrandBrigade(token)
                     " seen="..tostring(seen).." NO_DUPLICATE_BUY=true")
             end
         end
-        -- All uncertain cases remain pending; never charge again automatically.
         return nil
     end
     if PHX.BoatPurchaseInFlight or PHX.isMovementLocked() then return nil end
@@ -6575,8 +6088,6 @@ local function buyGrandBrigade(token)
     if not fastDirect then npc,part=nearestNativeBoatDealer() end
     local distance=part and (rr.Position-part.Position).Magnitude or math.huge
     if fastDirect then
-        -- Borrow the user's fast test: BuyBoat can be attempted without opening
-        -- a menu, or pre-travelling to the NPC. Server acceptance is verified below.
         PHX.BoatState="FAST_DIRECT_PREP"
         logLine("BOAT_FAST_DIRECT","SKIP_DEALER distance="..string.format("%.1f",distance)..
             " region="..tostring(getRegion()).." mode=ONE_RPC")
@@ -6608,7 +6119,6 @@ local function buyGrandBrigade(token)
         local settled,why=settleBoatMovement(lease,part,token)
         if not settled then return abort("SETTLE:"..tostring(why)) end
     else
-        -- Preserve the exclusive movement lock, but skip the .45s dealer settle.
         logLine("BOAT_FAST_DIRECT","LOCK_READY; SKIP_NPC_SETTLE")
     end
     if not PHX.travelAlive(token) or LP.Character~=character or PHX.Runtime.MovementLockLease~=lease then
@@ -6629,7 +6139,7 @@ local function buyGrandBrigade(token)
     logLine("BOAT_DIRECT","START mode="..(fastDirect and "FAST" or "DEALER")..
         " dist="..string.format("%.2f",currentDist).." beli="..tostring(pending.BeliBefore)..
         " boats="..initialCount.." npc="..tostring(npc and npc.Name))
-    pending.CallIssued=true  -- One transaction = one request; set before RemoteFunction yields.
+    pending.CallIssued=true
     pending.RequestAt=os.clock()
     logLine("BUY_INVOKED","CommF_:InvokeServer(BuyBoat, MarineGrandBrigade) call=1 mode="..(fastDirect and "FAST" or "DEALER"))
     local ok,result=pcall(function() return CommF:InvokeServer("BuyBoat",CONFIG.BOAT_BUY_NAME) end)
@@ -6641,13 +6151,10 @@ local function buyGrandBrigade(token)
     pending.Result=ok and result or nil
     logLine("BUY_RESULT="..tostring(ok and result or "ERROR"),
         "ok="..tostring(ok).." elapsed="..string.format("%.2f",os.clock()-pending.RequestAt))
-    -- Payment can have succeeded even when result/replication is ambiguous.
     local after=boatBeli()
     local charged=after and pending.BeliBefore and after<pending.BeliBefore
     local appeared,seenNewBoat=findVerifiedPurchasedBoat(pending)
     if not ok or result~=1 then
-        -- Only a concrete negative response is eligible for dealer fallback,
-        -- and only after observing unchanged Beli and no fresh boat.
         local concreteReject=ok and (result==false or (type(result)=="number" and result~=1))
         if fastDirect and concreteReject and not charged and not appeared and not seenNewBoat then
             pending.Stage="FAST_REJECT_OBSERVE"
@@ -6657,7 +6164,6 @@ local function buyGrandBrigade(token)
                 " observeSeconds="..string.format("%.1f",pending.ObserveUntil-os.clock())..
                 " NO_DUPLICATE_YET=true")
         elseif charged or appeared or seenNewBoat or not ok or result==nil then
-            -- No automatic second RPC when payment/spawn replication is uncertain.
             pending.Stage="PAYMENT_UNCERTAIN";PHX.BoatState="PAYMENT_UNCERTAIN"
             logLine("BUY_FAILED","AMBIGUOUS_PAYMENT noDuplicate=true result="..tostring(result))
         else
@@ -6688,7 +6194,6 @@ local function buyGrandBrigade(token)
     PHX.releaseBoatMovementLock(lease,"VERIFY_TIMEOUT_NO_DUPLICATE")
     return nil
 end
-
 local function boardBoat(boat,token)
     if not PHX.boatAlive(boat) then return false end
     PHX.TeamPhase="BOARDING"
@@ -6704,7 +6209,6 @@ local function boardBoat(boat,token)
     setStatus("SLAVE: chờ ghế hành khách còn trống")
     return false
 end
-
 local function countTeamAboard(boat)
     if not boat or not boat.Parent then return 0 end
     PHX.refreshCrew(boat)
@@ -6720,7 +6224,6 @@ local function countTeamAboard(boat)
     for _ in pairs(aboard) do count=count+1 end
     return count
 end
-
 function PHX.crewReady(boat)
     if not PHX.boatAlive(boat) then return false,0 end
     PHX.refreshCrew(boat)
@@ -6755,9 +6258,7 @@ function PHX.crewReady(boat)
     for _ in pairs(passengers) do count=count+1 end
     return count>=(tonumber(CONFIG.MIN_SLAVES_TO_SAIL) or 3),count
 end
-
 PHX.driverSeat = PHX.findDriverSeat
-
 function PHX.boatTelemetry()
     local boat=getMasterBoat()
     local hp,maxHp=PHX.boatHealth(boat)
@@ -6767,13 +6268,9 @@ function PHX.boatTelemetry()
         Mode=PHX.automationMode and PHX.automationMode() or "TEAM",State=PHX.BoatState or PHX.TeamPhase or "WAIT_MASTER",
         Heading=PHX.SeaHeading,IsDriver=driver and hum() and driver.Occupant==hum() or false}
 end
-
--- V2.17.14: Continuous local collision guard for the ship AND seated character.
--- IMPORTANT: Cannot override server-authoritative world collision or server position correction.
--- No terrain destruction / CFrame forcing; guard turns off on seat exit or settings OFF.
 function PHX.restoreBoatNoclip(reason)
     local guard=PHX.BoatNoclipGuard
-    PHX.BoatNoclipGuard=nil -- invalidate callbacks before restoring state
+    PHX.BoatNoclipGuard=nil
     if guard then
         for _,connection in ipairs(guard.Connections or {}) do
             pcall(function() connection:Disconnect() end)
@@ -6792,30 +6289,24 @@ function PHX.restoreBoatNoclip(reason)
     end
     if PHX.TravelState then PHX.TravelState.BoatParts=nil end
 end
-
 function PHX.boatNoclipActive(boat)
     if not CONFIG.BOAT_NOCLIP.Enabled or not boat or not boat.Parent then return false end
     if boat.Name~=CONFIG.BOAT_NAME then return false end
     local h=hum()
     if not h or h.Health<=0 or not h.SeatPart then return false end
-    -- Do NOT check throttle/steer: releasing W for even a frame must not restore collision.
-    -- Driver and seated passengers both need protection against their character collision.
     return PHX.boatForSeat(h.SeatPart)==boat
 end
-
 function PHX.enableBoatNoclip(boat)
     if not PHX.boatNoclipActive(boat) then return false end
     local currentCharacter=LP.Character
     local active=PHX.BoatNoclipGuard
     if active and active.Boat==boat and active.Character==currentCharacter then return true end
     if active then PHX.restoreBoatNoclip("BOAT_OR_CHARACTER_CHANGED") end
-
     local backup,characterBackup={},{}
     local guard={Boat=boat,Character=currentCharacter,Parts=backup,CharacterParts=characterBackup,
         Connections={},BoatCount=0,CharacterCount=0}
     PHX.BoatNoclipGuard=guard
     PHX.TravelState.BoatParts=backup
-
     local function ensurePart(part,stash,kind)
         if not part:IsA("BasePart") then return end
         local ok,collidable=pcall(function() return part.CanCollide end)
@@ -6834,7 +6325,7 @@ function PHX.enableBoatNoclip(boat)
             end
         end
     end
-    scan() -- apply immediately, before the player next presses W
+    scan()
     guard.Connections[#guard.Connections+1]=boat.DescendantAdded:Connect(function(part)
         if PHX.BoatNoclipGuard==guard then ensurePart(part,backup,"BOAT") end
     end)
@@ -6844,7 +6335,6 @@ function PHX.enableBoatNoclip(boat)
         end)
     end
     local elapsed,scanElapsed=0,0
-    -- Run before physics so CanCollide is corrected prior to nearby obstacle contact.
     guard.Connections[#guard.Connections+1]=RunService.Stepped:Connect(function(_,dt)
         if PHX.BoatNoclipGuard~=guard then return end
         if not PHX.generationAlive() or not PHX.boatNoclipActive(boat) or LP.Character~=currentCharacter then
@@ -6855,7 +6345,6 @@ function PHX.enableBoatNoclip(boat)
         elapsed+=delta; scanElapsed+=delta
         if elapsed<(tonumber(CONFIG.BOAT_NOCLIP.RefreshSeconds) or 0.10) then return end
         elapsed=0
-        -- Some games re-enable collision during vehicle physics updates.
         for part in pairs(backup) do
             if part.Parent then pcall(function() if part.CanCollide then part.CanCollide=false end end) end
         end
@@ -6868,7 +6357,6 @@ function PHX.enableBoatNoclip(boat)
         " boatParts="..guard.BoatCount.." playerParts="..guard.CharacterCount)
     return true
 end
-
 function PHX.setBoatNoclipEnabled(enabled)
     if type(enabled)~="boolean" then return false,"BOAT_NOCLIP_EXPECTS_BOOLEAN" end
     CONFIG.BOAT_NOCLIP.Enabled=enabled
@@ -6882,8 +6370,6 @@ function PHX.setBoatNoclipEnabled(enabled)
     end
     return true,enabled and "Boat Noclip: luôn bật khi ngồi thuyền; tắt va chạm cả nhân vật." or "Boat Noclip tắt; đã khôi phục va chạm."
 end
-
--- Works if executed before a ship spawns or while already seated as driver/passenger.
 PHX.spawn(function()
     while PHX.generationAlive() do
         local h=hum()
@@ -6898,7 +6384,6 @@ PHX.spawn(function()
         task.wait(0.10)
     end
 end)
-
 function PHX.prehistoricMarker()
     local map = workspace:FindFirstChild("Map")
     local oldIsland = map and map:FindFirstChild("PrehistoricIsland")
@@ -6907,29 +6392,19 @@ function PHX.prehistoricMarker()
     local locations = origin and origin:FindFirstChild("Locations")
     return locations and (locations:FindFirstChild("Prehistoric Island") or locations:FindFirstChild("PrehistoricIsland"))
 end
-
 local function findPrehistoric()
     local map = workspace:FindFirstChild("Map")
     local island = map and map:FindFirstChild("PrehistoricIsland")
     if island and not (PHX.CompletedIslands and PHX.CompletedIslands[island]) then return island end
     return nil
 end
-
 PHX.BoatStallAttempts=PHX.BoatStallAttempts or setmetatable({}, {__mode="k"})
-
--- V2.17.18 BOAT HEADING FIX
--- A direction recalculated from the boat's *current offshore position* back to
--- the Sea-6 center reverses after passing that center. A cached opposite vector
--- can then survive respawns because the Lua runtime remains alive.
--- All voyages MUST use the same Tiki->Sea6 outward compass bearing, regardless
--- of where the boat currently is. The direction is not tied to the boat pivot.
 local function expectedOutwardSeaHeading()
     local tiki=CONFIG.BOAT_DEALER_CFRAME.Position
     local sea=CONFIG.SEA6_CENTER
     local delta=Vector3.new(sea.X-tiki.X,0,sea.Z-tiki.Z)
     return delta.Magnitude>=1 and delta.Unit or Vector3.new(-1,0,0)
 end
-
 function PHX.ensureSeaHeading(boat,reason)
     local expected=expectedOutwardSeaHeading()
     local old=PHX.SeaHeading
@@ -6949,7 +6424,6 @@ function PHX.ensureSeaHeading(boat,reason)
     end
     return PHX.SeaHeading
 end
-
 local function boatFlyTo(boat,targetPos,token)
     if PHX.isMovementLocked() then return false end
     if not isMaster() or not PHX.boatAlive(boat) then return false end
@@ -6959,8 +6433,6 @@ local function boatFlyTo(boat,targetPos,token)
         PHX.BoatState="NO_DRIVER";return false
     end
     PHX.TravelState.Boat=boat
-    -- Capture outward heading for this whole segment; never reverse when boat
-    -- passes Sea6 or when transient state is cleared in an asynchronous callback.
     local segmentHeading=PHX.ensureSeaHeading(boat,"SEGMENT_START")
     PHX.TravelState.BoatMoving=true
     PHX.enableBoatNoclip(boat)
@@ -7030,7 +6502,6 @@ local function boatFlyTo(boat,targetPos,token)
     PHX.BoatStallAttempts[boat]=0
     return arrived or findPrehistoric()~=nil or PHX.prehistoricMarker()~=nil
 end
-
 local function searchSeaUntilIsland(boat,token)
     if not isMaster() or not PHX.boatAlive(boat) then return nil end
     PHX.ensureSeaHeading(boat,"SEA_SEARCH_START")
@@ -7078,17 +6549,14 @@ local function searchSeaUntilIsland(boat,token)
     PHX.stopBoat(boat)
     PHX.TeamPhase="RECOVERY"; PHX.BoatState="BOAT_LOST"
 end
-
 local function getRelic(island)
     local core = island and island:FindFirstChild("Core")
     return core and core:FindFirstChild("PrehistoricRelic")
 end
-
 local function relicPart(relic)
     if not relic then return nil end
     return relic:FindFirstChild("Inside") or relic:FindFirstChild("Skull") or relic:FindFirstChildWhichIsA("BasePart", true)
 end
-
 PHX.EventState = {Phase="WAIT", Egg="WAIT", Error=nil}
 PHX.AFKLastRelic = setmetatable({}, {__mode="k"})
 PHX.AFKRewardExit = nil
@@ -7126,7 +6594,6 @@ PHX.GolemLocalHpState = {Writes=0,LocalZero=0,Errors=0,LastAt=0,LastMessage="REA
     Written=setmetatable({}, {__mode="k"}), LastTry=setmetatable({}, {__mode="k"}),
     IslandMarkers=setmetatable({}, {__mode="k"})}
 PHX.GolemOriginal = setmetatable({}, {__mode="k"})
-
 function PHX.raidGuiVisible(obj)
     if not obj or not obj:IsDescendantOf(PG) then return false end
     local p = obj
@@ -7138,11 +6605,9 @@ function PHX.raidGuiVisible(obj)
     end
     return (not obj:IsA("TextLabel") and not obj:IsA("TextButton")) or obj.TextTransparency < .995
 end
-
 function PHX.cleanHudText(value)
     return tostring(value or ""):gsub("<[^>]+>", ""):gsub("&nbsp;", " ")
 end
-
 function PHX.percentFor(text, kind)
     local plain = string.lower(PHX.cleanHudText(text))
     local raw
@@ -7157,7 +6622,6 @@ function PHX.percentFor(text, kind)
     if n and n >= 0 and n <= 100 then return n end
     return nil
 end
-
 function PHX.readRaidHUD(force)
     if not force and PHX.RaidHUDCache and os.clock() - PHX.RaidHUDCache.At < .15 then
         return PHX.RaidHUDCache
@@ -7232,14 +6696,12 @@ function PHX.readRaidHUD(force)
     PHX.RaidHUDCache = out
     return out
 end
-
 function PHX.raidTimerStillRunning()
     local t=PHX.RaidLastTimer
     if not t then return false,nil end
     local left=(tonumber(t.Remaining) or 0)-(os.clock()-(tonumber(t.At) or os.clock()))
     return left>2,math.max(0,left)
 end
-
 function PHX.raidResetBlockReason()
     if PHX.afkResetAuthorized() then return nil end
     local hud=PHX.readRaidHUD(true)
@@ -7254,10 +6716,6 @@ function PHX.raidResetBlockReason()
     end
     return nil
 end
-
--- V2.17.19: Eggs with a real Collect prompt are stronger post-raid evidence than
--- an outdated HUD/timer cache. This ONLY advances to reward collection; all
--- reset/Dragon inventory guards still apply normally.
 PHX.EggPromptStageLogged = PHX.EggPromptStageLogged or setmetatable({}, {__mode="k"})
 function PHX.eggRewardPromptReady(island)
     local core = island and island:FindFirstChild("Core")
@@ -7277,8 +6735,6 @@ function PHX.raidFinishAfterHudLoss(missingSince,island)
     if not missingSince then return false end
     local elapsed=os.clock()-missingSince
     if PHX.readRaidHUD(true).Active then return false end
-    -- Never assume an egg is assigned to the local player merely because one
-    -- is visible; the existing original roster/slot checks still decide that.
     local eggPromptReady,eggCount=PHX.eggRewardPromptReady(island)
     if eggPromptReady and elapsed>=2.0 then
         if island and not PHX.EggPromptStageLogged[island] then
@@ -7295,7 +6751,6 @@ function PHX.raidFinishAfterHudLoss(missingSince,island)
     if PHX.raidTimerStillRunning() then return false end
     return true
 end
-
 function PHX.eventActive(island)
     local hud = PHX.readRaidHUD()
     if hud.Active then
@@ -7305,15 +6760,12 @@ function PHX.eventActive(island)
     if island and PHX.EventSeenHUD[island] then return false end
     return island ~= nil and island.Parent ~= nil and island:GetAttribute("IsMinigameActive") == true
 end
-
 local function parsePercent(text)
     return tonumber(PHX.cleanHudText(text):match("(%d+%.?%d*)%s*%%"))
 end
-
 local function getPressure()
     return PHX.readRaidHUD().Pressure
 end
-
 local function getRelicHealthPercent(island)
     local hud = PHX.readRaidHUD()
     if hud.Relic ~= nil then return hud.Relic end
@@ -7325,7 +6777,6 @@ local function getRelicHealthPercent(island)
     end
     return nil
 end
-
 function PHX.liveGolems()
     local out = {}
     local enemies = workspace:FindFirstChild("Enemies")
@@ -7340,7 +6791,6 @@ function PHX.liveGolems()
     end
     return out
 end
-
 function PHX.totalGolemHP(golems)
     local total = 0
     for _,g in ipairs(golems or {}) do
@@ -7349,7 +6799,6 @@ function PHX.totalGolemHP(golems)
     end
     return total
 end
-
 function PHX.eventSnapshot(island)
     island = island or findPrehistoric()
     if PHX.EventSnapshotCache and PHX.EventSnapshotIsland == island and os.clock()-PHX.EventSnapshotCache.At < .15 then
@@ -7373,7 +6822,6 @@ function PHX.eventSnapshot(island)
     PHX.EventSnapshotCache, PHX.EventSnapshotIsland = out, island
     return out
 end
-
 function PHX.eventStatus(text, phase)
     if phase then PHX.EventState.Phase = phase end
     if text ~= PHX.LastEventStatus and (os.clock()-(PHX.LastEventStatusAt or -math.huge) >= .35) then
@@ -7381,7 +6829,6 @@ function PHX.eventStatus(text, phase)
         setStatus(text)
     end
 end
-
 function PHX.pauseEvent(reason, message)
     PHX.EventState.Error = reason
     if PHX.afkSoloEnabled() then
@@ -7397,7 +6844,6 @@ function PHX.pauseEvent(reason, message)
     end
     setStatus(message)
 end
-
 function PHX.capturedFossilTarget(island)
     local relic = getRelic(island)
     if not relic then return nil end
@@ -7405,7 +6851,6 @@ function PHX.capturedFossilTarget(island)
     if not ok then return nil end
     return pivot * CONFIG.FOSSIL.PLAYER_RELATIVE_TO_RELIC, pivot
 end
-
 local function countTeamNear(pos, radius, island)
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then
         local rr,hh=root(),hum()
@@ -7423,7 +6868,6 @@ local function countTeamNear(pos, radius, island)
     end
     return n
 end
-
 local function moveToRelic(island, token)
     local target = PHX.capturedFossilTarget(island)
     if not target then return false end
@@ -7435,10 +6879,6 @@ local function moveToRelic(island, token)
     PHX.EventState.Phase = "DISEMBARK"
     return safeTween(target, CONFIG.FOSSIL.SAFE_SPEED, token)
 end
-
--- V2.17.21: PC + Delta Android: activate the REAL Prehistoric proximity prompt,
--- not keyboard E / mouse / touchscreen. Tested standalone by the user on 2026-10-11.
--- This is a prompt dispatch, NOT a verified server RemoteEvent name.
 local function getVolcanoActivationPrompt(island)
     local core = island and island:FindFirstChild("Core")
     if not core then return nil,"PREHISTORIC_CORE_MISSING" end
@@ -7451,7 +6891,6 @@ local function getVolcanoActivationPrompt(island)
     if prompt then return prompt,"RELIC_FALLBACK_PROMPT" end
     return nil,"ACTIVATION_PROMPT_NOT_FOUND"
 end
-
 local function volcanoPromptWorldPosition(prompt)
     local ancestor=prompt and prompt.Parent
     while ancestor and ancestor ~= workspace do
@@ -7465,7 +6904,6 @@ local function volcanoPromptWorldPosition(prompt)
     end
     return nil
 end
-
 local function dispatchDirectVolcanoStart(island,token)
     if not island or not island.Parent or not isRunning(token) then
         return false,"EVENT_OR_AUTOMATION_UNAVAILABLE"
@@ -7513,7 +6951,6 @@ local function dispatchDirectVolcanoStart(island,token)
     if not ok then return false,"DIRECT_DISPATCH_FAILED" end
     return true,mode
 end
-
 local function startEventAsMaster(island, token)
     if not isMaster() then return PHX.eventActive(island) end
     if PHX.eventActive(island) then return true end
@@ -7586,8 +7023,6 @@ local function startEventAsMaster(island, token)
     end)
     task.wait(CONFIG.FOSSIL.SETTLE_TIME)
     if not isRunning(token) then return false end
-    -- Recheck immediately before direct prompt, not only before the Tween.
-    -- SOLO: local player at Relic; TEAM: Master + 3 verified members nearby.
     local realNear=countTeamNear(target.Position,CONFIG.RELIC_RADIUS,island)
     local needed=PHX.requiredFossilPlayers()
     if realNear<needed then
@@ -7605,7 +7040,6 @@ local function startEventAsMaster(island, token)
     setStatus(roleText()..": direct Volcano ActivationPrompt (NO E / NO CLICK)")
     local dispatched,method=dispatchDirectVolcanoStart(island,token)
     if not dispatched then
-        -- Do not count a failed preflight as a real activation attempt.
         PHX.FossilAttempted[island]=nil
         logLine("FOSSIL_DIRECT_RETRY", "dispatch not sent, reason="..tostring(method))
         PHX.eventStatus(roleText()..": Direct Volcano unavailable: "..tostring(method),"FOSSIL_WAIT")
@@ -7635,14 +7069,12 @@ local function startEventAsMaster(island, token)
     end
     return false
 end
-
 local function rockActive(rock)
     for _,v in ipairs(rock:GetDescendants()) do
         if (v:IsA("Beam") or v:IsA("ParticleEmitter")) and v.Enabled then return true end
     end
     return false
 end
-
 local function activePressureRocks(island)
     local core = island and island:FindFirstChild("Core")
     local folder = core and core:FindFirstChild("VolcanoRocks")
@@ -7665,7 +7097,6 @@ local function activePressureRocks(island)
     end)
     return list
 end
-
 function PHX.pickPressureRock(island, offset)
     local rocks = activePressureRocks(island)
     if #rocks == 0 then return nil, 0 end
@@ -7680,12 +7111,11 @@ function PHX.pickPressureRock(island, offset)
                     if current<distance then best,distance=rock,current end
                 end
             end
-            return best,#rocks -- all unsafe: yield briefly, don't dive into magma
+            return best,#rocks
         end
     end
     return rocks[((tonumber(offset) or 1)-1)%#rocks+1], #rocks
 end
-
 function PHX.soloRelicGolemThreat(island, golems)
     golems = golems or PHX.liveGolems()
     if #golems == 0 then return nil, math.huge end
@@ -7704,28 +7134,17 @@ function PHX.soloRelicGolemThreat(island, golems)
     if not relic and best then return best,0 end
     return best,nearest
 end
-
--- V2.17.03: GOLEM-ABSOLUTE SOLO POLICY.
--- Legacy radius/pressure thresholds no longer override a live Lava Golem.
--- TEAM's pressure allocation remains unchanged.
 function PHX.soloRelicThreatRadius(relicHp, pressure)
-    return math.huge -- compatibility for callers querying SOLO threat radius
+    return math.huge
 end
-
 function PHX.soloPressureMustYield(island)
-    -- Any replicated, living Golem forces pressure work to yield, regardless of
-    -- distance, pressure reading, Relic HP or the presence of active rocks.
     return #PHX.liveGolems() > 0
 end
-
 PHX.SoloPressureRecovery=setmetatable({}, {__mode="k"})
 function PHX.soloPressurePriority(island, snapshot, distance, rock)
-    -- Legacy entry point. Pressure is permitted ONLY when the Golem list is
-    -- empty. Do not use previously latched recovery or pressure thresholds.
     if not rock then return false end
     return not PHX.soloPressureMustYield(island)
 end
-
 function PHX.teamPressureAssignment(island, snapshot, golems)
     golems=golems or PHX.liveGolems()
     if #golems==0 then PHX.TeamPressureDutyLevel=0; return true,"NO_GOLEMS" end
@@ -7754,18 +7173,15 @@ function PHX.teamPressureAssignment(island, snapshot, golems)
     PHX.TeamPressureDutyLevel=level
     return assigned, assigned and "PRESSURE_HELPER" or "GOLEM_DEFENSE"
 end
-
 local function pressureWorkShouldYield(island)
     local golems=PHX.liveGolems()
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then
-        -- Absolute priority: any live Golem interrupts pressure work.
         return #golems > 0
     end
     if #golems==0 then return false end
     local snapshot=PHX.eventSnapshot(island)
     return not PHX.teamPressureAssignment(island,snapshot,golems)
 end
-
 PHX.SoloLavaModelLogged = setmetatable({}, {__mode="k"})
 local function soloLavaCylinderForIsland(island)
     local cfg = CONFIG.SOLO_GUARD.LAVA_CYLINDER
@@ -7788,7 +7204,6 @@ local function soloLavaCylinderForIsland(island)
         Radius = cfg.ROUTE_RADIUS,
     }, "FOSSIL_TRANSLATION_CALIBRATION"
 end
-
 local function soloCylinderIntersects(a, b, zone)
     local ax, az = a.X-zone.Center.X, a.Z-zone.Center.Z
     local dx, dz = b.X-a.X, b.Z-a.Z
@@ -7820,7 +7235,6 @@ local function soloCylinderIntersects(a, b, zone)
     if y0>y1 then y0,y1=y1,y0 end
     return math.max(t0,y0,0)<=math.min(t1,y1,1)
 end
-
 local function soloRockUnsafe(rock, why)
     PHX.SoloUnsafeRockUntil = PHX.SoloUnsafeRockUntil or setmetatable({}, {__mode="k"})
     if rock and rock.model then
@@ -7828,12 +7242,10 @@ local function soloRockUnsafe(rock, why)
     end
     logLine("SOLO_LAVA_SKIP", tostring(why))
 end
-
 local function soloGuardSegment(cf, speed, token, tag, zone, island)
     local h = hum()
     if not h or h.Health <= 0 then return false end
     local isRockTravel=type(tag)=="string" and tag:sub(1,4)=="ROCK"
-    -- Perform early priority check BEFORE subscribing to Humanoid events.
     if isRockTravel and PHX.soloPressureMustYield(island) then return false end
     local starting = h.Health
     local damaged = false
@@ -7850,8 +7262,6 @@ local function soloGuardSegment(cf, speed, token, tag, zone, island)
     local watch=nil
     if zone or isRockTravel then
         watch=RunService.Heartbeat:Connect(function()
-            -- Abort an IN-PROGRESS rock tween when a new Golem spawns.
-            -- Check at 0.1s intervals to avoid scanning enemies every frame.
             if isRockTravel and os.clock()-lastPriorityCheck>=.10 then
                 lastPriorityCheck=os.clock()
                 if PHX.soloPressureMustYield(island) then
@@ -7892,13 +7302,11 @@ local function soloGuardSegment(cf, speed, token, tag, zone, island)
     end
     return result == true
 end
-
 local function soloAtRisk(p,zone)
     local dx,dz=p.X-zone.Center.X,p.Z-zone.Center.Z
     return dx*dx+dz*dz < zone.Radius*zone.Radius
         and p.Y>=zone.Bottom and p.Y<=zone.Top
 end
-
 local function soloBuildLavaDetour(startPos,endPos,zone)
     local cfg=CONFIG.SOLO_GUARD.LAVA_CYLINDER
     if soloAtRisk(startPos,zone) then return nil,"START_IN_FORBIDDEN_VOLUME" end
@@ -7956,7 +7364,6 @@ local function soloBuildLavaDetour(startPos,endPos,zone)
     end
     return best,best and "VALID_DETOUR" or "NO_COLLISION_FREE_DETOUR"
 end
-
 local function soloGuardApproach(position,hoverY,token,baseSpeed,tag,island)
     local rr = root()
     if not rr or not position or not isRunning(token) then return false end
@@ -7967,7 +7374,7 @@ local function soloGuardApproach(position,hoverY,token,baseSpeed,tag,island)
     local zone,why=soloLavaCylinderForIsland(island)
     if not zone then
         logLine("SOLO_LAVA_ZONE_MISSING",tostring(why).." | target="..tostring(tag))
-        return false -- fail closed instead of blindly crossing an unknown hazard
+        return false
     end
     local name=tostring(tag or "TARGET")
     if not soloCylinderIntersects(rr.Position,destination,zone) then
@@ -7995,11 +7402,6 @@ local function soloGuardApproach(position,hoverY,token,baseSpeed,tag,island)
     end
     return true
 end
-
--- V2.17.20: The previous burst deadline started BEFORE safeTween/soloGuardApproach.
--- A long approach could consume the entire 1.10s SOLO budget and issue 0 skill keys.
--- Approach first, confirm arrival, THEN begin the skill budget. The key logs
--- indicate client input requests only; they are not proof the rock was damaged.
 function PHX.pressureRockBurst(target, token, island)
     if not target or not target.model or not target.part or not target.model.Parent then return false end
     local solo=PHX.isSoloAutomation and PHX.isSoloAutomation()
@@ -8008,7 +7410,6 @@ function PHX.pressureRockBurst(target, token, island)
     if not isRunning(token) or not rockActive(rockModel) then return false end
     if pressureWorkShouldYield(island) then return false end
     if island and not PHX.eventActive(island) then return false end
-
     local approachStarted=os.clock()
     local rockPosition=rockPart.Position
     local rr=root()
@@ -8029,7 +7430,6 @@ function PHX.pressureRockBurst(target, token, island)
             return false
         end
     end
-
     if not isRunning(token) or not rockModel.Parent or not rockActive(rockModel) then return false end
     if pressureWorkShouldYield(island) or (island and not PHX.eventActive(island)) then return false end
     rr=root()
@@ -8046,8 +7446,6 @@ function PHX.pressureRockBurst(target, token, island)
         return false
     end
     if solo then aimAt(rockPosition) end
-
-    -- Only NOW start the burst timer. Travel duration is diagnostic, not cast budget.
     local burstSeconds=solo and CONFIG.SOLO_GUARD.PRESSURE_BURST_SECONDS or CONFIG.PRESSURE.MAX_BURST_SECONDS
     local burstStarted=os.clock()
     local deadline=burstStarted+math.max(.5,tonumber(burstSeconds) or 2.4)
@@ -8055,7 +7453,6 @@ function PHX.pressureRockBurst(target, token, island)
     logLine("ROCK_ARRIVED",string.format("mode=%s rock=%s travel=%.2fs dist=%.1f budget=%.2fs hold=%.2fs",
         solo and "SOLO" or "TEAM",tostring(rockModel.Name),os.clock()-approachStarted,
         distance,burstSeconds,CONFIG.PRESSURE.SKILL_HOLD))
-
     local function mayCast()
         return isRunning(token) and rockModel.Parent~=nil and rockActive(rockModel)
             and (not island or PHX.eventActive(island)) and not pressureWorkShouldYield(island)
@@ -8085,7 +7482,6 @@ function PHX.pressureRockBurst(target, token, island)
                         break
                     end
                     aimAt(rockPosition)
-                    -- Preserve key-release even if an executor raises during input.
                     local success,err=pcall(pressKey,key,CONFIG.PRESSURE.SKILL_HOLD)
                     if not success then
                         castErrors+=1
@@ -8106,13 +7502,11 @@ function PHX.pressureRockBurst(target, token, island)
                             return false
                         end
                     end
-                    -- Recheck the Golem priority before the next skill.
                     if not mayCast() then break end
                     task.wait(solo and CONFIG.SOLO_GUARD.PRESSURE_SKILL_GAP or CONFIG.PRESSURE.SKILL_GAP)
                 end
             end
         end
-        -- Don't spin on missing weapons, blocked casts or a full cooldown.
         if castThisPass==0 then break end
         if not mayCast() then break end
         if os.clock()>=deadline then break end
@@ -8130,7 +7524,6 @@ function PHX.pressureRockBurst(target, token, island)
     end
     return false
 end
-
 function PHX.clusterAnchor(island)
     if PHX.ClusterIsland == island and PHX.ClusterAnchor then return PHX.ClusterAnchor end
     local target, relicPivot = PHX.capturedFossilTarget(island)
@@ -8138,8 +7531,6 @@ function PHX.clusterAnchor(island)
     local islandPivot = island:GetPivot()
     local away = Vector3.new(-islandPivot.LookVector.X, 0, -islandPivot.LookVector.Z)
     if away.Magnitude < .1 then away = Vector3.new(1,0,0) end
-    -- Prefer the direction from the Fossil to the existing Golems (for both
-    -- TEAM and SOLO). This pushes them away rather than toward the Relic.
     local sum,count,sumY=Vector3.zero,0,0
     for _,g in ipairs(PHX.liveGolems()) do
         local gp=g:FindFirstChild("HumanoidRootPart") or g:FindFirstChild("Head")
@@ -8161,7 +7552,6 @@ function PHX.clusterAnchor(island)
     PHX.SimulationBoosted = false
     return PHX.ClusterAnchor
 end
-
 function PHX.prepareGolemOnce(golem)
     if not isMaster() or PHX.GolemPrepared[golem] then return end
     PHX.GolemPrepared[golem] = true
@@ -8181,7 +7571,6 @@ function PHX.prepareGolemOnce(golem)
         pcall(function() gp.Size = Vector3.new(CONFIG.GOLEM_AURA.HITBOX_SIZE, CONFIG.GOLEM_AURA.HITBOX_SIZE, CONFIG.GOLEM_AURA.HITBOX_SIZE) end)
     end
 end
-
 function PHX.restoreGolemChanges()
     for part, original in pairs(PHX.GolemOriginal) do
         if part.Parent then pcall(function() part.CanCollide = original.CanCollide part.Size = original.Size end) end
@@ -8190,13 +7579,10 @@ function PHX.restoreGolemChanges()
     PHX.GolemPrepared = setmetatable({}, {__mode="k"})
     PHX.GolemLastBring = setmetatable({}, {__mode="k"})
 end
-
 PHX.GolemBringStats={Attempts=0,Applied=0,Failed=0,NotOwned=0,LastError=nil,LastAt=nil,LastLoggedAt=-math.huge}
 function PHX.bringGolemCluster(island, golems)
     if not island or not island.Parent then return nil end
     local anchor = PHX.clusterAnchor(island)
-    -- Slave clients still need the anchor for their melee approach; only the
-    -- Master/SOLO client owns the relocation attempt.
     if not anchor or not isMaster() or CONFIG.GOLEM_AURA.BRING_ENABLED==false then return anchor end
     local now = os.clock()
     local relic=getRelic(island)
@@ -8230,7 +7616,6 @@ function PHX.bringGolemCluster(island, golems)
                 end)
                 if ok then stats.Applied+=1;stats.LastAt=now
                 else stats.Failed+=1;stats.LastError=tostring(err) end
-                -- Request accepted locally does not prove NPC moved on server.
                 if now-stats.LastLoggedAt>10 then
                     stats.LastLoggedAt=now
                     print("[PX GOLEM BRING] local requests="..stats.Attempts.." applied="..stats.Applied..
@@ -8241,10 +7626,6 @@ function PHX.bringGolemCluster(island, golems)
     end
     return anchor
 end
-
--- SOLO has its own golemRushBurst, so the TEAM burst's bring call did not
--- protect the Relic during pressure work. This single non-attack worker runs
--- only for SOLO while the raid is active, and shares the same bring throttle.
 PHX.spawn(function()
     while PHX.generationAlive() do
         if ENV.TeamConfig.IsRunning and PHX.isSoloAutomation() then
@@ -8260,20 +7641,12 @@ PHX.spawn(function()
         task.wait(.18)
     end
 end)
-
 function PHX.netHitGolemCluster(golems)
-    -- Compatibility: any legacy caller must use the same Recovery NET dispatcher.
     return PHX.killAuraDispatch(golems,"NET")
 end
-
-
--- KILL AURA V1 integrated: one shared combat backend for farms and Golems.
--- No separate attack worker while main automation is active.
 PHX.KillAura = {Requests=0,NativeRequests=0,NetRequests=0,ObservedDamage=0,
     LastDamageAt=nil,LastStepAt=0,TargetCount=0,Hp=setmetatable({}, {__mode="k"}),
     LastMessage="READY",AutoHitPart=nil,LastAutoSwitchAt=0}
--- Stay with a hit-part mode while HP is falling. If a wave stalls for several
--- seconds, try the alternative head/root part ONCE per 5s. Does not invent RPCs.
 function PHX.netHitFeedback(hpDelta,stalledSeconds,targetCount)
     local aura=PHX.KillAura
     if not aura or (tonumber(targetCount) or 0)<=0 then return end
@@ -8298,7 +7671,6 @@ function PHX.netHitFeedback(hpDelta,stalledSeconds,targetCount)
     end
 end
 function PHX.killAuraRelease()
-    -- If another caller was interrupted during a mouse press, release it.
     if PHX.Runtime and PHX.Runtime.HeldMouse then
         for button,pointer in pairs(PHX.Runtime.HeldMouse) do
             pcall(function() PHX.mouseEvent(pointer.X,pointer.Y,button,false,pointer.Target,pointer.Layer) end)
@@ -8345,10 +7717,6 @@ function PHX.killAuraObserve(targets)
         end
     end
 end
--- PX V2.17.11 RECOVERY NET BACKEND
--- Derived from standalone PX_KillAura_Recovery_Test_V1.sendNET that the user tested.
--- No native M1 fallback, no GUI clicks. Different hit-part modes are selectable in Settings.
--- RPC accepted for transmission != server-confirmed NPC damage.
 function PHX.killAuraDispatch(models,backend)
     local aura=PHX.KillAura
     if not CONFIG.KILL_AURA.Enabled or not PHX.generationAlive() then return false end
@@ -8372,7 +7740,6 @@ function PHX.killAuraDispatch(models,backend)
     end
     local folder=workspace:FindFirstChild("Enemies")
     if not folder then aura.LastMessage="ENEMIES_FOLDER_MISSING";return false end
-
     local selected=CONFIG.KILL_AURA.NetMode or "NET_HEAD"
     if selected~="NET_HEAD" and selected~="NET_ROOT" and selected~="NET_HEAD_0" then
         selected="NET_HEAD"
@@ -8381,8 +7748,6 @@ function PHX.killAuraDispatch(models,backend)
     local useHead=autoPart~="ROOT" and selected~="NET_ROOT"
     local delay=selected=="NET_HEAD_0" and 0 or .05
     local radius=math.max(1,tonumber(CONFIG.KILL_AURA.NetRange) or 35)
-
-    -- Matches the recovery test: fresh live NPCs, correct hit part, validate range.
     local function collectFresh()
         local actorRoot=root()
         local actorHum=hum()
@@ -8397,7 +7762,6 @@ function PHX.killAuraDispatch(models,backend)
                 local enemyHum=model:FindFirstChildOfClass("Humanoid")
                 local part=model:FindFirstChild(useHead and "Head" or "HumanoidRootPart")
                 if useHead and (not part or (part.Position-actorRoot.Position).Magnitude>radius) then
-                    -- Missing/out-of-range Head: the root is a valid fallback candidate.
                     local alternative=model:FindFirstChild("HumanoidRootPart")
                     if alternative and (alternative.Position-actorRoot.Position).Magnitude<=radius then
                         part=alternative
@@ -8412,7 +7776,6 @@ function PHX.killAuraDispatch(models,backend)
         end
         return base,hits,#hits
     end
-
     local base,hits,count=collectFresh()
     aura.TargetCount=count
     if not base then
@@ -8429,7 +7792,6 @@ function PHX.killAuraDispatch(models,backend)
         aura.LastMessage="REGISTER_REMOTES_MISSING"
         return false
     end
-    -- Prevent TEAM/SOLO/idle dispatch overlap; one pair per send.
     if aura.NetDispatchBusy then aura.LastMessage="NET_BUSY";return false end
     aura.NetDispatchBusy=true
     aura.LastNetAttemptAt=now
@@ -8457,7 +7819,6 @@ function PHX.killAuraDispatch(models,backend)
         aura.Mode=selected
         PHX.FarmCombatDebug.LastNet=aura.LastMessage
         PHX.FarmCombatDebug.Hits+=count
-        -- Sparse diagnostic logging only; server may reject packets without client errors.
         if aura.NetRequests%12==1 then
             logLine("RECOVERY_NET", "mode="..selected.." | sent="..aura.NetRequests
                 .." | targetCount="..count.." | radius="..radius
@@ -8469,7 +7830,6 @@ function PHX.killAuraDispatch(models,backend)
     end
     return sent==true
 end
-
 function PHX.setRecoveryNetMode(selected)
     if selected~="NET_HEAD" and selected~="NET_ROOT" and selected~="NET_HEAD_0" then
         return false,"INVALID_NET_MODE"
@@ -8483,7 +7843,6 @@ function PHX.setRecoveryNetMode(selected)
     if PHX.saveUserConfig then PHX.saveUserConfig() end
     return true,selected
 end
-
 function PHX.killAuraIdleStep()
     if not CONFIG.KILL_AURA.Enabled or not CONFIG.KILL_AURA.IdleEnabled then return end
     if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy or PHX.isMovementLocked()
@@ -8504,11 +7863,6 @@ PHX.spawn(function()
         task.wait(math.max(.15,tonumber(CONFIG.KILL_AURA.Interval) or .2))
     end
 end)
-
--- GOLEM-ONLY local HP experiment. This mirrors the standalone diagnostic,
--- NOT a server-authorized kill: client HP=0 can remove a model locally without
--- stopping server-side attacks, crediting a kill, or protecting Fossil Relic.
--- Never run this on Forest Pirate, Dragon Hunter targets, players or generic NPCs.
 function PHX.golemLocalHpStep(models, island, token)
     local cfg=CONFIG.GOLEM_LOCAL_KILL
     local state=PHX.GolemLocalHpState
@@ -8557,7 +7911,6 @@ function PHX.golemLocalHpStatus()
         Errors=s.Errors,LastAt=s.LastAt,Message=s.LastMessage,
         Warning="CLIENT ONLY, server kill / Relic protection NOT VERIFIED"}
 end
-
 function PHX.setGolemLocalHpEnabled(enabled)
     CONFIG.GOLEM_LOCAL_KILL.Enabled=enabled==true
     PHX.GolemLocalHpState.LastMessage=enabled and "ENABLED_UNVERIFIED" or "DISABLED_USE_RECOVERY_NET"
@@ -8565,7 +7918,6 @@ function PHX.setGolemLocalHpEnabled(enabled)
     if PHX.saveUserConfig then PHX.saveUserConfig() end
     return true
 end
-
 function PHX.golemClusterBurst(island, token)
     local golems = PHX.liveGolems()
     if #golems == 0 then return true end
@@ -8609,7 +7961,6 @@ function PHX.golemClusterBurst(island, token)
         if damaged then PHX.ClusterProgressAt = os.clock() noteProgress("GOLEM_DAMAGE:"..math.floor(total)) end
         PHX.eventStatus(roleText().." | GOLEM FIRST: "..#golems.." | HP "..math.floor(total), "GOLEM")
         if CONFIG.GOLEM_LOCAL_KILL.Enabled then
-            -- No Melee tool or NET packet required by the donor HP=0 experiment.
             PHX.golemLocalHpStep(golems,island,token)
         else
             equipTooltip("Melee")
@@ -8638,17 +7989,14 @@ function PHX.golemClusterBurst(island, token)
     end
     return #PHX.liveGolems() == 0
 end
-
 PHX.SoloGolemStallUntil = setmetatable({}, {__mode="k"})
 PHX.SoloGolemProgress = setmetatable({}, {__mode="k"})
 function PHX.soloGolemRushBurst(island, token)
     local golems = PHX.liveGolems()
     if #golems == 0 then return true end
-    -- Bring before selecting/chasing a target, not only during TEAM bursts.
     if CONFIG.GOLEM_AURA.BRING_ENABLED then
         pcall(PHX.bringGolemCluster,island,golems)
     end
-
     local settings = CONFIG.SOLO_GUARD
     local relic = relicPart(getRelic(island))
     local refPos = relic and relic.Position or (root() and root().Position)
@@ -8666,7 +8014,6 @@ function PHX.soloGolemRushBurst(island, token)
     local th=target and target:FindFirstChildOfClass("Humanoid")
     local gp=target and (target:FindFirstChild("HumanoidRootPart") or target:FindFirstChild("Head"))
     if not gp or not th or th.Health<=0 then return false end
-
     PHX.eventStatus("SOLO GUARD | Rush closest Relic threat | Golems "..#golems,"GOLEM")
     local hover = gp.Position + Vector3.new(0,settings.GOLEM_HOVER_Y,0)
     local rr=root()
@@ -8677,7 +8024,6 @@ function PHX.soloGolemRushBurst(island, token)
             return false
         end
     end
-
     local started=os.clock()
     local initial=th.Health
     local last=initial
@@ -8702,7 +8048,6 @@ function PHX.soloGolemRushBurst(island, token)
         gp=target:FindFirstChild("HumanoidRootPart") or target:FindFirstChild("Head")
         if not rr or not gp then break end
         if CONFIG.GOLEM_AURA.BRING_ENABLED then
-            -- Shared throttle prevents this burst racing the SOLO guard worker.
             PHX.bringGolemCluster(island,PHX.liveGolems())
         end
         local holdCF=CFrame.new(gp.Position+Vector3.new(0,settings.GOLEM_HOVER_Y,0))
@@ -8771,12 +8116,10 @@ function PHX.soloGolemRushBurst(island, token)
     end
     return false
 end
-
 function PHX.golemKillAura(golem, token)
     local island = findPrehistoric()
     return island and PHX.golemClusterBurst(island,token) or false
 end
-
 function PHX.teamEventLoop(island, token)
     enableLavaProtection(island)
     PHX.EventState.Error = nil
@@ -8830,7 +8173,6 @@ function PHX.teamEventLoop(island, token)
     if not ok then error(err,0) end
     return completed
 end
-
 PHX.SoloRelicGuardAudit = setmetatable({}, {__mode="k"})
 PHX.SoloAbsolutePriorityState = setmetatable({}, {__mode="k"})
 function PHX.soloDonorEventLoop(island, token)
@@ -8840,8 +8182,6 @@ function PHX.soloDonorEventLoop(island, token)
     local completed=false
     local ok,err=pcall(function()
         while isRunning(token) and island.Parent do
-            -- Keep Golem defense responsive even if a post-respawn Stash read
-            -- is still pending. The existing alive/respawn guard runs below.
             if PHX.PostRespawnStashPending and #PHX.liveGolems()==0 then
                 task.wait(.15)
                 continue
@@ -8870,8 +8210,6 @@ function PHX.soloDonorEventLoop(island, token)
                 if not isRunning(token) or not island.Parent then break end
                 continue
             end
-            -- V2.17.03 strict SOLO scheduler: Golem > Rock, with NO pressure
-            -- override (even at critical pressure or when Golems are distant).
             local golems=PHX.liveGolems()
             local golemPresent=#golems>0
             if PHX.SoloAbsolutePriorityState[island] ~= golemPresent then
@@ -8902,21 +8240,17 @@ function PHX.soloDonorEventLoop(island, token)
     if not ok then error(err,0) end
     return completed
 end
-
 local function masterPressureLoop(island, token)
     if PHX.isSoloAutomation() then return PHX.soloDonorEventLoop(island,token) end
     return PHX.teamEventLoop(island,token)
 end
-
 local function slaveGolemLoop(island, token)
     return PHX.teamEventLoop(island,token)
 end
-
 local function interactionPart(obj)
     if obj:IsA("BasePart") then return obj end
     return obj:FindFirstChildWhichIsA("BasePart", true)
 end
-
 function PHX.readBonesCount()
     local ok,inv = pcall(function() return CommF:InvokeServer("getInventory") end)
     if not ok or type(inv) ~= "table" then return nil end
@@ -8925,7 +8259,6 @@ function PHX.readBonesCount()
     if PHX.inventoryHasMaterialSchema(inv) then return 0 end
     return nil
 end
-
 local function interactCollectible(obj, token, progress)
     if not isRunning(token) then return false end
     progress = progress or {}
@@ -8973,7 +8306,6 @@ local function interactCollectible(obj, token, progress)
     if isRunning(token) then PHX.pauseEvent("BONES_PICKUP_UNCONFIRMED", "Bone hold not confirmed by fresh inventory -> paused") end
     return false
 end
-
 local function collectBones(island, token)
     if not island or not island.Parent or not isRunning(token) then return false end
     PHX.RewardProgress = PHX.RewardProgress or setmetatable({}, {__mode="k"})
@@ -9013,14 +8345,12 @@ local function collectBones(island, token)
     progress.BonesVerified = true
     return true
 end
-
 function PHX.dragonVariantFromText(value)
     local s = string.lower(tostring(value or ""))
     if s:find("east",1,true) then return "East" end
     if s:find("west",1,true) then return "West" end
     return nil
 end
-
 function PHX.isDragonFruitTool(tool)
     if not tool or not tool:IsA("Tool") then return false end
     local name = string.lower(tostring(tool.Name or "")):gsub("%s+"," ")
@@ -9028,18 +8358,15 @@ function PHX.isDragonFruitTool(tool)
         or name == "dragon (east)" or name == "dragon (west)" then
         return true
     end
-
     local original = string.lower(tostring(tool:GetAttribute("OriginalName") or ""))
     local fruitName = string.lower(tostring(tool:GetAttribute("FruitName") or ""))
     local itemName = string.lower(tostring(tool:GetAttribute("ItemName") or ""))
     local dragonId = original == "dragon-dragon" or fruitName == "dragon-dragon" or itemName == "dragon-dragon"
     if not dragonId then return false end
-
     if tool:FindFirstChild("EatRemote", true) then return true end
     local tip = string.lower(tostring(tool.ToolTip or ""))
     return name:find("fruit",1,true) ~= nil and tip:find("fruit",1,true) ~= nil
 end
-
 function PHX.dragonVariantFromTool(tool)
     if not PHX.isDragonFruitTool(tool) then return nil end
     local variant = PHX.dragonVariantFromText(tool.Name)
@@ -9058,7 +8385,6 @@ function PHX.dragonVariantFromTool(tool)
     end
     return nil
 end
-
 function PHX.findPhysicalDragonFruits()
     local result, seen = {}, {}
     for _,container in ipairs({LP.Backpack, char()}) do
@@ -9073,11 +8399,9 @@ function PHX.findPhysicalDragonFruits()
     end
     return result
 end
-
 function PHX.findUnknownDragonFruitTools()
     return {}
 end
-
 function PHX.storedDragonTotal()
     local ok, inv = pcall(function() return CommF:InvokeServer("getInventoryFruits") end)
     if not ok or type(inv) ~= "table" then return nil end
@@ -9093,13 +8417,11 @@ function PHX.storedDragonTotal()
     end
     return total
 end
-
 function PHX.dragonToolIsLocal(tool)
     if not tool then return false end
     local ok,parent = pcall(function() return tool.Parent end)
     return ok and (parent == LP.Backpack or parent == char())
 end
-
 function PHX.reconcileDragonPending()
     if not PHX.generationAlive() then return false end
     local pending = DRAGON_GUARD_STATE.Pending
@@ -9122,7 +8444,6 @@ function PHX.reconcileDragonPending()
     noteProgress("DRAGON_STORED_CONFIRMED")
     return true
 end
-
 ENV.__PH_DRAGON_RECEIPT_NOTIFIED = ENV.__PH_DRAGON_RECEIPT_NOTIFIED or setmetatable({}, {__mode="k"})
 PHX.DragonNotified = ENV.__PH_DRAGON_RECEIPT_NOTIFIED
 function PHX.notifyDragonFruit(tool)
@@ -9145,7 +8466,6 @@ function PHX.notifyDragonFruit(tool)
         {name="Server",value=tostring(game.JobId),inline=false},
     }, variant == "East" or variant == "West")
 end
-
 function PHX.storeOneDragonFruit(tool)
     PHX.notifyDragonFruit(tool)
     if not PHX.generationAlive() then return false end
@@ -9231,7 +8551,6 @@ function PHX.storeOneDragonFruit(tool)
     end
     return result
 end
-
 local function storeDragonFruitCritical()
     if not PHX.generationAlive() then return false end
     PHX.reconcileDragonPending()
@@ -9272,7 +8591,6 @@ local function storeDragonFruitCritical()
     end
     return ok and result
 end
-
 function PHX.secureDragonWindow(seconds, token)
     if not PHX.generationAlive() then return false end
     local untilAt = os.clock() + (tonumber(seconds) or 0)
@@ -9284,7 +8602,6 @@ function PHX.secureDragonWindow(seconds, token)
     if (token and not isRunning(token)) or not PHX.generationAlive() then return false end
     return storeDragonFruitCritical()
 end
-
 function PHX.hookDragonContainer(container)
     if not container then return end
     PHX.connect(container.ChildAdded,function(obj)
@@ -9298,7 +8615,6 @@ function PHX.hookDragonContainer(container)
         end)
     end)
 end
-
 PHX.hookDragonContainer(LP.Backpack)
 if char() then PHX.hookDragonContainer(char()) end
 PHX.connect(LP.CharacterAdded,function(c)
@@ -9311,12 +8627,10 @@ PHX.connect(LP.CharacterAdded,function(c)
     end)
 end)
 PHX.defer(function() storeDragonFruitCritical() end)
-
 local function eggPosition(obj)
     local p = interactionPart(obj)
     return p and p.Position
 end
-
 function PHX.collectDragonEggRemote()
     local modules = ReplicatedStorage:FindFirstChild("Modules")
     local net = modules and modules:FindFirstChild("Net")
@@ -9325,9 +8639,7 @@ function PHX.collectDragonEggRemote()
     local ok = pcall(function() re:FireServer() end)
     return ok
 end
-
 PHX.EggRosters = setmetatable({}, {__mode="k"})
-
 function PHX.captureEggRoster(state)
     local core = state.Island:FindFirstChild("Core")
     local folder = core and core:FindFirstChild("SpawnedDragonEggs")
@@ -9352,7 +8664,6 @@ function PHX.captureEggRoster(state)
         if position then entry.Position = position end
     end
 end
-
 function PHX.watchEggRoster(island)
     local solo=PHX.isSoloAutomation and PHX.isSoloAutomation()
     if solo then PHX.SoloEggRosters=PHX.SoloEggRosters or setmetatable({}, {__mode="k"}) end
@@ -9385,14 +8696,13 @@ function PHX.watchEggRoster(island)
     PHX.captureEggRoster(state)
     return state
 end
-
 function PHX.freezeEggRoster(state)
     PHX.captureEggRoster(state)
     if state.Ambiguous then return nil,state.Ambiguous end
     if state.Frozen then return state.Frozen end
     local entries = {}
     for _,entry in pairs(state.Entries) do
-        if not entry.Position then return {},nil end -- existing spawn-wait loop retries without guessing a position
+        if not entry.Position then return {},nil end
         entries[#entries+1] = entry
     end
     if #entries == 0 then return {},nil end
@@ -9413,12 +8723,6 @@ function PHX.freezeEggRoster(state)
     for _,entry in ipairs(entries) do state.Frozen[#state.Frozen+1] = entry.Egg end
     return state.Frozen
 end
-
--- V2.17.22: same DIRECT ItemReplicationService cache that the successful
--- standalone Dragon Egg Probe V1 read: IdMap.Material["Dragon Egg"]=565,
--- IdMap.Tool["Dragon Egg"]=1276 on the tested build. Always resolve live IDs
--- from IdMap instead of assuming these numbers never change.
--- This read is client-cache evidence, not proof of server-side award.
 PHX.EggDirectCache = {LastCount=nil,LastError=nil,LastLogAt=0,LastErrorAt=0,Reads=0}
 function PHX.eggDirectSnapshot()
     local dc=PHX.DirectCache
@@ -9469,7 +8773,6 @@ function PHX.eggDirectSnapshot()
     end
     return {Count=count,Matches=matches,Scanned=scanned,Ids=table.concat(idDetails,",")}
 end
-
 function PHX.readEggCount()
     local state=PHX.EggDirectCache
     local ok,snapshot,err=pcall(PHX.eggDirectSnapshot)
@@ -9492,12 +8795,10 @@ function PHX.readEggCount()
     state.LastCount=data.Count
     return data.Count
 end
-
 function PHX.confirmEggPickup(before)
     if type(before)~="number" then return false,nil end
     local after=PHX.readEggCount()
     if after==nil or after<before+1 then return false,after end
-    -- Two separate cache reads guard against a transient replicated snapshot.
     task.wait(.18)
     local stable=PHX.readEggCount()
     if stable~=nil and stable>=before+1 then
@@ -9506,10 +8807,9 @@ function PHX.confirmEggPickup(before)
     end
     return false,stable
 end
-
 function PHX.eggGainResetGuard(progress,stage)
     if type(progress)~="table" or progress.EggState~="CONFIRMED" then
-        return true -- no allocated egg is separately handled by the existing roster policy
+        return true
     end
     local before=progress.EggBaseline
     if type(before)~="number" then
@@ -9522,9 +8822,6 @@ function PHX.eggGainResetGuard(progress,stage)
         tostring(after and after-before or "UNKNOWN").." +1_required=true")
     return ok
 end
-
--- V2.17.19: observable, bounded fallback for a visible E / Collect prompt.
--- All methods use the assigned original egg; no cross-slot grabbing or reset.
 local function eggHoldEKey(holdTime,token)
     local pressed,reason=pcall(function() PHX.keyEvent(true,Enum.KeyCode.E,false,game) end)
     if not pressed then
@@ -9539,7 +8836,6 @@ local function eggHoldEKey(holdTime,token)
     if not up then return false,"E_KEY_UP_FAILED:"..tostring(releaseError) end
     return isRunning(token), isRunning(token) and "E_KEY_HOLD_COMPLETED" or "E_KEY_CANCELLED"
 end
-
 local function eggInputAttempt(egg,prompt,holdTime,token,attempt)
     if not isRunning(token) then return false,"EGG_CANCELLED","NONE" end
     if attempt==1 and prompt and prompt.Enabled then
@@ -9559,7 +8855,6 @@ local function eggInputAttempt(egg,prompt,holdTime,token,attempt)
         return ok,why,"E_KEY_HOLD"
     end
 end
-
 function PHX.soloEggRank(eggs,progress)
     if progress.SoloEgg then
         for index,egg in ipairs(eggs) do if egg==progress.SoloEgg then return index end end
@@ -9578,7 +8873,6 @@ function PHX.soloEggRank(eggs,progress)
     if rank then progress.SoloEgg=eggs[rank] end
     return rank
 end
-
 local function collectAssignedEgg(island, token)
     PHX.RewardProgress = PHX.RewardProgress or setmetatable({}, {__mode="k"})
     local progress = PHX.RewardProgress[island] or {}
@@ -9738,7 +9032,6 @@ local function collectAssignedEgg(island, token)
     progress.Egg, progress.EggState = true, "NONE"
     return true
 end
-
 local function visibleGui(o)
     local p = o
     while p and p ~= PG do
@@ -9749,11 +9042,9 @@ local function visibleGui(o)
     end
     return true
 end
-
 local function dialogueGui()
     return PG:FindFirstChild("DialogueGui")
 end
-
 local function dialogueOptions()
     local dg=dialogueGui()
     if not dg or not PHX.guiVisible(dg) then return {} end
@@ -9773,11 +9064,9 @@ local function dialogueOptions()
     end
     return options
 end
-
 local function fireButton(button)
     return PHX.activateOnce(button)
 end
-
 function PHX.dialogueVisualText(button)
     if not button then return "" end
     local glyphs={}
@@ -9798,11 +9087,9 @@ function PHX.dialogueVisualText(button)
     end
     return table.concat(pieces,"")
 end
-
 function PHX.compactText(value)
     return PHX.normalizeItemName(tostring(value or ""):gsub("<.->", "")):gsub("[^%w]", "")
 end
-
 function PHX.dialogueOption(options,wanted)
     local target=PHX.compactText(wanted)
     for _,button in ipairs(options or {}) do
@@ -9810,13 +9097,11 @@ function PHX.dialogueOption(options,wanted)
     end
     return nil
 end
-
 function PHX.dialogueSignature(options)
     local pieces={}
     for _,button in ipairs(options or {}) do pieces[#pieces+1]=PHX.compactText(PHX.dialogueVisualText(button)) end
     return table.concat(pieces,"|")
 end
-
 function PHX.waitDialogueMenu(oldSignature, wanted, token, timeout)
     local deadline=os.clock()+(timeout or 2)
     repeat
@@ -9829,7 +9114,6 @@ function PHX.waitDialogueMenu(oldSignature, wanted, token, timeout)
     until os.clock() >= deadline
     return nil,"MENU_NOT_CONFIRMED:"..wanted
 end
-
 function PHX.dialogueIsDragonHunter()
     local dg=dialogueGui()
     if not dg or not PHX.guiVisible(dg) then return false end
@@ -9839,13 +9123,11 @@ function PHX.dialogueIsDragonHunter()
     end
     return false
 end
-
 function PHX.dragonHunterRemote()
     local modules = ReplicatedStorage:FindFirstChild("Modules") or ReplicatedStorage:WaitForChild("Modules", 5)
     local net = modules and (modules:FindFirstChild("Net") or modules:WaitForChild("Net", 5))
     return net and (net:FindFirstChild("RF/DragonHunter") or net:WaitForChild("RF/DragonHunter", 5))
 end
-
 function PHX.dragonHunterCheckRaw()
     local rf = PHX.dragonHunterRemote()
     if not rf then return nil end
@@ -9855,10 +9137,8 @@ function PHX.dragonHunterCheckRaw()
     if not ok then return nil end
     return response
 end
-
 PHX.ActiveQuestKind = PHX.ActiveQuestKind or "NONE"
 PHX.ActiveQuestText = PHX.ActiveQuestText or ""
-
 function PHX.questTextFromValue(response)
     if response == nil then return "" end
     local found = ""
@@ -9883,7 +9163,6 @@ function PHX.questTextFromValue(response)
     walk(response,0)
     return found
 end
-
 function PHX.questKindFromText(text)
     local l = string.lower(tostring(text or ""))
     if l:find("hydra enforcer",1,true) then return "HYDRA" end
@@ -9891,7 +9170,6 @@ function PHX.questKindFromText(text)
     if l:find("destroy",1,true) and l:find("tree",1,true) then return "TREE" end
     return "NONE"
 end
-
 function PHX.questTextFromVisibleGui()
     for _,v in ipairs(PHX.gameGuiDescendants(PG)) do
         if (v:IsA("TextLabel") or v:IsA("TextButton")) and visibleGui(v) then
@@ -9901,7 +9179,6 @@ function PHX.questTextFromVisibleGui()
     end
     return ""
 end
-
 function PHX.latchQuest(text, source)
     local kind = PHX.questKindFromText(text)
     if kind == "NONE" then return false end
@@ -9916,22 +9193,18 @@ function PHX.latchQuest(text, source)
     noteProgress("QUEST_ACCEPTED:"..kind)
     return true
 end
-
 function PHX.dragonHunterCheckText()
     return PHX.questTextFromValue(PHX.dragonHunterCheckRaw())
 end
-
 local function questText()
     if PHX.ActiveQuestKind and PHX.ActiveQuestKind ~= "NONE"
         and (PHX.QuestCompletedAt or -math.huge) < (PHX.LastQuestAcceptedAt or -math.huge) then
         return PHX.ActiveQuestText or PHX.ActiveQuestKind
     end
-
     local direct = PHX.dragonHunterCheckText()
     if direct ~= "" then return direct end
     return PHX.questTextFromVisibleGui()
 end
-
 local function questKind()
     if PHX.ActiveQuestKind and PHX.ActiveQuestKind ~= "NONE"
         and (PHX.QuestCompletedAt or -math.huge) < (PHX.LastQuestAcceptedAt or -math.huge) then
@@ -9939,7 +9212,6 @@ local function questKind()
     end
     return PHX.questKindFromText(questText())
 end
-
 function PHX.questStatusText()
     local kind = questKind()
     local text = questText()
@@ -9947,11 +9219,9 @@ function PHX.questStatusText()
     if text == "" then text = kind end
     return "QUEST "..kind.." | "..text
 end
-
 PHX.QuestCompletedAt = -math.huge
 PHX.QuestCompletedText = ""
 PHX.LastQuestAcceptedAt = -math.huge
-
 function PHX.markQuestCompleteText(text)
     local raw = tostring(text or ""):gsub("<.->", ""):gsub("^%s+",""):gsub("%s+$","")
     local l = string.lower(raw)
@@ -9966,7 +9236,6 @@ function PHX.markQuestCompleteText(text)
     end
     return false
 end
-
 function PHX.questCompleteVisible()
     local dg = dialogueGui()
     local roots = {dg, PG:FindFirstChild("Notifications"), PG:FindFirstChild("Main")}
@@ -9981,12 +9250,10 @@ function PHX.questCompleteVisible()
     end
     return false
 end
-
 function PHX.questCompleteSince(since)
     if PHX.QuestCompletedAt >= (since or -math.huge) then return true end
     return PHX.questCompleteVisible() and PHX.QuestCompletedAt >= (since or -math.huge)
 end
-
 function PHX.watchQuestPopupObject(obj)
     if not (obj:IsA("TextLabel") or obj:IsA("TextButton")) then return end
     local function inspect()
@@ -9996,10 +9263,8 @@ function PHX.watchQuestPopupObject(obj)
     PHX.connect(obj:GetPropertyChangedSignal("Visible"), inspect)
     inspect()
 end
-
 for _,obj in ipairs(PHX.gameGuiDescendants(PG)) do pcall(PHX.watchQuestPopupObject, obj) end
 PHX.connect(PG.DescendantAdded, function(obj) pcall(PHX.watchQuestPopupObject, obj) end)
-
 function PHX.fireDragonHunterWorldInteract()
     local npcPos=CONFIG.DRAGON_HUNTER.NPC.Position
     local candidates={}
@@ -10029,7 +9294,6 @@ function PHX.fireDragonHunterWorldInteract()
     end
     return false,"CLICKDETECTOR_UNAVAILABLE"
 end
-
 function PHX.clickDragonHunterScreen(token)
     local camera=workspace.CurrentCamera
     if not camera or not isRunning(token) then return false end
@@ -10053,7 +9317,6 @@ function PHX.clickDragonHunterScreen(token)
     if camera.Parent then pcall(function() camera.CFrame=original end) end
     return success
 end
-
 local function openDragonHunter(token)
     if not safeTween(CONFIG.DRAGON_HUNTER.STAND,200,token) then return false end
     task.wait(.25)
@@ -10073,7 +9336,6 @@ local function openDragonHunter(token)
     end
     return false
 end
-
 function PHX.dismissDragonHunterFinalBubble()
     local dg = dialogueGui()
     if not dg then return true end
@@ -10087,15 +9349,13 @@ function PHX.dismissDragonHunterFinalBubble()
     logLine("DRAGON_HUNTER_DISMISS", "local dialogue cleanup only; no world click")
     return true
 end
-
 function PHX.closeDragonHunterDialogue()
     local opts = dialogueOptions()
     if #opts >= 4 then
-        pcall(function() fireButton(opts[#opts]) end) -- Nevermind / close
+        pcall(function() fireButton(opts[#opts]) end)
         task.wait(.05)
     end
 end
-
 function PHX.acceptHuntViaDialogue(token)
     setStatus("Dragon Hunter CLICK -> Hunt / Sure")
     if not openDragonHunter(token) then return false end
@@ -10119,15 +9379,9 @@ function PHX.acceptHuntViaDialogue(token)
     end
     return false
 end
-
--- V2.17.30: Quest Remote uses the game dialogue backend, but movement to Dragon Hunter is REQUIRED by this automation.
--- Never perform a quest Remote request if travel or the NPC approach verification fails.
--- The game's dialogue calls RF/DragonHunter with {Context="RequestQuest"}, then checks {Context="Check"}.
--- Unlike the previously unverified craft RPC, this quest protocol is present in the game's DragonHunter dialogue.
 PHX.DragonHunterQuestRemoteState = PHX.DragonHunterQuestRemoteState or {
     NextRequestAt=0, LastRawStatus="NONE", LastRequestAt=-math.huge, LastOutcome="NOT_STARTED"
 }
-
 function PHX.dragonHunterQuestReplyPreview(value)
     local kind=typeof(value)
     if kind=="string" then return string.sub(value,1,190) end
@@ -10143,54 +9397,145 @@ function PHX.dragonHunterQuestReplyPreview(value)
     end
     return #parts>0 and table.concat(parts," | ") or "table(no standard fields)"
 end
-
--- Tween only when taking a new quest: do not interfere with ordinary farming movement.
--- The STAND point is about six studs from the NPC. No click, Prompt or dialogue GUI is used.
-local function approachDragonHunterForQuest(token)
-    if not isRunning(token) then return false end
-    local stand=CONFIG.DRAGON_HUNTER.STAND
-    local npc=CONFIG.DRAGON_HUNTER.NPC.Position
-    local before=root()
-    if not before then
-        logLine("DRAGON_HUNTER_APPROACH","FAILED | no living character root")
-        return false
+PHX.DragonQuestPosition={Current=nil}
+function PHX.endDragonQuestPosition(owner)
+    local state=PHX.DragonQuestPosition
+    local ctx=state.Current
+    if not ctx or (owner and owner~=ctx) then return end
+    state.Current=nil;ctx.Active=false
+    if ctx.Connection then PHX.disconnect(ctx.Connection);PHX.Runtime.MovementConnections[ctx.Connection]=nil end
+    if ctx.Tween then pcall(function() ctx.Tween:Cancel() end);PHX.Runtime.Tweens[ctx.Tween]=nil end
+    for _,obj in ipairs(ctx.Objects) do pcall(function() obj:Destroy() end);PHX.Runtime.MovementObjects[obj]=nil end
+    for part,value in pairs(ctx.Collisions) do
+        if part.Parent and part:IsDescendantOf(ctx.Character) then pcall(function() part.CanCollide=value end) end
     end
-    local startDistance=(before.Position-stand.Position).Magnitude
-    logLine("DRAGON_HUNTER_APPROACH",string.format("START | standDistance=%.1f | NPCDistance=%.1f",startDistance,(before.Position-npc).Magnitude))
-    if startDistance>8 then
-        setStatus("Tween to Dragon Hunter -> then RequestQuest remote")
-        local moved=safeTween(stand,CONFIG.PLAYER_TWEEN_SPEED,token)
-        if not moved then
-            logLine("DRAGON_HUNTER_APPROACH","TWEEN_FAILED | RequestQuest NOT sent")
-            setStatus("Dragon Hunter tween failed; quest remote paused")
-            return false
+    if ctx.Humanoid.Parent==ctx.Character then pcall(function() ctx.Humanoid.AutoRotate=ctx.AutoRotate end) end
+    if ctx.GuiLock then PHX.releaseLock(ctx.GuiLock) end
+    if ctx.FruitLock then PHX.releaseLock(ctx.FruitLock) end
+end
+function PHX.dragonQuestPositionAlive(ctx)
+    return ctx and ctx.Active and PHX.DragonQuestPosition.Current==ctx and isRunning(ctx.Token)
+        and CHARACTER_EPOCH==ctx.Epoch and LP.Character==ctx.Character and hum()==ctx.Humanoid and root()==ctx.Root
+        and ctx.Root.Parent==ctx.Character and ctx.Humanoid.Health>0 and not ctx.Humanoid.SeatPart
+        and not PHX.isMovementLocked() and not DRAGON_GUARD_STATE.Critical and not DRAGON_GUARD_STATE.Pending
+        and (not PHX.findPhysicalDragonFruits or #PHX.findPhysicalDragonFruits()==0)
+        and os.clock()<ctx.Deadline
+end
+function PHX.dragonQuestPositionReady(token,ctx)
+    ctx=ctx or PHX.DragonQuestPosition.Current
+    if not PHX.dragonQuestPositionAlive(ctx) or token~=ctx.Token or not ctx.Arrived then return false end
+    return (ctx.Root.Position-CONFIG.DRAGON_HUNTER.STAND.Position).Magnitude<=6
+        and (ctx.Root.Position-CONFIG.DRAGON_HUNTER.NPC.Position).Magnitude<=16
+end
+function PHX.beginDragonQuestPosition(token)
+    if not isRunning(token) or PHX.isMovementLocked() then return nil,"STOPPED_OR_BOAT" end
+    if PHX.DragonQuestPosition.Current then return nil,"QUEST_APPROACH_BUSY" end
+    local waitUntil=os.clock()+3
+    while PHX.Runtime.FruitGuiBusy or (PHX.FruitAutoState and PHX.FruitAutoState.Busy) do
+        if not isRunning(token) or os.clock()>=waitUntil then return nil,"WAITING_FOR_FRUIT_INTERACTION" end
+        task.wait(.05)
+    end
+    local c,h,r=char(),hum(),root()
+    if not c or not h or not r or h.Health<=0 or h.SeatPart
+        or DRAGON_GUARD_STATE.Critical or DRAGON_GUARD_STATE.Pending then return nil,"ACTOR_UNAVAILABLE" end
+    local lock=PHX.acquireLock(PHX.Runtime,"FruitGuiBusy","FruitGuiBusy")
+    if not lock then return nil,"WAITING_FOR_FRUIT_INTERACTION" end
+    local ctx={Token=token,Character=c,Humanoid=h,Root=r,Epoch=CHARACTER_EPOCH,Active=true,Owner=coroutine.running(),
+        Deadline=os.clock()+25,Objects={},Collisions={},AutoRotate=h.AutoRotate,GuiLock=lock}
+    PHX.DragonQuestPosition.Current=ctx
+    if PHX.FruitAutoState then
+        ctx.FruitLock=PHX.acquireLock(PHX.FruitAutoState,"Busy","FruitAutoBusy")
+        if not ctx.FruitLock then PHX.endDragonQuestPosition(ctx);return nil,"WAITING_FOR_FRUIT_INTERACTION" end
+    end
+    ctx.Connection=PHX.connect(RunService.Stepped,function()
+        if not PHX.dragonQuestPositionAlive(ctx) then PHX.endDragonQuestPosition(ctx);return end
+        if ctx.Moving then
+            for _,part in ipairs(c:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    if ctx.Collisions[part]==nil then ctx.Collisions[part]=part.CanCollide end
+                    part.CanCollide=false;part.AssemblyLinearVelocity=Vector3.zero;part.AssemblyAngularVelocity=Vector3.zero
+                end
+            end
         end
+    end)
+    PHX.Runtime.MovementConnections[ctx.Connection]=true
+    return ctx
+end
+function PHX.moveDragonQuestPosition(ctx)
+    local target=CONFIG.DRAGON_HUNTER.STAND
+    local speed=tonumber(CONFIG.PLAYER_TWEEN_SPEED) or 200
+    if speed<=0 or speed~=speed or speed==math.huge then return false,"INVALID_SPEED" end
+    if PHX.MaterialCombat then PHX.MaterialCombat.Stop("DRAGON_QUEST_APPROACH") end
+    if PHX.stopFarmHover then PHX.stopFarmHover() end
+    PHX.restoreTravel()
+    if not PHX.dragonQuestPositionAlive(ctx) then return false,"CONTEXT_CHANGED" end
+    ctx.Moving=true;ctx.Humanoid.AutoRotate=false
+    local deadline=os.clock()+12
+    while PHX.dragonQuestPositionAlive(ctx) do
+        local distance=(target.Position-ctx.Root.Position).Magnitude
+        if distance<=3 then break end
+        if os.clock()>=deadline then return false,"APPROACH_TIMEOUT" end
+        local step=math.min(48,distance)
+        local tween=TweenService:Create(ctx.Root,TweenInfo.new(math.max(step/speed,.04),Enum.EasingStyle.Linear),
+            {CFrame=ctx.Root.CFrame:Lerp(target,step/distance)})
+        ctx.Tween=tween;PHX.Runtime.Tweens[tween]=true;tween:Play()
+        local untilTime=os.clock()+math.max(step/speed,.04)+.20
+        repeat
+            if not PHX.dragonQuestPositionAlive(ctx) then return false,"CONTEXT_CHANGED" end
+            if (target.Position-ctx.Root.Position).Magnitude<=3 then break end
+            task.wait(.03)
+        until os.clock()>=untilTime
+        tween:Cancel();PHX.Runtime.Tweens[tween]=nil;ctx.Tween=nil
     end
-    if not isRunning(token) then return false end
-    local after=root()
-    if not after then return false end
-    local standDistance=(after.Position-stand.Position).Magnitude
-    local npcDistance=(after.Position-npc).Magnitude
-    if standDistance>10 or npcDistance>16 then
-        logLine("DRAGON_HUNTER_APPROACH",string.format("TOO_FAR | stand=%.1f npc=%.1f | RequestQuest NOT sent",standDistance,npcDistance))
-        setStatus("Dragon Hunter not reached; quest remote paused")
-        return false
+    if not PHX.dragonQuestPositionAlive(ctx) then return false,"CONTEXT_CHANGED" end
+    ctx.Moving=false
+    for part,value in pairs(ctx.Collisions) do if part.Parent then part.CanCollide=value end end
+    table.clear(ctx.Collisions)
+    local attachment=Instance.new("Attachment");ctx.Objects[#ctx.Objects+1]=attachment
+    attachment.Name="PH_DragonQuestAttachment";attachment.Parent=ctx.Root
+    PHX.Runtime.MovementObjects[attachment]=true
+    local hold=Instance.new("AlignPosition");ctx.Objects[#ctx.Objects+1]=hold
+    hold.Name="PH_DragonQuestPosition";hold.Mode=Enum.PositionAlignmentMode.OneAttachment
+    hold.Attachment0=attachment;hold.Position=target.Position;hold.ApplyAtCenterOfMass=true
+    hold.RigidityEnabled=false;hold.Responsiveness=35;hold.MaxVelocity=60;hold.MaxForce=1e6
+    hold.Parent=ctx.Root;PHX.Runtime.MovementObjects[hold]=true
+    ctx.Arrived=true
+    task.wait(.20)
+    return PHX.dragonQuestPositionReady(ctx.Token,ctx),"ARRIVAL_CHECK"
+end
+do
+    local oldTravel=PHX.restoreTravel
+    PHX.restoreTravel=function(...)
+        local ctx=PHX.DragonQuestPosition.Current
+        if ctx and (ctx.Moving or ctx.Arrived) then PHX.endDragonQuestPosition(ctx) end
+        return oldTravel(...)
     end
-    task.wait(.2) -- let arrival settle before the server-side quest request
-    if not isRunning(token) then return false end
-    after=root()
-    if not after or (after.Position-npc).Magnitude>16 then
-        logLine("DRAGON_HUNTER_APPROACH","POSITION_CHANGED | quest remote paused")
-        return false
+    local oldMovement=PHX.restoreMovement
+    PHX.restoreMovement=function(...)
+        PHX.endDragonQuestPosition()
+        return oldMovement(...)
     end
-    logLine("DRAGON_HUNTER_APPROACH",string.format("ARRIVED | stand=%.1f npc=%.1f | Remote now allowed",(after.Position-stand.Position).Magnitude,(after.Position-npc).Magnitude))
+end
+local function approachDragonHunterForQuest(token)
+    local ctx=PHX.DragonQuestPosition.Current
+    if not PHX.dragonQuestPositionAlive(ctx) or ctx.Token~=token then return false end
+    local stand=CONFIG.DRAGON_HUNTER.STAND
+    logLine("DRAGON_HUNTER_APPROACH",string.format("START | standDistance=%.1f | NPCDistance=%.1f",
+        (ctx.Root.Position-stand.Position).Magnitude,(ctx.Root.Position-CONFIG.DRAGON_HUNTER.NPC.Position).Magnitude))
+    setStatus("Dragon Hunter approach -> stable position -> quest remote")
+    local arrived,why=PHX.moveDragonQuestPosition(ctx)
+    if not arrived then
+        logLine("DRAGON_HUNTER_APPROACH","FAILED | "..tostring(why).." | RequestQuest NOT sent")
+        setStatus("Dragon Hunter approach paused: "..tostring(why));return false
+    end
+    logLine("DRAGON_HUNTER_APPROACH",string.format("ARRIVED | stand=%.2f npc=%.2f | hold active, remote allowed",
+        (ctx.Root.Position-stand.Position).Magnitude,(ctx.Root.Position-CONFIG.DRAGON_HUNTER.NPC.Position).Magnitude))
     return true
 end
-
-local function receiveDragonHunterQuest(token)
+function PHX.receiveDragonHunterQuestCore(token)
     if not isRunning(token) then return false end
-    -- Explicit order: travel to Hydra -> tween to NPC -> confirm range -> only then Check / RequestQuest.
     if not approachDragonHunterForQuest(token) then return false end
+    local approachOwner=PHX.DragonQuestPosition.Current
     local rf=PHX.dragonHunterRemote()
     if not isRunning(token) then return false end
     if not rf or not rf:IsA("RemoteFunction") then
@@ -10198,26 +9543,21 @@ local function receiveDragonHunterQuest(token)
         setStatus("Dragon Hunter quest RF missing; cannot accept quest")
         return false
     end
-
     local state=PHX.DragonHunterQuestRemoteState
     local previousAcceptedAt=PHX.LastQuestAcceptedAt or -math.huge
     local previousFinished=previousAcceptedAt>-math.huge and PHX.QuestCompletedAt>=previousAcceptedAt
     local previousText=tostring(PHX.ActiveQuestText or "")
-
     local function callQuestRF(context, phase)
-        if not isRunning(token) then return false,nil end
+        if not PHX.dragonQuestPositionReady(token,approachOwner) then return false,nil end
         local started=os.clock()
         local ok,raw=pcall(function() return rf:InvokeServer({Context=context}) end)
-        if not isRunning(token) then return false,nil end
+        if not PHX.dragonQuestPositionReady(token,approachOwner) then return false,nil end
         logLine("DRAGON_HUNTER_RPC",string.format("%s | %s ok=%s elapsed=%.2fs reply=%s",
             tostring(phase),tostring(context),tostring(ok),os.clock()-started,
             ok and PHX.dragonHunterQuestReplyPreview(raw) or string.sub(tostring(raw),1,190)))
         if not ok then state.LastOutcome="RPC_"..tostring(context).."_ERROR" end
         return ok,raw
     end
-
-    -- The response may contain the existing quest or the literal 'Locked'.
-    -- Check does not consume quests; RequestQuest is sent once, only when needed.
     local checkOK,initial=callQuestRF("Check","BEFORE")
     if not isRunning(token) then return false end
     if checkOK and initial=="Locked" then
@@ -10230,8 +9570,6 @@ local function receiveDragonHunterQuest(token)
         state.LastOutcome="EXISTING_QUEST_CONFIRMED"
         return PHX.latchQuest(current,"DRAGON HUNTER RF CHECK")
     end
-
-    -- Limit retries across failed farm cycles. A nil RPC response is not proof of quest success.
     local now=os.clock()
     if now < (state.NextRequestAt or 0) then
         state.LastOutcome="REQUEST_COOLDOWN"
@@ -10253,7 +9591,6 @@ local function receiveDragonHunterQuest(token)
         return false
     end
     local requestText=PHX.questTextFromValue(response)
-    -- RequestQuest may return no quest text even if the server starts it; verify using Check.
     local deadlines={0.15,0.40,0.80,1.40,2.20}
     local verifyStart=os.clock()
     for index,delay in ipairs(deadlines) do
@@ -10273,26 +9610,33 @@ local function receiveDragonHunterQuest(token)
             return PHX.latchQuest(text,"DRAGON HUNTER RF REQUEST+CHECK")
         end
     end
-    -- A request response containing quest-like text is supporting evidence, but without a
-    -- confirming Check may describe an offer or stale quest. Never farm based solely on that.
     state.LastOutcome="REQUEST_UNCONFIRMED"
     logLine("DRAGON_HUNTER_RPC","UNCONFIRMED | requestText="..string.sub(requestText,1,150).." | before="..string.sub(current,1,150).." | no quest returned by Check")
     setStatus("Dragon Hunter RequestQuest sent but no active quest confirmed; retry after cooldown")
     return false
 end
-
+local function receiveDragonHunterQuest(token)
+    local started,owner,why=pcall(PHX.beginDragonQuestPosition,token)
+    if not started then
+        local partial=PHX.DragonQuestPosition.Current
+        if partial and partial.Owner==coroutine.running() then PHX.endDragonQuestPosition(partial) end
+        logLine("DRAGON_HUNTER_APPROACH_ERROR",tostring(owner));return false
+    end
+    if not owner then setStatus("Dragon Hunter approach paused: "..tostring(why));return false end
+    local ok,result=pcall(PHX.receiveDragonHunterQuestCore,token)
+    PHX.endDragonQuestPosition(owner)
+    if not ok then logLine("DRAGON_HUNTER_RPC_ERROR",tostring(result));return false end
+    return result==true
+end
 PHX._HydraTreeCache = PHX._HydraTreeCache or {At=-math.huge, List={}}
 PHX._HydraTreeLastHit = PHX._HydraTreeLastHit or setmetatable({}, {__mode="k"})
-
 function PHX.hydraTreePart(obj)
     if not obj or not obj.Parent then return nil end
     if obj:IsA("BasePart") then return obj end
     if not obj:IsA("Model") then return nil end
-
     if obj.PrimaryPart and obj.PrimaryPart:IsA("BasePart") then
         return obj.PrimaryPart
     end
-
     local trunk = obj:FindFirstChild("Trunk", true)
     if trunk then
         if trunk:IsA("BasePart") then
@@ -10305,10 +9649,8 @@ function PHX.hydraTreePart(obj)
             if trunkPart then return trunkPart end
         end
     end
-
     return obj:FindFirstChildWhichIsA("BasePart", true)
 end
-
 function PHX.hydraTreeCanonical(obj)
     if not obj then return nil end
     local cur = obj
@@ -10323,7 +9665,6 @@ function PHX.hydraTreeCanonical(obj)
     end
     return best or obj
 end
-
 function PHX.hydraTreeHealthSignal(obj)
     if not obj then return false end
     local function healthish(x)
@@ -10344,11 +9685,9 @@ function PHX.hydraTreeHealthSignal(obj)
     end
     return false
 end
-
 function PHX.hydraTreeCandidate(obj)
     if not obj or not obj.Parent then return false end
     if not (obj:IsA("Model") or obj:IsA("BasePart")) then return false end
-
     local l = string.lower(obj.Name)
     local named = l:find("tree",1,true) or l:find("bamboo",1,true) or l:find("trunk",1,true) or l:find("stem",1,true)
     local healthSignal = PHX.hydraTreeHealthSignal(obj)
@@ -10356,16 +9695,13 @@ function PHX.hydraTreeCandidate(obj)
     if l:find("leaf",1,true) or l:find("leaves",1,true) or l:find("foliage",1,true) or l:find("canopy",1,true) then
         return false
     end
-
     local canon = PHX.hydraTreeCanonical(obj)
     local p = PHX.hydraTreePart(canon)
     if not p then return false end
     local pos = p.Position
-
     if pos.X < 4850 or pos.X > 5950 or pos.Y < 930 or pos.Y > 1325 or pos.Z < -100 or pos.Z > 1250 then
         return false
     end
-
     local nearest = math.huge
     for _,cf in ipairs(CONFIG.TREES) do
         local d = (pos - cf.Position).Magnitude
@@ -10373,27 +9709,22 @@ function PHX.hydraTreeCandidate(obj)
     end
     return nearest <= 720
 end
-
 function PHX.scanHydraTrees(force)
     local cache = PHX._HydraTreeCache
     if not force and os.clock() - cache.At < .65 and #cache.List > 0 then
         return cache.List
     end
-
     local out, seen = {}, {}
-
     local params = OverlapParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
     params.FilterDescendantsInstances = {LP.Character}
     params.MaxParts = 1200
-
     local zoneCF = CFrame.new(5400, 1125, 560)
     local zoneSize = Vector3.new(1250, 430, 1400)
     local ok, parts = pcall(function()
         return workspace:GetPartBoundsInBox(zoneCF, zoneSize, params)
     end)
     if not ok then parts = {} end
-
     for _,part in ipairs(parts) do
         local probes = {part}
         local cur = part.Parent
@@ -10402,7 +9733,6 @@ function PHX.scanHydraTrees(force)
             probes[#probes+1] = cur
             cur = cur.Parent
         end
-
         for _,obj in ipairs(probes) do
             local okCandidate, isCandidate = pcall(PHX.hydraTreeCandidate, obj)
             if okCandidate and isCandidate then
@@ -10418,14 +9748,12 @@ function PHX.scanHydraTrees(force)
             end
         end
     end
-
     local rr = root()
     table.sort(out, function(a,b)
         local ap = PHX.hydraTreePart(a)
         local bp = PHX.hydraTreePart(b)
         if not ap then return false end
         if not bp then return true end
-
         local ah = PHX._HydraTreeLastHit[a] or -math.huge
         local bh = PHX._HydraTreeLastHit[b] or -math.huge
         local aFresh = os.clock() - ah > .8
@@ -10436,10 +9764,8 @@ function PHX.scanHydraTrees(force)
         end
         return ah < bh
     end)
-
     cache.At = os.clock()
     cache.List = out
-
     local sigParts = {}
     for i=1,math.min(#out,8) do
         local t = out[i]
@@ -10451,10 +9777,8 @@ function PHX.scanHydraTrees(force)
         cache.LastSig = sig
         logLine("TREE_SCAN", "detected="..#out.." | "..sig)
     end
-
     return out
 end
-
 function PHX.pickHydraTree()
     local trees = PHX.scanHydraTrees(false)
     local now = os.clock()
@@ -10471,7 +9795,6 @@ function PHX.pickHydraTree()
     end
     return nil, nil, 0
 end
-
 function PHX.startTreeHover(targetCF, token)
     if PHX.isMovementLocked() then return function() end end
     local rr=root()
@@ -10502,7 +9825,6 @@ function PHX.startTreeHover(targetCF, token)
     PHX.Runtime.MovementConnections[connection]=true
     return stop
 end
-
 function PHX.treeSkillsNoViewLock(token)
     for index,tooltip in ipairs({"Melee","Blox Fruit"}) do
         if not isRunning(token) then return false end
@@ -10525,14 +9847,12 @@ function PHX.treeSkillsNoViewLock(token)
     end
     return true
 end
-
 local function farmTreeQuest(token)
     local i=1
     local started=PHX.LastQuestAcceptedAt
     if not started or started == -math.huge then started=os.clock() end
     while isRunning(token) and not PHX.questCompleteSince(started) do
         if not waitAlive(token) then return false end
-        -- The three saved CFrames are safe standing positions; use their exact coordinates.
         local hover=CONFIG.TREES[i]
         setStatus("QUEST TREE | saved point "..i.."/"..#CONFIG.TREES.." | Melee XC + Fruit ZCVF")
         if not safeTween(hover,180,token) then return false end
@@ -10555,7 +9875,6 @@ local function farmTreeQuest(token)
     if PHX.questCompleteSince(started) then PHX.ActiveQuestKind="NONE"; PHX.ActiveQuestText=""; return true end
     return false
 end
-
 function PHX.pulseBlazeCollectRemote()
     local re = PHX.blazeCollectRemote and PHX.blazeCollectRemote() or nil
     if re and re.FireServer then
@@ -10564,13 +9883,11 @@ function PHX.pulseBlazeCollectRemote()
     end
     return false
 end
-
 function PHX.blazeCollectRemote()
     local modules = ReplicatedStorage:FindFirstChild("Modules")
     local net = modules and modules:FindFirstChild("Net")
     return net and (net:FindFirstChild("RE/DragonDojoEmber") or net:FindFirstChild("RE/DragonDojoEmber", true))
 end
-
 function PHX.findBlazeParts()
     local out, seen = {}, {}
     local function addPart(p)
@@ -10582,7 +9899,6 @@ function PHX.findBlazeParts()
             end
         end
     end
-
     for _,obj in ipairs(workspace:GetChildren()) do
         local l = string.lower(obj.Name)
         if l:find("blaze",1,true) or l:find("ember",1,true) or l == "fireflowers" then
@@ -10600,7 +9916,6 @@ function PHX.findBlazeParts()
     end
     return out
 end
-
 function PHX.touchVisibleBlaze(token, allowTween)
     local r = root()
     if not r then return 0 end
@@ -10635,14 +9950,12 @@ function PHX.touchVisibleBlaze(token, allowTween)
     end
     return count
 end
-
 local function farmHunterQuest(token)
     local kind = questKind()
     if kind == "NONE" then return false end
     local questStartedAt = PHX.LastQuestAcceptedAt
     if not questStartedAt or questStartedAt == -math.huge then questStartedAt = os.clock() end
     logLine("QUEST", "start | "..PHX.questStatusText())
-
     if kind == "TREE" then
         farmTreeQuest(token)
     elseif kind == "HYDRA" then
@@ -10662,30 +9975,24 @@ local function farmHunterQuest(token)
             task.wait(.05)
         end
     end
-
     local completed = PHX.questCompleteSince(questStartedAt)
     logLine("QUEST", "popup-complete="..tostring(completed).." | previous="..kind.." | text="..tostring(PHX.QuestCompletedText))
     return completed
 end
-
 function PHX.collectBlazeEmberDrops(token, seconds)
     local before = inventoryCount("Blaze Ember", true)
     local maxUntil = os.clock() + (seconds or 2.2)
     setStatus("Quest complete -> collecting Blaze Embers")
-
     while isRunning(token) and os.clock() < maxUntil do
         PHX.pulseBlazeCollectRemote()
         PHX.touchVisibleBlaze(token, true)
         task.wait(.04)
     end
-
     local after = inventoryCount("Blaze Ember", true)
     logLine("BLAZE_COLLECT", "before="..tostring(before).." after="..tostring(after).." collectWindow="..tostring(seconds or 2.2))
     return after > before
 end
-
 local function farmBlazeEmbers(token,manualUnlimited)
-    -- Normal Volcano still stops at 15; dedicated manual button farms until OFF.
     while isRunning(token) and (manualUnlimited==true or inventoryCount("Blaze Ember", true) < 15) do
         if not goHydra(token) then
             setStatus("Hydra portal failed - NOT flying across sea")
@@ -10693,7 +10000,6 @@ local function farmBlazeEmbers(token,manualUnlimited)
         else
             local completedPrevious = PHX.QuestCompletedAt >= (PHX.LastQuestAcceptedAt or -math.huge)
             local kind = questKind()
-
             if kind == "NONE" or completedPrevious then
                 setStatus("Dragon Hunter NPC tween -> direct quest RequestQuest / Check (no dialogue GUI)")
                 if not receiveDragonHunterQuest(token) then
@@ -10710,7 +10016,6 @@ local function farmBlazeEmbers(token,manualUnlimited)
                     end
                 end
             end
-
             if kind ~= "NONE" and isRunning(token) then
                 setStatus(PHX.questStatusText().." | Ember "..tostring(inventoryCount("Blaze Ember")).."/15")
                 local before = inventoryCount("Blaze Ember", true)
@@ -10722,10 +10027,8 @@ local function farmBlazeEmbers(token,manualUnlimited)
                         task.wait(.08)
                     end
                 end)
-
                 local completed = farmHunterQuest(token)
                 collectorAlive = false
-
                 if completed and isRunning(token) then
                     PHX.collectBlazeEmberDrops(token, 2.2)
                     local after = inventoryCount("Blaze Ember", true)
@@ -10743,16 +10046,13 @@ local function farmBlazeEmbers(token,manualUnlimited)
     end
     return inventoryCount("Blaze Ember", true) >= 15
 end
-
 local function isForestPirate(m)
     if not m or not m:IsA("Model") then return false end
     return string.find(string.lower(m.Name), "forest pirate", 1, true) ~= nil
 end
-
 local function isForestGhost(m)
     return FOREST_GHOST_BLACKLIST[m] == true
 end
-
 local function boostSimulationRadius()
     pcall(function()
         if setsimulationradius then setsimulationradius(math.huge, math.huge) end
@@ -10761,7 +10061,6 @@ local function boostSimulationRadius()
         if sethiddenproperty then sethiddenproperty(LP, "SimulationRadius", math.huge) end
     end)
 end
-
 local function forestHumRoot(m)
     if not m or not m.Parent or not m:IsA("Model") then return nil, nil end
     local h = m:FindFirstChildOfClass("Humanoid")
@@ -10769,7 +10068,6 @@ local function forestHumRoot(m)
     if not h or not rr or h.Health <= 0 or (h.MaxHealth and h.MaxHealth <= 0) then return nil, nil end
     return h, rr
 end
-
 local function updateForestDamageTrack(m, countedAttack)
     local h = m and m:FindFirstChildOfClass("Humanoid")
     if not h or h.Health <= 0 then return false end
@@ -10780,7 +10078,6 @@ local function updateForestDamageTrack(m, countedAttack)
         FOREST_DAMAGE_TRACK[m] = t
         return false
     end
-
     if h.Health < (t.lastHealth - 0.05) then
         t.lastHealth = h.Health
         t.lastDamageAt = now
@@ -10788,10 +10085,8 @@ local function updateForestDamageTrack(m, countedAttack)
         FOREST_DAMAGE_PROVEN = true
         return false
     end
-
     if countedAttack then t.attacks = t.attacks + 1 end
     t.lastHealth = h.Health
-
     if FOREST_DAMAGE_PROVEN
         and ACTIVE_FOREST_MAGNET.Locked[m]
         and t.attacks >= CONFIG.FOREST_GHOST_MIN_ATTACKS
@@ -10813,12 +10108,10 @@ local function updateForestDamageTrack(m, countedAttack)
     end
     return false
 end
-
 local function aliveForestPirates(centerPos, radius)
     local decorated = {}
     local enemies = workspace:FindFirstChild("Enemies")
     if not enemies then return {} end
-
     for _,m in ipairs(enemies:GetChildren()) do
         if isForestPirate(m) and not isForestGhost(m) then
             local h, rr = forestHumRoot(m)
@@ -10831,13 +10124,11 @@ local function aliveForestPirates(centerPos, radius)
             end
         end
     end
-
     table.sort(decorated, function(a,b) return a.distance < b.distance end)
     local result = {}
     for _,entry in ipairs(decorated) do result[#result+1] = entry.model end
     return result
 end
-
 local function hardLockForestMob(m,anchorCF)
     if isForestGhost(m) then return false end
     local h,rr=forestHumRoot(m)
@@ -10852,7 +10143,6 @@ local function hardLockForestMob(m,anchorCF)
     end)
     return ok
 end
-
 local function setForestMagnet(enabled, anchorCF, radius)
     enabled = enabled and true or false
     if not enabled then
@@ -10861,7 +10151,6 @@ local function setForestMagnet(enabled, anchorCF, radius)
         ACTIVE_FOREST_MAGNET.Locked = setmetatable({}, {__mode="k"})
         return
     end
-
     local resetLocked = not ACTIVE_FOREST_MAGNET.Enabled
     if ACTIVE_FOREST_MAGNET.Anchor and anchorCF then
         resetLocked = resetLocked or ((ACTIVE_FOREST_MAGNET.Anchor.Position - anchorCF.Position).Magnitude > 4)
@@ -10873,7 +10162,6 @@ local function setForestMagnet(enabled, anchorCF, radius)
     ACTIVE_FOREST_MAGNET.Anchor = anchorCF
     ACTIVE_FOREST_MAGNET.Radius = radius or CONFIG.FOREST_MAGNET_RADIUS
 end
-
 local FOREST_LAST_MAINTAIN=0
 local function maintainForestMagnet()
     if not ACTIVE_FOREST_MAGNET.Enabled or not ACTIVE_FOREST_MAGNET.Anchor then return end
@@ -10883,7 +10171,6 @@ local function maintainForestMagnet()
     if not enemies then return end
     local anchorCF = ACTIVE_FOREST_MAGNET.Anchor
     local radius = ACTIVE_FOREST_MAGNET.Radius
-
     for m in pairs(ACTIVE_FOREST_MAGNET.Locked) do
         if not m.Parent or isForestGhost(m) then
             ACTIVE_FOREST_MAGNET.Locked[m] = nil
@@ -10891,7 +10178,6 @@ local function maintainForestMagnet()
             hardLockForestMob(m,anchorCF)
         end
     end
-
     local rp = root()
     for _,m in ipairs(enemies:GetChildren()) do
         if isForestPirate(m) and not isForestGhost(m) and not ACTIVE_FOREST_MAGNET.Locked[m] then
@@ -10906,10 +10192,8 @@ local function maintainForestMagnet()
         end
     end
 end
-
 PHX.connect(RunService.Stepped, maintainForestMagnet)
 PHX.connect(RunService.Heartbeat, maintainForestMagnet)
-
 local function stopStableHover()
     local h = ACTIVE_HOVER.Humanoid
     local rr = ACTIVE_HOVER.Root
@@ -10937,7 +10221,6 @@ local function stopStableHover()
     ACTIVE_HOVER.Gyro = nil
     ACTIVE_HOVER.Target = nil
 end
-
 local function startStableHover(targetCF)
     if PHX.isMovementLocked() then return false end
     stopStableHover()
@@ -10965,7 +10248,6 @@ local function startStableHover(targetCF)
     ACTIVE_HOVER.Position,ACTIVE_HOVER.Gyro,ACTIVE_HOVER.Target=ap,nil,targetCF
     return true
 end
-
 local function maintainStableHover(targetCF)
     if PHX.isMovementLocked() then stopStableHover();return false end
     local rr=root()
@@ -10976,17 +10258,14 @@ local function maintainStableHover(targetCF)
     ACTIVE_HOVER.Position.Position=targetCF.Position
     return true
 end
-
 PHX.startFarmHover=startStableHover
 PHX.maintainFarmHover=maintainStableHover
 PHX.stopFarmHover=stopStableHover
-
 local function magnetForestPirates(anchorCF, radius)
     setForestMagnet(true, anchorCF, radius)
     boostSimulationRadius()
     local enemies = workspace:FindFirstChild("Enemies")
     if not enemies then return 0 end
-
     for _,m in ipairs(enemies:GetChildren()) do
         if isForestPirate(m) and not isForestGhost(m) then
             local h, rr = forestHumRoot(m)
@@ -10995,7 +10274,6 @@ local function magnetForestPirates(anchorCF, radius)
             end
         end
     end
-
     local count = 0
     for m in pairs(ACTIVE_FOREST_MAGNET.Locked) do
         local h, rr = forestHumRoot(m)
@@ -11008,7 +10286,6 @@ local function magnetForestPirates(anchorCF, radius)
     end
     return count
 end
-
 local function farmScrap(token)
     if not goTurtle(token) then return false end
     local camp=CONFIG.MOB_CAMPS.ForestPirate
@@ -11028,10 +10305,6 @@ local function farmScrap(token)
     PHX.stopFarmHover()
     return false
 end
-
--- V2.17.34 MANUAL MATERIAL UI WORKER BEGIN
--- Independent token avoids starting the Team/Solo volcano state machine.
--- Only one material mode may own movement/combat at a time.
 do
     local M=PHX.ManualMaterialFarm
     function M.IsBusy()
@@ -11050,8 +10323,6 @@ do
         M.Message="STOPPING:"..tostring(reason or "USER_BUTTON")
         logLine("MANUAL_MATERIAL_STOP",M.Message)
         if PHX.MaterialCombat then PHX.MaterialCombat.Stop("MANUAL_STOP") end
-        -- Restore the travel/hover owned by this worker. Auto Volcano is blocked
-        -- until the old worker has exited (M.Worker==nil).
         if PHX.restoreMovement then pcall(PHX.restoreMovement) end
         return true,"Đang dừng farm vật liệu"
     end
@@ -11078,7 +10349,7 @@ do
         local humanoid=character and character:FindFirstChildOfClass("Humanoid")
         if not humanoid or humanoid.Health<=0 then return false,"CHARACTER_NOT_READY" end
         if humanoid.SeatPart then return false,"Rời ghế thuyền trước khi farm" end
-        local token={} -- never collides with the numeric RUN_TOKEN
+        local token={}
         M.Active=true;M.Stopping=false;M.Token=token;M.Mode=mode
         M.Message="STARTING_"..mode;M.LastError=nil;M.StartedAt=os.clock();M.WaveCount=0
         logLine("MANUAL_MATERIAL_START",mode.." | independent token | Auto Volcano OFF")
@@ -11106,7 +10377,6 @@ do
                     end
                 else
                     M.Message="FARM_BLAZE_DRAGON_HUNTER"
-                    -- Existing Hunter quest flow (HYDRA/VENOM/TREE) and ember drops.
                     farmBlazeEmbers(token,true)
                 end
             end)
@@ -11131,8 +10401,6 @@ do
         return true,"Đã bật farm "..(mode=="SCRAP" and "Scrap Metal" or "Blaze Ember").." · nhấn lại để dừng"
     end
 end
--- V2.17.34 MANUAL MATERIAL UI WORKER END
-
 function PHX.craftWindow()
     local craft=PG:FindFirstChild("Craft")
     if not craft or not PHX.guiVisible(craft) then return nil end
@@ -11140,7 +10408,6 @@ function PHX.craftWindow()
     if window and PHX.guiVisible(window) then return window end
     return nil
 end
-
 local function craftAt(base, ...)
     local node=base
     for _,name in ipairs({...}) do
@@ -11149,7 +10416,6 @@ local function craftAt(base, ...)
     end
     return node
 end
-
 function PHX.craftWindowRecipe(window)
     if not window or not PHX.guiVisible(window) then return nil,"WINDOW_NOT_VISIBLE" end
     local itemName=craftAt(window,"Main","Crafting","Main","Result","AssetTile",
@@ -11180,7 +10446,6 @@ function PHX.craftWindowRecipe(window)
     end
     return nil,"OUTPUT_ITEMNAME_NOT_MAGNET"
 end
-
 function PHX.craftConfirmButton(window)
     if not window or not PHX.guiVisible(window) then return nil,"WINDOW_NOT_VISIBLE" end
     local button=craftAt(window,"Info","Confirm")
@@ -11198,7 +10463,6 @@ function PHX.craftConfirmButton(window)
     end
     return button,"PROBE_INFO_CONFIRM_ACTIVATED"
 end
-
 function PHX.craftActivateV19Once(button)
     if not button or not PHX.guiVisible(button) then return false,"BUTTON_NOT_VISIBLE" end
     local active,interactable=button.Active,true
@@ -11243,7 +10507,6 @@ function PHX.craftActivateV19Once(button)
     end
     return false,"NO_GUI_CLICK_BACKEND"
 end
-
 function PHX.logCraftWindowProof(window,why)
     local snippets={}
     for _,o in ipairs(window and window:GetDescendants() or {}) do
@@ -11255,7 +10518,6 @@ function PHX.logCraftWindowProof(window,why)
     end
     logLine("CRAFT_DIAG",tostring(why).." | labels="..table.concat(snippets,"; "))
 end
-
 function PHX.closeCraftWindow()
     local window=PHX.craftWindow()
     if not window then return true end
@@ -11270,7 +10532,6 @@ function PHX.closeCraftWindow()
     end
     return false
 end
-
 function PHX.craftV19Visible(obj)
     if not obj or not obj:IsA("GuiObject") or not obj.Visible then return false end
     local p=obj.Parent
@@ -11281,7 +10542,6 @@ function PHX.craftV19Visible(obj)
     end
     return true
 end
-
 function PHX.craftV19DialogueButtons()
     local dg=PG:FindFirstChild("DialogueGui")
     if not dg then return {} end
@@ -11306,7 +10566,6 @@ function PHX.craftV19DialogueButtons()
     end
     return out
 end
-
 function PHX.craftV19VisualText(btn)
     if not btn then return "" end
     local glyphs={}
@@ -11333,7 +10592,6 @@ function PHX.craftV19VisualText(btn)
     end
     return table.concat(out,"")
 end
-
 function PHX.craftV19FindOption(buttons,wanted)
     local target=PHX.compactText(wanted)
     for i,button in ipairs(buttons or {}) do
@@ -11343,7 +10601,6 @@ function PHX.craftV19FindOption(buttons,wanted)
     end
     return nil,nil,nil
 end
-
 function PHX.craftV19Transition(previous,minimum,timeout,token)
     local oldFirst=previous and previous[1] or nil
     local deadline=os.clock()+(timeout or 1.8)
@@ -11359,7 +10616,6 @@ function PHX.craftV19Transition(previous,minimum,timeout,token)
     until os.clock()>=deadline
     return PHX.craftV19DialogueButtons()
 end
-
 function PHX.craftV19FireButton(button)
     if not button then return false,"NO_BUTTON" end
     if type(getconnections)=="function" then
@@ -11384,7 +10640,6 @@ function PHX.craftV19FireButton(button)
     if ok and attempted==true then return true,"vim+inset" end
     return false,"NO_GUI_BACKEND"
 end
-
 function PHX.craftV19DragonHunterVisible()
     local dg=PG:FindFirstChild("DialogueGui")
     if not dg then return false end
@@ -11396,7 +10651,6 @@ function PHX.craftV19DragonHunterVisible()
     end
     return false
 end
-
 function PHX.craftV19ClickDragonHunter(token)
     if not highTween(CONFIG.DRAGON_HUNTER.STAND,200,token) then return false,"MOVE_FAIL" end
     task.wait(.25)
@@ -11440,7 +10694,6 @@ function PHX.craftV19ClickDragonHunter(token)
     end
     return false,"NPC_CLICK_NO_DRAGON_HUNTER_DIALOGUE"
 end
-
 function PHX.craftV19OpenWindow(token)
     if PHX.craftWindow() then return PHX.craftWindow(),"ALREADY_OPEN" end
     if not goHydra(token) then return nil,"HYDRA_ROUTE_FAIL" end
@@ -11449,7 +10702,6 @@ function PHX.craftV19OpenWindow(token)
     logLine("CRAFT_V19_NPC",tostring(mode))
     if not opened then return nil,"DRAGON_HUNTER_CLICK_FAIL:"..tostring(mode) end
     if PHX.craftWindow() then return PHX.craftWindow(),"OPEN_AFTER_NPC" end
-
     local rootDeadline=os.clock()+1.2
     local rootButtons={}
     repeat
@@ -11466,17 +10718,15 @@ function PHX.craftV19OpenWindow(token)
     local okRoot,whyRoot=PHX.craftV19FireButton(craftRoot)
     if not okRoot then return nil,"ROOT_CRAFT_SIGNAL_FAIL:"..tostring(whyRoot) end
     if PHX.craftWindow() then return PHX.craftWindow(),"OPEN_AFTER_ROOT" end
-
     local recipeButtons=PHX.craftV19Transition(rootButtons,4,2.0,token)
     if PHX.craftWindow() then return PHX.craftWindow(),"OPEN_DURING_RECIPE" end
     if #recipeButtons<4 then return nil,"RECIPE_OPTIONS_"..#recipeButtons end
     local magnet,magnetIndex=PHX.craftV19FindOption(recipeButtons,"Volcanic Magnet")
-    magnet=magnet or recipeButtons[3] -- V1.9 working row fallback
+    magnet=magnet or recipeButtons[3]
     logLine("CRAFT_V19_RECIPE","Volcanic Magnet row="..tostring(magnetIndex or 3))
     local okRecipe,whyRecipe=PHX.craftV19FireButton(magnet)
     if not okRecipe then return nil,"MAGNET_SIGNAL_FAIL:"..tostring(whyRecipe) end
     if PHX.craftWindow() then return PHX.craftWindow(),"OPEN_AFTER_RECIPE" end
-
     local finalButtons=PHX.craftV19Transition(recipeButtons,1,1.8,token)
     if PHX.craftWindow() then return PHX.craftWindow(),"OPEN_DURING_FINAL" end
     if #finalButtons<=0 then return nil,"FINAL_OPTIONS_0" end
@@ -11496,11 +10746,6 @@ function PHX.craftV19OpenWindow(token)
     until os.clock()>=deadline
     return nil,"CRAFT_WINDOW_NOT_OPEN"
 end
-
--- REMOTE MAGNET CORE BEGIN
--- V2.17.31: observed RF/Craft protocol; one mutating RPC, verified by fresh EtcItems.
--- The RPC worker is deliberately not registered in Runtime.Tasks: cancelling an
--- InvokeServer coroutine must never release the shared flight gate prematurely.
 (function()
     local M={Report={Status="READY"}}
     PHX.RemoteMagnet=M
@@ -11510,13 +10755,11 @@ end
     if type(gate)~="table" then gate={Busy=false};ENV.__PH_MAGNET_REMOTE_CRAFT_FLIGHT=gate end
     local pendingByAccount=ENV.__PH_MAIN_MAGNET_PENDING_V1
     if type(pendingByAccount)~="table" then pendingByAccount={};ENV.__PH_MAIN_MAGNET_PENDING_V1=pendingByAccount end
-
     local function copyCounts(value)
         local result={}
         for _,name in ipairs(names) do result[name]=value[name] end
         return result
     end
-
     function PHX.remoteMagnetCounts(data)
         if type(data)~="table" or type(rawget(data,"EtcItems"))~="table" then return nil,"ETC_ITEMS_UNAVAILABLE" end
         local full=true
@@ -11533,13 +10776,11 @@ end
         end
         return result
     end
-
     local function pending()
         local record=pendingByAccount[key]
         if type(record)=="table" and type(record.Before)=="table" then return record end
         return nil
     end
-
     function PHX.remoteMagnetHasPending()
         local record=pending()
         if record then
@@ -11548,14 +10789,12 @@ end
         end
         return record~=nil
     end
-
     local function context(token)
         local character,humanoid,part=char(),hum(),root()
         if not character or not humanoid or not part then return nil,"CHARACTER_UNAVAILABLE" end
         return {Token=token,Character=character,Humanoid=humanoid,Root=part,
             Epoch=CHARACTER_EPOCH,Generation=SCRIPT_GENERATION,Deadline=os.clock()+12}
     end
-
     local function current(ctx,preflight)
         if not ctx or not PHX.generationAlive() or not isRunning(ctx.Token) then return false,"STOPPED" end
         if ctx.Generation~=SCRIPT_GENERATION or CHARACTER_EPOCH~=ctx.Epoch
@@ -11565,16 +10804,21 @@ end
         if ctx.Humanoid.SeatPart or PHX.isMovementLocked() then return false,"BOAT_OR_SEATED" end
         if DRAGON_GUARD_STATE.Critical or DRAGON_GUARD_STATE.Pending
             or (PHX.findPhysicalDragonFruits and #PHX.findPhysicalDragonFruits()>0) then return false,"DRAGON_PROTECTED" end
+        if preflight and (PHX.InventoryBusy
+            or (PHX.FruitAutoState and PHX.FruitAutoState.Busy)
+            or (PHX.Runtime and (PHX.Runtime.FruitGuiBusy or PHX.Runtime.InteractionHold))
+            or DRAGON_GUARD_STATE.Busy
+            or (PHX.DragonQuestPosition and PHX.DragonQuestPosition.Current)) then
+            return false,"INTERACTION_BUSY"
+        end
         if preflight and os.clock()>=ctx.Deadline then return false,"PRECHECK_TIMEOUT" end
         return true
     end
-
     local function publish(ctx,message)
         M.Report.Status=message
         local checked,valid=pcall(current,ctx,false)
         if checked and valid then pcall(setStatus,message) end
     end
-
     local function remotes()
         local modules=ReplicatedStorage:FindFirstChild("Modules")
         local net=modules and modules:FindFirstChild("Net")
@@ -11583,13 +10827,11 @@ end
         if not craft or not read or not craft:IsA("RemoteFunction") or not read:IsA("RemoteFunction") then return nil,nil end
         return craft,read
     end
-
     local function inventory(read)
         local ok,data=pcall(function() return read:InvokeServer() end)
         if not ok then return nil,"INVENTORY_RPC_ERROR" end
         return PHX.remoteMagnetCounts(data)
     end
-
     local function commit(ctx,counts,source)
         if not current(ctx,false) then return false end
         local sources={}
@@ -11604,7 +10846,6 @@ end
         if PHX.UI and PHX.UI.updateCounters then pcall(PHX.UI.updateCounters) end
         return true
     end
-
     local function verifyReceipt(record,counts)
         if counts["Volcanic Magnet"]<record.Before["Volcanic Magnet"]+1 then return false end
         record.Verified=true
@@ -11617,7 +10858,6 @@ end
             Magnet=counts["Volcanic Magnet"]-record.Before["Volcanic Magnet"]}
         return true
     end
-
     local function settle(ctx,record,counts)
         if not record.Verified or pendingByAccount[key]~=record or not commit(ctx,counts,"REMOTE_MAGNET_VERIFIED") then return false end
         pendingByAccount[key]=nil
@@ -11631,13 +10871,10 @@ end
         publish(ctx,"VERIFIED remote Volcanic Magnet · fresh inventory confirmed")
         return counts["Volcanic Magnet"]>0
     end
-
     local function verify(ctx,read,record)
         for _=1,8 do
             if not current(ctx,false) then return false,"STOPPED_OR_PROTECTED" end
             local counts,why=inventory(read)
-            -- An already in-flight read can complete after OFF/respawn/reexecute.
-            -- Preserve its receipt, but never publish stale counters or resume automation.
             if counts then
                 verifyReceipt(record,counts)
                 if not current(ctx,false) then return false,"STOPPED_OR_PROTECTED" end
@@ -11652,7 +10889,6 @@ end
         publish(ctx,"Remote Magnet craft unconfirmed · no automatic craft retry")
         return false,"CRAFT_UNCONFIRMED"
     end
-
     local function operation(token,crafting)
         local ctx,why=context(token)
         local valid,guard=current(ctx,true)
@@ -11695,13 +10931,12 @@ end
                 record={Before=copyCounts(before),BeforeMagnet=before["Volcanic Magnet"],
                     BeforeScrap=before["Scrap Metal"],BeforeEmber=before["Blaze Ember"],
                     StartedAt=os.clock(),Generation=SCRIPT_GENERATION,Remote=true,Verified=false}
-                pendingByAccount[key]=record -- write before yielding the only mutating RPC
+                pendingByAccount[key]=record
                 PHX.CraftPendingVerification=record;PHX.CraftVerificationBlocked=true
                 if PHX.StashSession then PHX.StashSession.Verified=false end
                 PHX.PickupSuppress["Volcanic Magnet"]={Until=os.clock()+30}
                 M.Report.CraftRequested=true
                 publish(ctx,"Remote craft · ONE Volcanic Magnet request")
-                -- Status publication can run observers; validate immediately before dispatch.
                 if not current(ctx,true) then
                     pendingByAccount[key]=nil;PHX.CraftPendingVerification=nil;PHX.CraftVerificationBlocked=false
                     PHX.PickupSuppress["Volcanic Magnet"]=nil;owner.Reason="STOPPED_BEFORE_CRAFT";return
@@ -11711,7 +10946,6 @@ end
                 record.RpcReturned=sent
                 M.Report.RpcReturned=sent
                 if type(result)=="table" and type(result.Result)=="table" then M.Report.ResultCould=result.Result.Could end
-                -- Could=false after spending materials is NOT a craft failure flag.
                 if not current(ctx,false) then owner.Reason="STOPPED_OR_PROTECTED";return end
                 owner.Result,owner.Reason=verify(ctx,read,record)
             end)
@@ -11736,7 +10970,6 @@ end
         end
         return owner.Result,owner.Reason
     end
-
     function PHX.remoteMagnetCraft(token) return operation(token,true) end
     function PHX.remoteMagnetResolvePending(token) return operation(token,false) end
     function M.GetReport()
@@ -11746,20 +10979,13 @@ end
         end
         return out
     end
-    PHX.remoteMagnetHasPending() -- restore only pending state; no RPC on execute.
+    PHX.remoteMagnetHasPending()
 end)()
--- REMOTE MAGNET CORE END
-
 local function craftVolcanicMagnet(token)
-    -- Material goal receipts can arrive between batches; release that hover
-    -- before handing control to the craft stage. No Prehistoric controller call.
     if PHX.MaterialCombat then PHX.MaterialCombat.Stop("MAGNET_CRAFT_STAGE") end
     return PHX.remoteMagnetCraft(token)
 end
-
 local function recoverMagnet(token)
-    -- Pending RPC receipts take priority over stale positive IdMap/cache counts.
-    -- Resolve with fresh RF inventory only; never repeat an uncertain craft.
     if PHX.remoteMagnetHasPending() or PHX.CraftVerificationBlocked then
         if PHX.remoteMagnetHasPending() then
             return PHX.remoteMagnetResolvePending(token)
@@ -11787,10 +11013,6 @@ local function recoverMagnet(token)
     end
     return true
 end
-
--- V2.17.17: SLAVE boarding eligibility is established locally, not guessed from Master's crew list.
--- Keep the voyage proof while a genuine crew member travels / fights at Prehistoric; the event
--- can consume a Magnet after departure, so NEVER demand the same Magnet during the raid.
 PHX.SlaveMagnetVoyage = nil
 function PHX.slaveMagnetVoyageValid(island)
     local trip=PHX.SlaveMagnetVoyage
@@ -11807,11 +11029,9 @@ function PHX.slaveMagnetVoyageValid(island)
     end
     return false
 end
-
 PHX.EventFinishedIslands = PHX.EventFinishedIslands or setmetatable({}, {__mode="k"})
 PHX.RewardProgress = PHX.RewardProgress or setmetatable({}, {__mode="k"})
 PHX.CompletedIslands = PHX.CompletedIslands or setmetatable({}, {__mode="k"})
-
 local function runPrehistoricEvent(island, token)
     if not island or not isRunning(token) then return false end
     if PHX.automationMode()=="TEAM" and PHX.localRole()=="SLAVE" then
@@ -11844,7 +11064,6 @@ local function runPrehistoricEvent(island, token)
         PHX.RewardProgress[island] = progress
     end
     PHX.EventState.Egg, PHX.EventState.Error = progress.EggState or "WAIT", nil
-
     if not alreadyCompleted then
         PHX.watchEggRoster(island)
         local key = tostring(math.floor(island:GetPivot().Position.X))..":"..tostring(math.floor(island:GetPivot().Position.Z))
@@ -11856,7 +11075,6 @@ local function runPrehistoricEvent(island, token)
                 {name="Role",value=roleText(),inline=true},
             })
         end
-
         if not PHX.EventFinishedIslands[island] then
             setStatus("Prehistoric found -> disembark -> captured Fossil pose")
             if not moveToRelic(island,token) then return false end
@@ -11894,15 +11112,12 @@ local function runPrehistoricEvent(island, token)
             task.wait(.35)
         end
         if not isRunning(token) or not island.Parent then return false end
-
         if PHX.EventFinishedIslands[island] then
             progress.AFKRewardWaitAt=progress.AFKRewardWaitAt or os.clock()
         end
         if PHX.afkSoloEnabled() and not progress.Egg and progress.AFKRewardWaitAt
             and os.clock()-progress.AFKRewardWaitAt>=CONFIG.AFK_SOLO.EGG_RECOVERY_TIMEOUT
             and not PHX.eventActive(island) and not PHX.raidTimerStillRunning() then
-            -- V2.17.22: never silently convert a missing assigned egg into
-            -- a reset permit. Retry safely instead of discarding the +1 proof.
             logLine("AFK_EGG_TIMEOUT", "90s without verified Dragon Egg +1; NO RESET, recovery wait")
             PHX.pauseEvent("AFK_EGG_PLUS_ONE_PENDING", "Wait for confirmed Dragon Egg quantity delta +1")
             return false
@@ -11928,7 +11143,6 @@ local function runPrehistoricEvent(island, token)
             progress.PostEggGuard = true
             if not isRunning(token) then return false end
         end
-
         if PHX.afkSoloEnabled() and progress.EggState == "CONFIRMED"
             and progress.PostEggGuard == true then
             local relic,origin=PHX.afkRelicProof(island)
@@ -11975,7 +11189,6 @@ local function runPrehistoricEvent(island, token)
         end
         if not isRunning(token) then return false end
     end
-
     PHX.EventState.Phase = "REWARD_GUARD"
     if not PHX.eggGainResetGuard(progress,"PRE_REWARD_GUARD") then
         PHX.pauseEvent("EGG_PLUS_ONE_LOST", "Dragon Egg not +1 in direct ItemReplicationService cache; reset blocked")
@@ -12000,7 +11213,7 @@ local function runPrehistoricEvent(island, token)
     PHX.PendingDepartureIsland=nil
     PHX.ActiveEventCrewIsland=nil
     if PHX.automationMode()=="TEAM" and PHX.localRole()=="SLAVE" then
-        PHX.SlaveMagnetVoyage=nil -- the next trip needs a newly verified Magnet
+        PHX.SlaveMagnetVoyage=nil
         logLine("TEAM_SLAVE_MAGNET_GATE","POST_EVENT_VOYAGE_CLEARED; next departure requires Magnet")
     end
     if not isRunning(token) then return false end
@@ -12012,7 +11225,6 @@ local function runPrehistoricEvent(island, token)
     if magnet == false then return recoverMagnet(token) end
     return magnet == true
 end
-
 local function scanTeamPreflight(token)
     if not waitAlive(token) then return {Interrupted=true} end
     pcall(ensureMarines)
@@ -12021,7 +11233,6 @@ local function scanTeamPreflight(token)
     return {MasterPlayer=master,MasterOnline=master~=nil,Boat=getMasterBoat(),Island=findPrehistoric(),
         Magnet=magnet,MagnetKnown=magnet~=nil,Region=getRegion()}
 end
-
 local function waitForMasterOnline(token)
     while isRunning(token) do
         local p = PHX.playerByName(ENV.TeamConfig.MasterName)
@@ -12030,9 +11241,7 @@ local function waitForMasterOnline(token)
         task.wait(1)
     end
 end
-
 function PHX.requireMagnet(pre,token)
-    -- TEAM driver (BOAT/MASTER) can buy/drive/search with zero Magnet; SOLO remains unchanged.
     if PHX.automationMode()=="TEAM" and isMaster() then
         if pre.Magnet~=true and PHX.LastBoatMagnetNote~=tostring(pre.Magnet) then
             PHX.LastBoatMagnetNote=tostring(pre.Magnet)
@@ -12040,7 +11249,6 @@ function PHX.requireMagnet(pre,token)
         end
         return true
     end
-    -- A Slave who boarded with verified Magnet must not abandon the event if the item is consumed.
     if PHX.automationMode()=="TEAM" and PHX.localRole()=="SLAVE"
         and PHX.slaveMagnetVoyageValid(pre and pre.Island) then return true end
     if pre.Magnet==nil then
@@ -12056,7 +11264,6 @@ function PHX.requireMagnet(pre,token)
     end
     return true
 end
-
 local function masterCycle(token)
     if PHX.BoatPurchasePending then
         local pendingIsland=findPrehistoric()
@@ -12136,18 +11343,15 @@ local function masterCycle(token)
     local island=searchSeaUntilIsland(boat,token)
     if island then runPrehistoricEvent(island,token) end
 end
-
 local function slaveCycle(token)
     local pre=scanTeamPreflight(token)
     if pre.Interrupted then return end
-    -- Old voyages are not valid when the Slave is back at Tiki and off the boat.
     local h=hum()
     if PHX.SlaveMagnetVoyage and pre.Region=="TIKI" and not (h and h.SeatPart)
         and not PHX.ActiveEventCrewIsland and not PHX.PendingDepartureIsland then
         PHX.SlaveMagnetVoyage=nil
         logLine("TEAM_SLAVE_MAGNET_GATE","TIKI_FOOT: cleared previous trip proof")
     end
-    -- ALWAYS farm a missing Magnet before waiting on Master or attempting to board.
     if not PHX.requireMagnet(pre,token) then return end
     if pre.Island then runPrehistoricEvent(pre.Island,token); return end
     if not pre.MasterOnline then
@@ -12225,7 +11429,6 @@ local function slaveCycle(token)
     end
     PHX.TeamPhase="RECOVERY"; PHX.BoatState="BOAT_LOST"
 end
-
 local function mainLoop(token)
     if PHX.localRole()=="NONE" and not PHX.isSoloAutomation() then
         setStatus("Chưa có role: chọn player Master hoặc bật Add role Master")
@@ -12233,9 +11436,7 @@ local function mainLoop(token)
         ENV.TeamConfig.IsRunning = false
         return
     end
-
     ensureMarines()
-
     while isRunning(token) do
         local ready,waiting=true,nil
         if PHX.automationReadyGuard then ready,waiting=PHX.automationReadyGuard(token) end
@@ -12260,7 +11461,6 @@ local function mainLoop(token)
             setStatus("Auto Volcano tiếp tục | "..roleText())
         end
         pcall(ensureMarines)
-
         local island = PHX.PendingDepartureIsland or findPrehistoric()
         if island then
             local ok,err = pcall(runPrehistoricEvent, island, token)
@@ -12274,11 +11474,9 @@ local function mainLoop(token)
                 if not ok then setStatus("SLAVE ERROR: "..tostring(err)) task.wait(1) end
             end
         end
-
         task.wait(.5)
     end
 end
-
 local function debugInventoryOnce()
     return {
         Scrap = inventoryCount("Scrap Metal"),
@@ -12287,14 +11485,12 @@ local function debugInventoryOnce()
         Bones = inventoryCount("Dinosaur Bones"),
     }
 end
-
 local function equippedToolName()
     local c = char()
     if not c then return "nil" end
     local t = c:FindFirstChildOfClass("Tool")
     return t and t.Name or "nil"
 end
-
 local function eventUiText(name)
     local main = PG:FindFirstChild("Main")
     local list = main and main:FindFirstChild("TopHUDList")
@@ -12304,7 +11500,6 @@ local function eventUiText(name)
     end
     return ""
 end
-
 local function debugRuntimeSnapshot()
     local r = root()
     local h = hum()
@@ -12320,7 +11515,6 @@ local function debugRuntimeSnapshot()
         relicHp = hv and hv.Value or -1
         relicMax = mv and mv.Value or -1
     end
-
     local enemies = workspace:FindFirstChild("Enemies")
     local forestCount,forestHp = 0,0
     local golemHp = -1
@@ -12337,13 +11531,11 @@ local function debugRuntimeSnapshot()
             end
         end
     end
-
     local state = resolveCombatState()
     local ac = state and state.activeController
     local hb = ac and ac.hitboxMagnitude or "nil"
     local boat = getMasterBoat()
     local aboard = boat and countTeamAboard(boat) or 0
-
     local line = table.concat({
         "status="..tostring(NIGHT.LastStatus),
         "region="..tostring(region).."("..string.format("%.0f", tonumber(regionD) or -1)..")",
@@ -12366,7 +11558,6 @@ local function debugRuntimeSnapshot()
         "golemHp="..golemHp,
         "boat="..tostring(boat ~= nil)..":"..aboard,
     }, " | ")
-
     local sig = table.concat({
         tostring(NIGHT.LastStatus), tostring(region), tostring(inv.Scrap), tostring(inv.Ember), tostring(inv.Magnet),
         tostring(active), tostring(relicHp), eventUiText("PrehistoricRaidTimer"), tostring(forestCount),
@@ -12374,7 +11565,6 @@ local function debugRuntimeSnapshot()
     }, ":")
     return sig,line,active
 end
-
 function PHX.setAutomationMode(mode)
     if not PHX.generationAlive() then return false,"Runtime đã đóng" end
     if PHX.ManualMaterialFarm and PHX.ManualMaterialFarm.IsBusy() then
@@ -12401,7 +11591,6 @@ function PHX.setAutomationMode(mode)
     if PHX.saveUserConfig then PHX.saveUserConfig() end
     return true,mode=="SOLO" and "Solo: tự farm Magnet, mua thuyền và đánh Prehistoric" or "Team: Master + ít nhất 3 Slave mới ra khơi"
 end
-
 function PHX.validateRole()
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return true end
     local role=PHX.localRole()
@@ -12411,7 +11600,6 @@ function PHX.validateRole()
     if role=="SLAVE" and type(master)=="string" and master~="" and not PHX.sameName(master,LP.Name) then return true end
     return false,"Role chưa hợp lệ; chọn lại Master"
 end
-
 function PHX.setMaster(name)
     name=type(name)=="string" and name:match("^%s*(.-)%s*$") or ""
     if PHX.sameName(name,LP.Name) then
@@ -12420,7 +11608,6 @@ function PHX.setMaster(name)
     end
     return PHX.assignMaster(name)
 end
-
 function PHX.stopAutomation(reason)
     ENV.TeamConfig.StopReason = reason or "USER_BUTTON"
     if PHX.UserConfigState then
@@ -12465,7 +11652,6 @@ function PHX.stopAutomation(reason)
     end
     return true
 end
-
 function PHX.launchRunner(token)
     PHX.Runtime.Runner = PHX.spawn(function()
         while isRunning(token) do
@@ -12492,7 +11678,6 @@ function PHX.launchRunner(token)
         end
     end)
 end
-
 function PHX.stashReadyToStart()
     if PHX.PostRespawnStashPending then return false,"Waiting for Stash refresh after respawn" end
     local queue=PHX.StashScanQueue
@@ -12508,7 +11693,6 @@ function PHX.stashReadyToStart()
     end
     return true
 end
-
 function PHX.startAutomation(masterName)
     if not PHX.generationAlive() then return false,"Runtime unloaded" end
     if PHX.ManualMaterialFarm and PHX.ManualMaterialFarm.IsBusy() then
@@ -12562,7 +11746,6 @@ function PHX.startAutomation(masterName)
     if not ok then PHX.Runtime.LastError=tostring(result);return false,tostring(result) end
     return result,message
 end
-
 function PHX.assignMaster(name)
     if not PHX.generationAlive() then return false,"Runtime đã đóng" end
     if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy then return false,"Tắt Auto Volcano trước khi đổi Master" end
@@ -12582,7 +11765,6 @@ function PHX.assignMaster(name)
     PHX.refreshCrew(nil)
     return true,"Master: "..player.Name.." · client này được cấp role Slave"
 end
-
 function PHX.setLocalMaster(value)
     if not PHX.generationAlive() then return false,"Runtime đã đóng" end
     if ENV.TeamConfig.IsRunning or PHX.Runtime.StartBusy then return false,"Tắt Auto Volcano trước khi đổi role" end
@@ -12626,7 +11808,7 @@ if ENV.__PH_FRUIT_RECEIPT_SESSION~=PHX.FruitSessionKey then
     ENV.__PH_FRUIT_RECEIPT_RECORDED=nil
     ENV.__PH_FRUIT_RECEIPT_SESSION=PHX.FruitSessionKey
 end
-ENV.__PH_FRUIT_PENDING = ENV.__PH_FRUIT_PENDING or {} -- strong references retain unverified operations across reload
+ENV.__PH_FRUIT_PENDING = ENV.__PH_FRUIT_PENDING or {}
 ENV.__PH_FRUIT_RECEIPT_NOTIFIED = ENV.__PH_FRUIT_RECEIPT_NOTIFIED or setmetatable({}, {__mode="k"})
 ENV.__PH_FRUIT_RECEIPT_RECORDED = ENV.__PH_FRUIT_RECEIPT_RECORDED or setmetatable({}, {__mode="k"})
 PHX.FruitReceiptRecorded = ENV.__PH_FRUIT_RECEIPT_RECORDED
@@ -12648,18 +11830,15 @@ PHX.FruitStoreIds = {}
 for _,name in ipairs({"Rocket","Spin","Spring","Bomb","Smoke","Spike","Flame","Ice","Sand","Dark","Diamond","Light","Rubber","Ghost","Magma","Quake","Buddha","Love","Spider","Sound","Phoenix","Portal","Pain","Blizzard","Gravity","Mammoth","T-Rex","Dough","Shadow","Venom","Control","Gas","Spirit","Yeti","Kitsune","Leopard"}) do
     PHX.FruitStoreIds[string.lower(name)] = name.."-"..name
 end
-
 function PHX.fruitServiceAlive(token)
     return (not PHX.generationAlive or PHX.generationAlive())
         and (not PHX.Runtime or PHX.Runtime.Alive)
         and (token == nil or isRunning(token))
 end
-
 function PHX.fruitLabelKey(value)
     return string.lower(tostring(value or "")):gsub("<[^>]*>",""):gsub("^blox%s+fruit%s+","")
         :gsub("%s+fruit$",""):gsub("^%s+",""):gsub("%s+$","")
 end
-
 function PHX.isPhysicalFruitTool(tool)
     if not tool or not tool:IsA("Tool") then return false end
     if PHX.isDragonFruitTool(tool) then return true end
@@ -12669,7 +11848,6 @@ function PHX.isPhysicalFruitTool(tool)
         or tool:FindFirstChild("EatRemote",true) ~= nil
     return physical and (tip == "blox fruit" or tool:FindFirstChild("EatRemote",true) ~= nil)
 end
-
 function PHX.findPhysicalFruits()
     local out,seen = {},{}
     local function scan(container)
@@ -12681,12 +11859,10 @@ function PHX.findPhysicalFruits()
     scan(LP:FindFirstChild("Backpack"));scan(char())
     return out
 end
-
 function PHX.fruitStillLocal(tool)
     local backpack,c = LP:FindFirstChild("Backpack"),char()
     return tool.Parent ~= nil and ((backpack and tool:IsDescendantOf(backpack)) or (c and tool:IsDescendantOf(c))) or false
 end
-
 function PHX.readStoredFruitInventory()
     local ok,inv = pcall(function() return CommF:InvokeServer("getInventoryFruits") end)
     if not ok or type(inv) ~= "table" then return nil,"STORED_INVENTORY_UNAVAILABLE" end
@@ -12707,7 +11883,6 @@ function PHX.readStoredFruitInventory()
     if not recognized then return nil,"STORED_INVENTORY_SCHEMA_UNKNOWN" end
     return {Counts=counts,Ids=ids}
 end
-
 function PHX.fruitStoreId(tool, inventory)
     if PHX.isDragonFruitTool(tool) then return nil,"DRAGON_USES_CRITICAL_GUARD" end
     local raw=tostring(tool:GetAttribute("OriginalName") or "")
@@ -12729,12 +11904,10 @@ function PHX.fruitStoreId(tool, inventory)
     if mapped then return mapped end
     return nil,"STORE_ID_UNVERIFIED"
 end
-
 function PHX.fruitRetryDelay(failures)
     local maxDelay=math.max(5,tonumber(CONFIG.FRUIT_AUTO.MaxBackoff) or 300)
     return math.min(maxDelay,5*2^math.min(failures or 1,7))
 end
-
 function PHX.valuableFruitKind(tool, inventory)
     if not PHX.isPhysicalFruitTool(tool) then return nil end
     if PHX.isDragonFruitTool(tool) then return "Dragon" end
@@ -12744,7 +11917,6 @@ function PHX.valuableFruitKind(tool, inventory)
     if key=="leopard-leopard" then return "Leopard" end
     return nil
 end
-
 function PHX.findValuableFruits()
     local out={}
     for _,tool in ipairs(PHX.findPhysicalFruits()) do
@@ -12752,7 +11924,6 @@ function PHX.findValuableFruits()
     end
     return out
 end
-
 function PHX.recordPhysicalFruitReceipt(tool)
     if not PHX.isPhysicalFruitTool(tool) or not PHX.fruitStillLocal(tool) then return false end
     local recorded=PHX.FruitReceiptRecorded
@@ -12767,7 +11938,6 @@ function PHX.recordPhysicalFruitReceipt(tool)
     end
     return true
 end
-
 function PHX.notifyValuableFruit(tool)
     local kind=PHX.valuableFruitKind(tool)
     if kind and PHX.recordPhysicalFruitReceipt then PHX.recordPhysicalFruitReceipt(tool) end
@@ -12780,17 +11950,14 @@ function PHX.notifyValuableFruit(tool)
         {name="Server",value=tostring(game.JobId),inline=false},
     }, true)
 end
-
 function PHX.notifyPhysicalValuables()
     for _,tool in ipairs(PHX.findValuableFruits()) do PHX.notifyValuableFruit(tool) end
 end
-
 function PHX.notifyPhysicalDragons()
     for _,tool in ipairs(PHX.findPhysicalDragonFruits()) do
         if PHX.notifyDragonFruit then PHX.notifyDragonFruit(tool) end
     end
 end
-
 function PHX.runDragonGuard()
     PHX.notifyPhysicalDragons()
     if PHX.reconcileDragonPending then
@@ -12815,7 +11982,6 @@ function PHX.runDragonGuard()
     end
     return confirmed,confirmed and "DRAGON_CHECKED" or (ok and "DRAGON_STORE_UNCONFIRMED" or "DRAGON_GUARD_ERROR: "..tostring(result))
 end
-
 function PHX.reconcileFruitPending()
     local state=PHX.FruitAutoState
     if next(state.Pending)==nil then return true end
@@ -12834,7 +12000,6 @@ function PHX.reconcileFruitPending()
     end
     return ready
 end
-
 function PHX.storePhysicalFruit(tool,token)
     if not PHX.fruitServiceAlive(token) then return false,"CANCELED" end
     if PHX.isDragonFruitTool(tool) then return PHX.runDragonGuard() end
@@ -12943,7 +12108,6 @@ function PHX.storePhysicalFruit(tool,token)
     if not ok then return false,"STORE_SERVICE_ERROR: "..tostring(stored) end
     return stored,result
 end
-
 function PHX.storeValuableFruitSweep(token)
     if not PHX.fruitServiceAlive(token) then return false,"CANCELED" end
     local state=PHX.FruitAutoState
@@ -12973,7 +12137,6 @@ function PHX.storeValuableFruitSweep(token)
     if failure then return false,failure end
     return #PHX.findValuableFruits()==0,#PHX.findValuableFruits()==0 and "VALUABLE_FRUIT_SECURED" or "VALUABLE_FRUIT_REPLICATING"
 end
-
 function PHX.fruitCooldown(response)
     if type(response)=="table" then
         for _,key in ipairs({"CooldownSeconds","RetryAfter","Cooldown","cooldown","retryAfter"}) do
@@ -12997,7 +12160,6 @@ function PHX.fruitCooldown(response)
     end
     return nil,"CHECK_RESPONSE_UNPARSED"
 end
-
 function PHX.gachaPurchaseTarget()
     if not PG or not PHX.guiVisible then return nil,"GACHA_CLOSED" end
     local window=PG:FindFirstChild("ZiolesGacha_Window")
@@ -13015,7 +12177,6 @@ function PHX.gachaPurchaseTarget()
     if disabled then return nil,"GACHA_PURCHASE_DISABLED",window end
     return button,"GACHA_GUI",window
 end
-
 function PHX.gachaVisibleCooldown(window)
     if not window or not PHX.guiVisible then return nil end
     for _,object in ipairs(window:GetDescendants()) do
@@ -13026,7 +12187,6 @@ function PHX.gachaVisibleCooldown(window)
     end
     return nil
 end
-
 function PHX.gachaSpinnerVisible()
     local spinner=PG and PG:FindFirstChild("SpinnerWindow")
     if not spinner or not PHX.guiVisible or not PHX.guiVisible(spinner) then return false end
@@ -13037,7 +12197,6 @@ function PHX.gachaSpinnerVisible()
     end
     return false
 end
-
 function PHX.gachaRevealCloseTarget(pending)
     local spinner=PG and PG:FindFirstChild("SpinnerWindow")
     if not spinner or not PHX.guiVisible(spinner) then return nil,"SPINNER_NOT_VISIBLE" end
@@ -13051,7 +12210,6 @@ function PHX.gachaRevealCloseTarget(pending)
     local enabled=true
     pcall(function() enabled=button.Interactable~=false end)
     if not enabled then return nil,"PROBED_CLOSE_BUTTON_DISABLED" end
-
     local selector=spinner:FindFirstChild("SelectorFrame")
     local frame=selector and selector:FindFirstChild("Frame")
     local template=frame and frame:FindFirstChild("AssetComponentTemplate")
@@ -13061,7 +12219,6 @@ function PHX.gachaRevealCloseTarget(pending)
     if not item or not PHX.guiVisible(item) then return nil,"REVEAL_RESULT_NOT_READY" end
     local result=PHX.compactText(item.Text)
     if result=="" then return nil,"REVEAL_RESULT_EMPTY" end
-
     if pending then
         local now=os.clock()
         if pending.LastRevealName~=result then
@@ -13077,7 +12234,6 @@ function PHX.gachaRevealCloseTarget(pending)
     end
     return button,"PROBED_CLOSE_BUTTON_READY:"..tostring(result)
 end
-
 function PHX.gachaRevealXClosed()
     local spinner=PG and PG:FindFirstChild("SpinnerWindow")
     if not spinner or not PHX.guiVisible(spinner) then return true end
@@ -13086,7 +12242,6 @@ function PHX.gachaRevealXClosed()
     local close=navigation and navigation:FindFirstChild("CloseButton")
     return not close or not PHX.guiVisible(close)
 end
-
 function PHX.gachaRevealFireActivated(button)
     if not button or not button:IsA("GuiButton") then return false,"NOT_GUI_BUTTON" end
     if type(getconnections)=="function" then
@@ -13113,7 +12268,6 @@ function PHX.gachaRevealFireActivated(button)
     end
     return false,"ACTIVATED_UNAVAILABLE"
 end
-
 function PHX.dismissGachaReveal(pending,ownsGui)
     if not pending or pending.CloseDone or pending.CloseBusy or not PHX.fruitServiceAlive() then return false end
     if os.clock()<(tonumber(pending.CloseNextAt) or 0) then return false end
@@ -13168,7 +12322,6 @@ function PHX.dismissGachaReveal(pending,ownsGui)
     logLine("GACHA_CLOSE_X","NOT_CLOSED_YET | attempt="..attempt.." | will retry")
     return false
 end
-
 function PHX.watchGachaRevealAfterPurchase(pending)
     if not pending or pending.RevealWatchStarted then return end
     pending.RevealWatchStarted=true
@@ -13186,7 +12339,6 @@ function PHX.watchGachaRevealAfterPurchase(pending)
         end
     end)
 end
-
 task.spawn(function()
     task.wait(2)
     if not PHX.fruitServiceAlive() then return end
@@ -13200,7 +12352,6 @@ task.spawn(function()
         PHX.watchGachaRevealAfterPurchase(recovery)
     end
 end)
-
 function PHX.observeFruitRoll()
     if not PHX.fruitServiceAlive() then return nil end
     local state=PHX.FruitAutoState
@@ -13235,7 +12386,6 @@ function PHX.observeFruitRoll()
         or pending.SpinnerSeen and "RANDOM_SPINNER_ACTIVE" or "RANDOM_WAITING_FOR_PHYSICAL_FRUIT"
     return false,"RANDOM_RESULT_PENDING"
 end
-
 function PHX.physicalFruitStoreOption(tool,ownsGui)
     if not PHX.isPhysicalFruitTool(tool) or not PHX.fruitStillLocal(tool) then return nil end
     local dialogue=PG and PG:FindFirstChild("DialogueGui")
@@ -13264,7 +12414,6 @@ function PHX.physicalFruitStoreOption(tool,ownsGui)
     if not PHX.dialogueOption(options,"Eat") or not PHX.dialogueOption(options,"Drop") then return nil end
     return PHX.dialogueOption(options,"Store")
 end
-
 function PHX.fruitStorageFullMenu(ownsGui)
     local dialogue=PG and PG:FindFirstChild("DialogueGui")
     if not dialogue or not PHX.guiVisible(dialogue) then return nil end
@@ -13292,12 +12441,10 @@ function PHX.fruitStorageFullMenu(ownsGui)
     local nevermind=PHX.dialogueOption(options,"Nevermind")
     return nevermind,dialogue
 end
-
 function PHX.fruitStorageFullOption(tool,ownsGui)
     if not PHX.isPhysicalFruitTool(tool) or not PHX.fruitStillLocal(tool) then return nil end
     return PHX.fruitStorageFullMenu(ownsGui)
 end
-
 function PHX.dismissFruitStorageFull(tool,ownsGui,token)
     if not PHX.fruitServiceAlive(token) then return false,nil end
     local button,dialogue=PHX.fruitStorageFullOption(tool,ownsGui)
@@ -13324,7 +12471,6 @@ function PHX.dismissFruitStorageFull(tool,ownsGui,token)
     if not ok then return false,"STORE_FULL_NEVERMIND_ERROR: "..tostring(closed) end
     return closed,reason
 end
-
 function PHX.randomFruitContext(token, ownsGui, allowInventory, ownedTween)
     if PHX.isMovementLocked() then return false,"BOAT_PURCHASE_MOVEMENT_LOCKED" end
     if not PHX.fruitServiceAlive(token) or not PHX.FruitAutoState.Enabled then return false,"CANCELED" end
@@ -13359,7 +12505,6 @@ function PHX.randomFruitContext(token, ownsGui, allowInventory, ownedTween)
     if PHX.gachaSpinnerVisible() then return false,"RANDOM_SPINNER_ACTIVE" end
     return true
 end
-
 function PHX.prepareRandomFruitContext(token)
     local safe,why=PHX.randomFruitContext(token,true,true)
     if not safe then return false,why end
@@ -13392,7 +12537,6 @@ function PHX.prepareRandomFruitContext(token)
     end
     return false,"RANDOM_CLOSE_INVENTORY_UNCONFIRMED"
 end
-
 function PHX.findZiolesNpc()
     local npcs=workspace and workspace:FindFirstChild("NPCs")
     local playerRoot=type(root)=="function" and root() or nil
@@ -13423,7 +12567,6 @@ function PHX.findZiolesNpc()
     if found[2] and math.abs(found[2].Distance-found[1].Distance)<.1 then return nil,"ZIOLES_NPC_AMBIGUOUS" end
     return found[1].Npc,found[1].Part
 end
-
 function PHX.approachZiolesNpc(npc,part,range,token)
     if PHX.isMovementLocked() then return false,"BOAT_PURCHASE_MOVEMENT_LOCKED" end
     if CONFIG.FRUIT_AUTO.AutoApproachNPC==false then return false,"APPROACH_ZIOLES_FOR_RANDOM_FRUIT" end
@@ -13540,7 +12683,6 @@ function PHX.approachZiolesNpc(npc,part,range,token)
     if not ok then return false,"RANDOM_APPROACH_ERROR: "..tostring(arrived) end
     return arrived,why
 end
-
 function PHX.ziolesRandomOption()
     local dialogue=PG and PG:FindFirstChild("DialogueGui")
     if not dialogue or not PHX.guiVisible or not PHX.guiVisible(dialogue) then return nil,"OPEN_ZIOLES_RANDOM_FRUIT_MENU" end
@@ -13562,7 +12704,6 @@ function PHX.ziolesRandomOption()
     end
     return nil,"ZIOLES_RANDOM_OPTION_NOT_READY"
 end
-
 function PHX.tryZiolesNativeInteract(token)
     local playerRoot=type(root)=="function" and root() or nil
     local npc,part=PHX.findZiolesNpc()
@@ -13594,7 +12735,6 @@ function PHX.tryZiolesNativeInteract(token)
     end
     return false,"OPEN_ZIOLES_RANDOM_FRUIT_MENU"
 end
-
 function PHX.openZiolesGacha(token)
     local button,backend,window=PHX.gachaPurchaseTarget()
     if button or backend~="GACHA_CLOSED" then return button,backend,window end
@@ -13636,10 +12776,8 @@ function PHX.openZiolesGacha(token)
     if PHX.activateOnce(option,function() return false end) then return waitWindow() end
     return nil,result,opened
 end
-
 ENV.__PH_DIRECT_GACHA_LAST_SENT=tonumber(ENV.__PH_DIRECT_GACHA_LAST_SENT) or 0
 ENV.__PH_DIRECT_GACHA_NEXT_READY=tonumber(ENV.__PH_DIRECT_GACHA_NEXT_READY) or 0
-
 function PHX.directGachaRemote()
     local modules=ReplicatedStorage:FindFirstChild("Modules")
     local net=modules and modules:FindFirstChild("Net")
@@ -13647,7 +12785,6 @@ function PHX.directGachaRemote()
     if rf and rf:IsA("RemoteFunction") then return rf end
     return nil
 end
-
 function PHX.gachaBeli()
     for _,folderName in ipairs({"Data","leaderstats"}) do
         local folder=LP:FindFirstChild(folderName)
@@ -13662,7 +12799,6 @@ function PHX.gachaBeli()
     end
     return nil
 end
-
 function PHX.gachaToolSnapshot()
     local counts={}
     for _,container in ipairs({LP:FindFirstChild("Backpack"), LP.Character}) do
@@ -13674,7 +12810,6 @@ function PHX.gachaToolSnapshot()
     end
     return counts
 end
-
 function PHX.gachaNewTool(before)
     for name,count in pairs(PHX.gachaToolSnapshot()) do
         if count>(before[name] or 0) and string.lower(name):find("fruit",1,true) then
@@ -13683,7 +12818,6 @@ function PHX.gachaNewTool(before)
     end
     return nil
 end
-
 function PHX.gachaPrepare(token, isManual)
     local rf=PHX.directGachaRemote()
     if not rf then return false,"V6_REMOTE_MISSING" end
@@ -13703,7 +12837,6 @@ function PHX.gachaPrepare(token, isManual)
     end
     return true,"PREPARE_OK"
 end
-
 function PHX.runGachaV6(token, manual, onlyPrepare)
     local state=PHX.FruitAutoState
     if not PHX.fruitServiceAlive(token) or (not manual and not state.Enabled) then return false,"CANCELED",true end
@@ -13750,7 +12883,7 @@ function PHX.runGachaV6(token, manual, onlyPrepare)
     if not saved then logLine("GACHA_CONFIG_WARN","Cooldown could not be persisted: "..tostring(saveWhy)) end
     state.Status="PURCHASE_SENT_WAITING_FOR_RECEIPT"
     logLine("GACHA_V6_PURCHASE","ONE Purchase to ZiolesGacha | NO TP | config="..tostring(saved))
-    PHX.watchGachaRevealAfterPurchase(pending) -- survives early Beli/tool verification
+    PHX.watchGachaRevealAfterPurchase(pending)
     local ok,response=pcall(function()
         return rf:InvokeServer({Context="Purchase",BoxName="ZiolesGacha"})
     end)
@@ -13782,17 +12915,14 @@ function PHX.runGachaV6(token, manual, onlyPrepare)
     logLine("GACHA_V6_VERIFY",state.Status.." / "..detail)
     return verified,detail,true
 end
-
 function PHX.randomFruitOnce(token)
     return PHX.runGachaV6(token,false,false)
 end
-
 function PHX.manualGacha(onlyPrepare)
     return PHX.withFruitLock(function()
         return PHX.runGachaV6(nil,true,onlyPrepare)
     end)
 end
-
 function PHX.storeFruitSweep(token)
     local state=PHX.FruitAutoState
     local protected,why=PHX.storeValuableFruitSweep(token)
@@ -13808,7 +12938,6 @@ function PHX.storeFruitSweep(token)
     state.PhysicalCount=#PHX.findPhysicalFruits()
     return state.PhysicalCount==0,state.PhysicalCount==0 and "NO_PHYSICAL_FRUIT" or "MORE_FRUIT_REPLICATING"
 end
-
 function PHX.withFruitLock(callback)
     local state=PHX.FruitAutoState
     if state.Busy then return false,"FRUIT_SERVICE_BUSY" end
@@ -13820,7 +12949,6 @@ function PHX.withFruitLock(callback)
     if not ok then return false,"FRUIT_SERVICE_ERROR: "..tostring(result) end
     return result,reason,knownCooldown
 end
-
 function PHX.fruitRandomDeferredReason(reason)
     for _,waiting in ipairs({"STARTUP_UI_NOT_READY","WAITING_FOR_MARINES_AND_GAME_LOAD","WAITING_FOR_GAME_INTERACTION","WAITING_FOR_TRAVEL_TO_FINISH","WAITING_FOR_FARM_START",
         "LEAVE_BOAT_SEAT_BEFORE_RANDOM_FRUIT","PAUSE_AUTO_VOLCANO_BEFORE_RANDOM_FRUIT",
@@ -13833,7 +12961,6 @@ function PHX.fruitRandomDeferredReason(reason)
     end
     return false
 end
-
 function PHX.fruitAutoTick(token)
     if not PHX.fruitServiceAlive(token) then return false,"CANCELED" end
     return PHX.withFruitLock(function()
@@ -13878,7 +13005,6 @@ function PHX.fruitAutoTick(token)
         return true,state.Status
     end)
 end
-
 function PHX.setFruitAuto(enabled)
     PHX.FruitAutoState.Enabled=enabled==true;CONFIG.FRUIT_AUTO.Enabled=enabled==true
     if enabled then
@@ -13887,13 +13013,11 @@ function PHX.setFruitAuto(enabled)
     end
     return true,enabled and "Auto Random ON (saved; NO TP; cooldown persists)" or "Auto Random OFF (saved)"
 end
-
 function PHX.setAutoStore(enabled)
     PHX.FruitAutoState.AutoStore=enabled==true;CONFIG.FRUIT_AUTO.AutoStore=enabled==true
     if enabled then PHX.FruitAutoState.NextStoreAt=0 end
     return true,enabled and "Auto Store enabled locally" or "Auto Store disabled; Dragon, Kitsune and Leopard protection remains active"
 end
-
 function PHX.valuableStoragePending()
     local state=PHX.FruitAutoState
     for tool,pending in pairs(state and state.Pending or {}) do
@@ -13905,7 +13029,6 @@ function PHX.valuableStoragePending()
     end
     return false
 end
-
 function PHX.automationReadyGuard(token)
     if not PHX.fruitServiceAlive(token) then return false,"CANCELED" end
     if PHX.PostRespawnStashPending then return false,"RESPAWN_STASH_REFRESH_REQUIRED" end
@@ -13924,7 +13047,6 @@ function PHX.automationReadyGuard(token)
     end
     return PHX.fruitServiceAlive(token),"AUTOMATION_READY"
 end
-
 function PHX.resetProtectedFruitIdentity(tool)
     if not tool or not PHX.isPhysicalFruitTool(tool) then return nil end
     if PHX.isDragonFruitTool(tool) then return "Dragon" end
@@ -13941,7 +13063,6 @@ function PHX.resetProtectedFruitIdentity(tool)
     end
     return PHX.valuableFruitKind(tool)
 end
-
 function PHX.approveDuplicateOrdinaryReset()
     local state=PHX.FruitAutoState
     if not state or DRAGON_GUARD_STATE.Critical or DRAGON_GUARD_STATE.Pending
@@ -13987,7 +13108,6 @@ function PHX.approveDuplicateOrdinaryReset()
     logLine("FRUIT_RESET_POLICY", "ALLOW duplicate ordinary fruit(s)="..tostring(#fruits).." | same-type inventory + failed Store")
     return true,"DUPLICATE_ORDINARY_CONFIRMED"
 end
-
 function PHX.finalFruitResetGuard()
     if DRAGON_GUARD_STATE.Critical or DRAGON_GUARD_STATE.Pending then return false,"DRAGON_PENDING" end
     local state=PHX.FruitAutoState
@@ -14008,7 +13128,6 @@ function PHX.finalFruitResetGuard()
     end
     return true,"SAFE_RESET"
 end
-
 function PHX.safeResetGuard(token)
     PHX.ResetOrdinaryApproval=nil
     if not PHX.fruitServiceAlive(token) then return false end
@@ -14042,7 +13161,6 @@ function PHX.safeResetGuard(token)
     end
     return final==true and PHX.fruitServiceAlive(token)
 end
-
 function PHX.queueValuableFruitCheck()
     if not PHX.fruitServiceAlive() then return end
     local state=PHX.FruitAutoState
@@ -14061,7 +13179,6 @@ function PHX.queueValuableFruitCheck()
         state.PhysicalCount=#PHX.findPhysicalFruits()
     end)
 end
-
 PHX.FruitContainers=setmetatable({}, {__mode="k"})
 function PHX.hookFruitContainer(container)
     if not container or PHX.FruitContainers[container] then return end
@@ -14073,14 +13190,12 @@ function PHX.hookFruitContainer(container)
     for _,tool in ipairs(container:GetDescendants()) do PHX.recordPhysicalFruitReceipt(tool) end
     PHX.queueValuableFruitCheck()
 end
-
 PHX.hookFruitContainer(LP:FindFirstChild("Backpack"))
 PHX.hookFruitContainer(char())
 PHX.connect(LP.ChildAdded,function(obj)
     if obj:IsA("Backpack") then PHX.hookFruitContainer(obj) end
 end)
 PHX.connect(LP.CharacterAdded,function(c) PHX.hookFruitContainer(c) end)
-
 PHX.spawn(function()
     while PHX.fruitServiceAlive() do
         PHX.fruitAutoTick()
@@ -14101,7 +13216,6 @@ local function restartNightStateMachine(reason)
     logLine("WATCHDOG_RECOVER", "count="..NIGHT.RecoveryCount.." reason="..tostring(reason).." | re-entering mainLoop without killing character")
     PHX.launchRunner(token)
 end
-
 PHX.spawn(function()
     local nextSnapshot = 0
     while PHX.generationAlive() do
@@ -14112,13 +13226,11 @@ PHX.spawn(function()
                 NIGHT.RuntimeSignature = sig
                 noteProgress("RUNTIME:"..sig)
             end
-
             if os.clock() >= nextSnapshot then
                 nextSnapshot = os.clock() + (CONFIG.DEBUG.SNAPSHOT_INTERVAL or 15)
                 logLine("SNAP", line)
                 flushNightLog()
             end
-
             local stalled = os.clock() - NIGHT.LastProgressAt
             if stalled >= (CONFIG.DEBUG.WATCHDOG_SECONDS or 120) then
                 logLine("WATCHDOG", string.format("STALL %.0fs | %s", stalled, line))
@@ -14129,7 +13241,6 @@ PHX.spawn(function()
                         {name="Region", value=tostring(getRegion()), inline=true},
                     })
                 end
-
                 if PHX.Runtime.AutomationBlockedReason then
                     NIGHT.LastProgressAt = os.clock()
                     logLine("WATCHDOG", "Waiting prerequisite "..tostring(PHX.Runtime.AutomationBlockedReason).." -> keep current runner")
@@ -14156,7 +13267,6 @@ PHX.spawn(function()
         end
     end
 end)
-
 function PHX.buildUI()
     if not PHX.generationAlive() then return end
     local U = {Pages = {}, Tabs = {}, Sections = {}, EmptySearch = {}, CrewRows = {}, PlayerRows = {}, PlayerExiting = {}, Toggles = {}, InputNodes = {}, LastActivity = "", SyncBusy = false, LastSyncAt = -math.huge, PlayersDirty = true}
@@ -14271,7 +13381,6 @@ function PHX.buildUI()
         end)
         return control
     end
-
     for _, parent in ipairs({PG, CoreGui}) do
         pcall(function()
             local older = parent:FindFirstChild("PrehistoricTeamV1")
@@ -14302,7 +13411,7 @@ function PHX.buildUI()
     }, U.Root))
     make("Frame", {BackgroundColor3 = C.Cyan, BackgroundTransparency = 0.55, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1)}, header)
     U.Brand = text(header, "VOLCANO TEAM", 15, C.Text, UDim2.fromOffset(14, 8), UDim2.fromOffset(163, 22), Enum.Font.GothamBold)
-    U.Version = text(header, "V2.17.34 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
+    U.Version = text(header, "V2.17.35 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
     U.StatePill = text(header, "READY", 10, C.Cyan, UDim2.new(1, -129, 0, 8), UDim2.fromOffset(78, 21), Enum.Font.GothamBold)
     U.StatePill.BackgroundTransparency = 0
     U.StatePill.BackgroundColor3 = C.Raised
@@ -14315,7 +13424,6 @@ function PHX.buildUI()
     U.SidebarToggle = button(header, "≡", UDim2.fromOffset(10, 31), UDim2.fromOffset(28, 24), C.Raised)
     U.SidebarToggle.TextSize = 18
     U.SidebarToggle.Visible = false
-
     U.Sidebar = make("Frame", {
         Name = "NavigationSidebar", BackgroundColor3 = C.Surface, BorderSizePixel = 0,
         Position = UDim2.fromOffset(0, 50), Size = UDim2.new(0, 166, 1, -50), ZIndex = 5,
@@ -14400,7 +13508,6 @@ function PHX.buildUI()
         end
     end
     PHX.connect(U.Search:GetPropertyChangedSignal("Text"), function() if not U.PassThrough then U.applySearch() end end)
-
     local overview = U.Pages.LIVE
     local modeCard = card(overview, 77, 0, "solo team auto volcano một tài khoản master slave chế độ")
     U.ModeTitle = text(modeCard, "AUTO VOLCANO · TEAM / SOLO", 10, C.Cyan, UDim2.fromOffset(11, 6), UDim2.new(1, -22, 0, 19), Enum.Font.GothamBold)
@@ -14419,7 +13526,6 @@ function PHX.buildUI()
     STATUS_LABEL.Size = UDim2.new(1, 0, 0, 77)
     U.Phase.LayoutOrder = 1
     U.Phase.Size = UDim2.new(1, 0, 0, 17)
-
     local resources = card(overview, 72, 2, "vật liệu materials inventory túi đồ magnet scrap ember")
     local function material(index, title, accent)
         local host = make("Frame", {BackgroundTransparency = 1, Position = UDim2.new((index - 1) / 3, 0, 0, 0), Size = UDim2.new(1 / 3, 0, 1, 0)}, resources)
@@ -14434,8 +13540,6 @@ function PHX.buildUI()
     U.Ember = material(3, "EMBER / 15", C.Red)
     COUNTER_LABEL = text(resources, "", 8, C.Muted, UDim2.fromOffset(0, 0), UDim2.fromOffset(0, 0))
     COUNTER_LABEL.Visible = false
-
-    -- V2.17.34: two active material-farm buttons directly in MAIN > LIVE.
     local manualMaterials = card(overview, 109, 2.5,
         "farm scrap metal blaze ember forest pirate dragon hunter quest manual material")
     text(manualMaterials, "FARM VẬT LIỆU · THỦ CÔNG", 10, C.Cyan,
@@ -14462,7 +13566,6 @@ function PHX.buildUI()
     end
     PHX.connect(U.FarmScrapButton.Activated,function() pressMaterial("SCRAP") end)
     PHX.connect(U.FarmBlazeButton.Activated,function() pressMaterial("BLAZE") end)
-
     local journey = card(overview, 91, 3, "thuyền boat grand brigade hp sea telemetry")
     U.BoatTitle = text(journey, "GRAND BRIGADE", 10, C.Cyan, UDim2.fromOffset(11, 5), UDim2.new(0.65, -12, 0, 18), Enum.Font.GothamBold)
     U.BoatHP = text(journey, "HP -- / --", 11, C.Text, UDim2.new(0.65, 0, 0, 5), UDim2.new(0.35, -11, 0, 18), Enum.Font.GothamBold)
@@ -14471,7 +13574,6 @@ function PHX.buildUI()
     U.BoatHP.TextXAlignment = Enum.TextXAlignment.Right
     U.BoatState = text(journey, "WAIT_MASTER · cần Master + 3 Slave", 10, C.Muted, UDim2.fromOffset(11, 28), UDim2.new(1, -22, 0, 24))
     U.SeaState = text(journey, "SEA 6 · giữ một hướng thẳng", 10, C.Cyan, UDim2.fromOffset(11, 56), UDim2.new(1, -22, 0, 27))
-
     local event = card(overview, 119, 4, "volcano sự kiện event timer pressure relic golem hp")
     local function metric(x, y, title, accent)
         local host = make("Frame", {BackgroundTransparency = 1, Position = UDim2.new(x, 0, 0, y), Size = UDim2.new(0.5, 0, 0, 49)}, event)
@@ -14485,11 +13587,9 @@ function PHX.buildUI()
     U.Golems = metric(0.5, 55, "GOLEMS / TOTAL HP", C.Lavender)
     U.Golems.TextSize = 13
     make("Frame", {BackgroundColor3 = C.Border, BackgroundTransparency = 0.5, BorderSizePixel = 0, Position = UDim2.fromOffset(11, 54), Size = UDim2.new(1, -22, 0, 1)}, event)
-
     local rewards = card(overview, 90, 5, "phần thưởng rewards egg trứng recovery phục hồi")
     U.EggState = text(rewards, "EGG · chưa có phần thưởng", 11, C.Pink, UDim2.fromOffset(11, 5), UDim2.new(1, -22, 0, 22), Enum.Font.GothamBold)
     U.Recovery = text(rewards, "RECOVERY · READY", 10, C.Muted, UDim2.fromOffset(11, 32), UDim2.new(1, -22, 0, 48))
-
     local crew = U.Pages.CREW
     local presence = card(crew, 136, 1, "đội crew online master slave role aboard")
     U.CrewPresence = presence
@@ -14673,7 +13773,6 @@ function PHX.buildUI()
         end
         performManualGacha(false)
     end)
-
     local webhookCard = card(settingsPage, 236, 3, "discord webhook url id ping thông báo dragon kitsune leopard")
     text(webhookCard, "DISCORD WEBHOOK / ID PING", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
     U.WebhookBox = field(webhookCard, tostring(CONFIG.WEBHOOK_URL or ""), "Discord webhook URL", UDim2.fromOffset(11, 31), UDim2.new(1, -22, 0, 33))
@@ -14719,7 +13818,6 @@ function PHX.buildUI()
     local unload = button(controls, "DỪNG & GỠ UI", UDim2.fromOffset(11, 77), UDim2.new(1, -22, 0, 28), C.RedSoft)
     unload.TextColor3 = C.Red
     PHX.connect(unload.Activated, function() if not U.PassThrough then PHX.destroy() end end)
-
     local configCard = card(settingsPage, 151, 6, "config cấu hình lưu tự động file execute discord")
     text(configCard, "CONFIG CỤC BỘ", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
     U.ConfigState = text(configCard, PHX.userConfigStatus and PHX.userConfigStatus() or "Đang chuẩn bị config…", 9, C.Cyan, UDim2.fromOffset(11, 30), UDim2.new(1, -22, 0, 45), Enum.Font.GothamMedium)
@@ -14731,7 +13829,6 @@ function PHX.buildUI()
         U.notice(saved and "Đã lưu config cho account này." or ("Không lưu được: "..tostring(why)),saved==true)
         if PHX.userConfigStatus then U.ConfigState.Text=PHX.userConfigStatus() end
     end)
-
     local activity = U.Pages.ACTIVITY
     local diagnostics = card(activity, 183, 1, "nhật ký kiểm tra vật liệu inventory stash magnet scrap ember sync")
     text(diagnostics, "PHIÊN CHẠY / KIỂM TRA VẬT LIỆU", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
@@ -14741,7 +13838,6 @@ function PHX.buildUI()
     text(diagnostics, "Auto scan mỗi 3 giây · không cần mở Stash.", 10, C.Muted, UDim2.fromOffset(11, 140), UDim2.new(1, -22, 0, 32))
     PHX.connect(U.Sync.Activated, function()
         if U.PassThrough or U.SyncBusy then return end
-        -- A direct cache read does not require stopping Auto Volcano.
         if os.clock() - U.LastSyncAt < 5 then return end
         U.SyncBusy = true
         U.LastSyncAt = os.clock()
@@ -14767,7 +13863,6 @@ function PHX.buildUI()
     U.ActivityText.TextYAlignment = Enum.TextYAlignment.Top
     U.ActivityText.AutomaticSize = Enum.AutomaticSize.Y
     U.ActivityText.LayoutOrder = 2
-
     local footer = make("Frame", {BackgroundColor3 = C.PinkSoft, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -69), Size = UDim2.new(1, 0, 0, 69)}, U.Root)
     U.Footer = footer
     U.Primary = button(footer, "AUTO VOLCANO · TEAM", UDim2.fromOffset(11, 8), UDim2.new(.5, -15, 0, 33), C.CyanSoft)
@@ -14795,7 +13890,6 @@ function PHX.buildUI()
     U.Dock = button(U.Screen, "VOLCANO · MỞ UI", UDim2.fromOffset(12, 100), UDim2.fromOffset(136, 32), C.PinkSoft)
     U.Dock.TextSize = 10
     U.Dock.Visible = false
-
     U.MapToggle = button(U.Screen, "HIỂN THỊ MAP · BẬT", UDim2.fromOffset(185, 100), UDim2.fromOffset(152, 32), C.LavenderSoft)
     U.MapToggle.TextSize = 10
     U.MapBusy = false
@@ -14813,7 +13907,6 @@ function PHX.buildUI()
             U.updateControls()
         end)
     end)
-
     function U.notice(message, success)
         U.Toast.Text = tostring(message)
         U.Toast.TextColor3 = success and C.Cyan or C.Red
@@ -14829,7 +13922,6 @@ function PHX.buildUI()
     end
     PHX.connect(minimize.Activated, function() U.minimize(true) end)
     PHX.connect(U.Dock.Activated, function() U.minimize(false) end)
-
     function U.setPassThrough(value)
         value = value == true
         if U.PassThrough == value then return end
@@ -14864,7 +13956,6 @@ function PHX.buildUI()
             U.updateControls()
         end
     end
-
     function U.updateViewport()
         local camera = workspace.CurrentCamera
         if not camera then return end
@@ -14970,7 +14061,6 @@ function PHX.buildUI()
     PHX.connect(Input.InputEnded, function(event)
         if event == dragInput or event.UserInputType == Enum.UserInputType.MouseButton1 then dragInput = nil end
     end)
-
     function U.syncCrewFields()
         U.MasterBox.Text = tostring(CONFIG.MASTER_NAME or "")
     end
@@ -15036,7 +14126,6 @@ function PHX.buildUI()
         U.PlayersDirty = true
         if PHX.generationAlive() and U.Screen.Parent then U.refreshPlayers(); U.updateControls() end
     end)
-
     PHX.connect(U.ApplyMaster.Activated, function()
         if U.PassThrough then return end
         local ok, message = PHX.setMaster(U.MasterBox.Text)
@@ -15069,7 +14158,6 @@ function PHX.buildUI()
     end
     PHX.connect(U.Primary.Activated, function() switchVolcano("TEAM") end)
     PHX.connect(U.SoloPrimary.Activated, function() switchVolcano("SOLO") end)
-
     function U.updateControls()
         if U.PlayersDirty then U.refreshPlayers() end
         local running = ENV.TeamConfig.IsRunning == true or PHX.Runtime.StartBusy == true
@@ -15086,7 +14174,6 @@ function PHX.buildUI()
             entry.Control.BackgroundColor3=active and C.RedSoft or entry.Surface
             entry.Control.TextColor3=active and C.Red or (available and entry.Accent or C.Muted)
         end
-        -- Manual farm is a separate worker, never an Auto Volcano run.
         for _,entry in ipairs({
             {Control=U.FarmScrapButton,Mode="SCRAP",Label="SCRAP METAL",Surface=C.CyanSoft,Accent=C.Cyan},
             {Control=U.FarmBlazeButton,Mode="BLAZE",Label="BLAZE EMBER",Surface=C.LavenderSoft,Accent=C.Lavender},
@@ -15300,7 +14387,6 @@ function PHX.buildUI()
         local elapsed = math.max(0, os.clock() - (NIGHT.StartedAt or os.clock()))
         U.Health.Text = string.format("Uptime %dm %02ds · Recoveries %d\nState: %s · File log: %s", math.floor(elapsed / 60), math.floor(elapsed % 60), tonumber(NIGHT.RecoveryCount) or 0, tostring(PHX.Runtime.RunState or "READY"), NIGHT.FileReady and "WRITING" or "MEMORY")
     end
-
     U.applySearch()
     U.updateControls()
     pcall(U.updateCounters)
@@ -15324,7 +14410,6 @@ function PHX.buildUI()
         end
     end)
 end
-
 if PHX.generationAlive() then
     PHX.buildUI()
     PHX.Runtime.UiReady=true
@@ -15332,5 +14417,3 @@ if PHX.generationAlive() then
     PHX.startUserConfigResume()
 end
 PHX.Runtime.Tasks[coroutine.running()] = nil
-
--- V2.17.04: Strict NET combat and Dragon Hunter Bring integration.
