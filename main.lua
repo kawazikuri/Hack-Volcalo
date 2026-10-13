@@ -1,3 +1,15 @@
+-- V2.17.32: Uploaded material bring INITIAL once / XZ>40 rebring / OriginalY+5; remote Magnet retained.
+-- V2.17.31: Verified remote Magnet craft + isolated Scrap/Dragon Hunter bring, NET M1 and player hover.
+-- Uploaded V2.17.30 Prehistoric/Lava Golem, quest receiver, boats, cache and fruit logic preserved.
+-- V2.17.30: Tween to Dragon Hunter STAND BEFORE quest Remote RequestQuest/Check; skip NPC GUI. Preserves V2.17.28 Bring Once + NET M1.
+-- Based on V2.17.29, only changes the Dragon Hunter quest receiver's movement gate and status.
+-- PX PREHISTORIC V2.17.28 | SHORT BRING ONCE (80 studs) -> NET M1 until pack clear -> smooth hop to next mob; based on V2.17.27.
+-- PX PREHISTORIC V2.17.27 | Adaptive mob routing, closer-range Bring, smooth intra-farm tween; preserve V2.17.26 successful NET M1.
+-- V2.17.26: FIX NPC noclip/falling; guarded BodyPosition bring, natural-target reacquire, NET send diagnostics.
+-- V2.17.25: Bring+NET M1 reliability | stable V2.17.23 base, excludes unverified V2.17.24 Magnet RPC.
+-- V2.17.23: Delta Android skill touch bridge (game mobile GUI, not an unverified ability Remote); PC keyboard preserved.
+-- V2.17.22: Dragon Egg cache +1 verification (IdMap Material 565, Tool 1276 observed), reset gated on verified gain.
+-- V2.17.21: Direct Volcano ActivationPrompt only after SOLO arrival / TEAM Master + 3 crew near Relic.
 -- V2.17.20: Pressure Rock cast-after-approach, extended skill hold and diagnostics; preserves V2.17.19 Dragon Egg recovery.
 -- PX PREHISTORIC V2.17.17 | TEAM: MASTER/BOAT may sail without Magnet; SLAVES must craft/verify Magnet before boarding.
 -- PX PREHISTORIC V2.17.16 | Golem-only local Humanoid.Health=0 (EXPERIMENT, server kill UNVERIFIED).
@@ -37,7 +49,7 @@ if ENV.__PH_GACHA_ACCOUNT and ENV.__PH_GACHA_ACCOUNT~=LP.UserId then
 end
 ENV.__PH_GACHA_ACCOUNT=LP.UserId
 -- Retire standalone donor/recovery tests before their workers compete with main.
-for _,key in ipairs({"__PH_REMOVE_LAVA_TEST","__PH_KILL_AURA_TEST","__PX_KILL_AURA_RECOVERY_TEST_V1"}) do
+for _,key in ipairs({"__PH_REMOVE_LAVA_TEST","__PH_KILL_AURA_TEST","__PX_KILL_AURA_RECOVERY_TEST_V1","__PH_TWEEN_BRING_FAST_ATTACK","__PH_KILL_AURA_NET","__PH_MAGNET_REMOTE_CRAFT"}) do
     local donor=ENV[key]
     if type(donor)=="table" and type(donor.Stop)=="function" then
         pcall(donor.Stop,"INTEGRATED_MAIN")
@@ -202,6 +214,7 @@ function PHX.restoreMovement()
     -- Remove Lava must NOT be stopped by routine movement restoration.
     -- restoreMovement is also called by Auto OFF and TEAM/SOLO mode switches.
     if PHX.killAuraRelease then pcall(PHX.killAuraRelease) end
+    if PHX.releaseSkillTouch then pcall(PHX.releaseSkillTouch) end
     for pointer in pairs(PHX.Runtime.HeldPointers or {}) do pcall(pointer.release) end
     PHX.Runtime.HeldPointers = {}
     for button,pointer in pairs(PHX.Runtime.HeldMouse or {}) do
@@ -293,7 +306,7 @@ BOOT_LABEL.TextColor3 = Color3.fromRGB(255,255,255)
 BOOT_LABEL.Font = Enum.Font.SourceSansBold
 BOOT_LABEL.TextSize = 14
 BOOT_LABEL.TextWrapped = true
-BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.20\nLoading automation..."
+BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.27\nLoading automation..."
 BOOT_LABEL.ZIndex = 999999
 
 local remotes = ReplicatedStorage:WaitForChild("Remotes", 20)
@@ -310,7 +323,7 @@ if not CommF then
     return
 end
 
-BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.20\nLoaded core, building UI..."
+BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.22\nLoaded core, building UI..."
 
 local CONFIG = {
     MIN_SLAVES_TO_SAIL = 3, -- Team of 1 Master + up to 4 Slaves; require 3 VERIFIED/BOARDED passengers to sail.
@@ -326,9 +339,13 @@ local CONFIG = {
         HoverAboveMob=13, DamageTimeout=4.5, RecoveryTimeout=10,
         ScrapBringVerifyRadius=8,
         -- V2.17.08: Restore original V2.16.38/V2.17.03 mob bring settings.
-        ForestHitboxSize=40, ForestBringInterval=0.11, ForestRebringDrift=3,
+        ForestHitboxSize=3, ForestBringInterval=0.18, ForestRebringDrift=4,
+        SafeBringPickupRadius=350, UnknownOwnerPickupRadius=150,
+        ShortBringRadius=80, -- V2.17.28: maximum 80 studs from player; move each NPC ONCE per pack.
+        ShortBringUnknownOwnerRadius=48, -- without owner API, only attempt within this tighter radius.
+        ShortPackStallSeconds=4.5, ShortPackMaxSeconds=19,
         ForestAttackRange=55,
-        QuestHitboxSize=16, QuestClusterRadius=3, QuestMobPickupRadius=135,
+        QuestHitboxSize=3, QuestClusterRadius=3, QuestMobPickupRadius=165,
         QuestScanRadius=600, QuestBringEnabled=true,
         QuestAttackRange=48, QuestHoverGap=18, QuestRebringDrift=4,
         QuestBringInterval=0.11,
@@ -459,6 +476,10 @@ local CONFIG = {
         DOUBLE_ENTER = 70, DOUBLE_EXIT = 40,
         DOUBLE_SAFE_GOLEM_DISTANCE = 185,
         DOUBLE_EMERGENCY = 88,
+    },
+    SKILL_INPUT = {
+        Mode = "AUTO", -- AUTO: touchscreen UI on Delta Android, keyboard on PC. Can switch in Settings.
+        MobileHold = 0.10, -- actual mobile touch duration, does not change game cooldowns
     },
     PRESSURE = {
         SKILL_HOLD = 0.10, -- V2.17.20: slightly longer key press for more reliable skill input
@@ -659,7 +680,7 @@ function PHX.sanitizeUserConfig(settings)
     local clean={masterRole=false,selectedMaster="",automationMode="TEAM",desiredRunning=false,
         debugEnabled=true,watchdogRestart=true,returnToTiki=true,randomFruit=false,autoStore=true,
         mapHidden=false,fpsCap=30,webhookURL="",webhookUserId="",gachaNextReadyEpoch=0,gachaLastAttemptEpoch=0,
-        auraEnabled=true,auraIdle=false,netMode="NET_HEAD",removeLava=true,boatNoclip=true,fastBoatBuy=true,golemBring=true,golemLocalKill=true,questBring=true}
+        auraEnabled=true,auraIdle=false,netMode="NET_HEAD",removeLava=true,boatNoclip=true,fastBoatBuy=true,golemBring=true,golemLocalKill=true,questBring=true,skillMode="AUTO"}
     if type(settings)~="table" then return clean end
     for _,key in ipairs({"masterRole","desiredRunning","debugEnabled","watchdogRestart","returnToTiki","randomFruit","autoStore","mapHidden","auraEnabled","auraIdle","removeLava","boatNoclip","fastBoatBuy","golemBring","golemLocalKill","questBring"}) do
         if type(settings[key])=="boolean" then clean[key]=settings[key] end
@@ -667,6 +688,9 @@ function PHX.sanitizeUserConfig(settings)
     if settings.automationMode=="TEAM" or settings.automationMode=="SOLO" then clean.automationMode=settings.automationMode end
     if settings.netMode=="NET_HEAD" or settings.netMode=="NET_ROOT" or settings.netMode=="NET_HEAD_0" then
         clean.netMode=settings.netMode
+    end
+    if settings.skillMode=="AUTO" or settings.skillMode=="TOUCH" or settings.skillMode=="KEYBOARD" then
+        clean.skillMode=settings.skillMode
     end
     local fps=tonumber(settings.fpsCap)
     if type(settings.fpsCap)=="number" and fps==fps and fps~=math.huge and fps~=-math.huge then
@@ -702,7 +726,7 @@ function PHX.userConfigSnapshot()
         gachaNextReadyEpoch=tonumber(ENV.__PH_DIRECT_GACHA_NEXT_READY) or 0,
         gachaLastAttemptEpoch=tonumber(ENV.__PH_DIRECT_GACHA_LAST_SENT) or 0,
         auraEnabled=CONFIG.KILL_AURA.Enabled, auraIdle=CONFIG.KILL_AURA.IdleEnabled,
-        netMode=CONFIG.KILL_AURA.NetMode,
+        netMode=CONFIG.KILL_AURA.NetMode,skillMode=CONFIG.SKILL_INPUT.Mode,
         removeLava=CONFIG.REMOVE_LAVA.Enabled,boatNoclip=CONFIG.BOAT_NOCLIP.Enabled,
         fastBoatBuy=CONFIG.BOAT_FAST_BUY.Enabled,
         golemBring=CONFIG.GOLEM_AURA.BRING_ENABLED,golemLocalKill=CONFIG.GOLEM_LOCAL_KILL.Enabled,
@@ -721,6 +745,7 @@ function PHX.applyUserConfig(settings)
     CONFIG.KILL_AURA.Enabled=clean.auraEnabled
     CONFIG.KILL_AURA.IdleEnabled=clean.auraIdle
     CONFIG.KILL_AURA.NetMode=clean.netMode
+    CONFIG.SKILL_INPUT.Mode=clean.skillMode
     CONFIG.REMOVE_LAVA.Enabled=clean.removeLava
     CONFIG.BOAT_NOCLIP.Enabled=clean.boatNoclip
     CONFIG.BOAT_FAST_BUY.Enabled=clean.fastBoatBuy
@@ -1421,7 +1446,7 @@ local function stopSit(token)
 end
 PHX.ensureSeatExit = stopSit
 
-local function safeTween(targetCFrame, speed, token)
+local function safeTween(targetCFrame, speed, token, smoothFarm)
     if not targetCFrame or not PHX.travelAlive(token) or PHX.isMovementLocked() then return false end
     local c,h,r,epoch = waitAlive(token)
     if PHX.isMovementLocked() then return false end
@@ -1432,7 +1457,7 @@ local function safeTween(targetCFrame, speed, token)
     if state.Tween then pcall(function() state.Tween:Cancel() end) end
     speed=tonumber(speed) or CONFIG.PLAYER_TWEEN_SPEED or 200
     if speed<=0 or speed~=speed or speed==math.huge then return false end
-    local MAX_SEGMENT,TARGET_EPS,MAX_TOTAL_SECONDS=48,3,120
+    local MAX_SEGMENT,TARGET_EPS,MAX_TOTAL_SECONDS=(smoothFarm and 260 or 48),3,120
     local original,connection,completedConnection,tween={},nil,nil,nil
     local interrupted,arrived,cleaned=false,false,false
     local oldAutoRotate=h.AutoRotate
@@ -1527,7 +1552,7 @@ local function safeTween(targetCFrame, speed, token)
                 local goal=from:Lerp(targetCFrame,length/distance)
                 if not segment(goal,math.max(length/speed,.04)) then break end
                 local beforePause=r.Position
-                task.wait(.015)
+                if not smoothFarm then task.wait(.015) end
                 if PHX.PortalTravel and r.Parent and (r.Position-beforePause).Magnitude>200 then interrupted=true;break end
             end
         end
@@ -3876,10 +3901,175 @@ local function equipTooltip(tooltip)
     return tool.Parent==char() and tool or nil
 end
 
-local function pressKey(keyCode, hold)
-    PHX.keyEvent(true, keyCode, false, game)
-    task.wait(hold or .07)
-    PHX.keyEvent(false, keyCode, false, game)
+-- V2.17.23 | CROSS-PLATFORM SKILL INPUT:
+-- This is NOT a generic skill RemoteEvent: per-ability RPC signatures are not verified.
+-- Android activates the GAME'S own touch skill controls, which then invoke its normal
+-- client action/network pipeline. PC keeps native key input. Never fire guessed remotes.
+PHX.SkillBridge = { LastLogAt={}, ButtonCache={}, LastMethod="NONE", Sent=0, Failures=0, Busy=false }
+function PHX.mobileSkillText(value, keyName)
+    if type(value)~="string" then return false end
+    value=value:gsub("<[^>]*>",""):gsub("^%s+",""):gsub("%s+$",""):upper()
+    -- Only stand-alone skill labels; NEVER match long UI labels/menu entries.
+    return value==keyName or value=="["..keyName.."]" or value=="("..keyName..")"
+        or value=="KEY "..keyName or value=="SKILL "..keyName
+end
+function PHX.mobileVisible(gui,minimum)
+    if not gui or not gui:IsA("GuiObject") or not gui.Parent or not gui.Visible then return false end
+    if PHX.isOwnGui and PHX.isOwnGui(gui) then return false end
+    minimum=minimum or 14
+    if gui.AbsoluteSize.X<minimum or gui.AbsoluteSize.Y<minimum then return false end
+    local node=gui.Parent
+    while node and node~=PG do
+        if node:IsA("GuiObject") and not node.Visible then return false end
+        if node:IsA("ScreenGui") and not node.Enabled then return false end
+        node=node.Parent
+    end
+    return node==PG
+end
+function PHX.mobileCandidatePosition(button)
+    local camera=workspace.CurrentCamera
+    if not camera or not PHX.mobileVisible(button) then return nil end
+    local pos=button.AbsolutePosition+button.AbsoluteSize/2
+    local screen=camera.ViewportSize
+    if pos.X<2 or pos.Y<2 or pos.X>screen.X-2 or pos.Y>screen.Y-2 then return nil end
+    return pos,screen
+end
+function PHX.mobileButtonFromActions(keyCode)
+    local ok,actions=pcall(function() return ContextActionService:GetAllBoundActionInfo() end)
+    if not ok or type(actions)~="table" then return nil end
+    for actionName,info in pairs(actions) do
+        if type(info)=="table" and type(info.inputTypes)=="table" then
+            for _,mapped in pairs(info.inputTypes) do
+                if mapped==keyCode then
+                    local fetched,button=pcall(function() return ContextActionService:GetButton(actionName) end)
+                    if fetched and button and PHX.mobileCandidatePosition(button) then return button,"CAS:"..tostring(actionName) end
+                end
+            end
+        end
+    end
+    return nil
+end
+function PHX.findMobileSkillButton(keyCode)
+    local keyName=keyCode and keyCode.Name
+    if type(keyName)~="string" then return nil,"INVALID_KEY" end
+    local cached=PHX.SkillBridge.ButtonCache[keyName]
+    if cached and PHX.mobileCandidatePosition(cached.Button) then
+        return cached.Button,cached.Source
+    end
+    PHX.SkillBridge.ButtonCache[keyName]=nil
+    local actionButton,source=PHX.mobileButtonFromActions(keyCode)
+    if actionButton then
+        PHX.SkillBridge.ButtonCache[keyName]={Button=actionButton,Source=source}
+        return actionButton,source
+    end
+    local candidate,score,runnerUp=nil,-math.huge,-math.huge
+    for _,obj in ipairs(PG:GetDescendants()) do
+        if obj:IsA("TextLabel") or obj:IsA("TextButton") then
+            local matched=false
+            local ok=pcall(function() matched=PHX.mobileSkillText(obj.Text,keyName) end)
+            if ok and matched and PHX.mobileVisible(obj,2) then
+                local parent=obj
+                for depth=0,3 do
+                    if not parent or parent==PG then break end
+                    if parent:IsA("GuiButton") then
+                        local at,screen=PHX.mobileCandidatePosition(parent)
+                        if at and screen and at.X>screen.X*0.43 then
+                            local path=string.lower(parent:GetFullName())
+                            local pts=10 + (at.X/screen.X)*2 - depth
+                            if path:find("skill",1,true) or path:find("ability",1,true) then pts+=9 end
+                            if path:find("combat",1,true) or path:find("mobile",1,true) or path:find("touch",1,true) then pts+=6 end
+                            if path:find("inventory",1,true) or path:find("store",1,true) or path:find("menu",1,true)
+                                or path:find("settings",1,true) or path:find("hotbar",1,true) then pts-=25 end
+                            if parent==candidate then
+                                if pts>score then score=pts end
+                            elseif pts>score then
+                                runnerUp=score;score=pts;candidate=parent
+                            elseif pts>runnerUp then runnerUp=pts end
+                        end
+                        break
+                    end
+                    parent=parent.Parent
+                end
+            end
+        end
+    end
+    if candidate and score>=10 and (score-runnerUp)>=2 then
+        PHX.SkillBridge.ButtonCache[keyName]={Button=candidate,Source="GAME_TOUCH_GUI"}
+        return candidate,"GAME_TOUCH_GUI"
+    end
+    return nil,candidate and "AMBIGUOUS_SKILL_UI" or "SKILL_UI_NOT_FOUND"
+end
+function PHX.releaseSkillTouch()
+    local active=PHX.SkillBridge and PHX.SkillBridge.Touch
+    if active then
+        PHX.SkillBridge.Touch=nil
+        pcall(function() VirtualInputManager:SendTouchEvent(active.Id, Enum.UserInputState.End.Value, active.X, active.Y) end)
+    end
+end
+function PHX.skillLog(kind,key,detail)
+    local bridge=PHX.SkillBridge
+    local signature=kind.."_"..tostring(key)
+    local now=os.clock()
+    if (bridge.LastLogAt[signature] or -math.huge)+7>now then return end
+    bridge.LastLogAt[signature]=now
+    logLine(kind,"key="..tostring(key).." | "..tostring(detail))
+end
+function PHX.skillInput(keyCode,hold)
+    local bridge=PHX.SkillBridge
+    local mode=CONFIG.SKILL_INPUT.Mode or "AUTO"
+    local mobile=game:GetService("UserInputService").TouchEnabled
+    local chosen=(mode=="KEYBOARD" or (mode=="AUTO" and not mobile)) and "KEYBOARD" or "TOUCH"
+    if not PHX.generationAlive() then return false,"RUNTIME_STOPPED" end
+    if bridge.Busy then return false,"SKILL_INPUT_BUSY" end
+    bridge.Busy=true
+    local success,method=pcall(function()
+        if chosen=="KEYBOARD" then
+            PHX.keyEvent(true,keyCode,false,game)
+            task.wait(hold or .10)
+            PHX.keyEvent(false,keyCode,false,game)
+            return "KEYBOARD_REQUESTED"
+        end
+        local button,source=PHX.findMobileSkillButton(keyCode)
+        if not button then
+            PHX.skillLog("SKILL_TOUCH_NOT_FOUND",keyCode.Name,source)
+            error(source)
+        end
+        local point=PHX.mobileCandidatePosition(button)
+        if not point then error("BUTTON_NOT_VISIBLE") end
+        PHX.Runtime.TouchSerial=(PHX.Runtime.TouchSerial or 0)+1
+        local touch={Id=PHX.Runtime.TouchSerial,X=point.X,Y=point.Y}
+        bridge.Touch=touch
+        local okBegin,beginError=pcall(function()
+            VirtualInputManager:SendTouchEvent(touch.Id,Enum.UserInputState.Begin.Value,touch.X,touch.Y)
+        end)
+        if not okBegin then PHX.releaseSkillTouch();error("TOUCH_BEGIN_FAILED: "..tostring(beginError)) end
+        task.wait(math.max(.06,tonumber(hold) or CONFIG.SKILL_INPUT.MobileHold))
+        PHX.releaseSkillTouch()
+        bridge.LastMethod=source
+        bridge.Sent+=1
+        PHX.skillLog("SKILL_TOUCH_DISPATCH",keyCode.Name,"source="..source.." button="..button:GetFullName().." (skill effect UNVERIFIED)")
+        return "TOUCH_REQUESTED:"..source
+    end)
+    PHX.releaseSkillTouch()
+    bridge.Busy=false
+    if not success then
+        bridge.Failures+=1
+        PHX.skillLog("SKILL_INPUT_ERROR",keyCode.Name,method)
+        return false,tostring(method)
+    end
+    return true,method
+end
+function PHX.skillTouchDiagnostic()
+    for _,key in ipairs({Enum.KeyCode.Z,Enum.KeyCode.X,Enum.KeyCode.C,Enum.KeyCode.V,Enum.KeyCode.F}) do
+        local button,source=PHX.findMobileSkillButton(key)
+        logLine("SKILL_TOUCH_SCAN",key.Name.." | "..tostring(source).." | "..tostring(button and button:GetFullName() or "NONE"))
+    end
+    return true
+end
+local function pressKey(keyCode,hold)
+    local ok,why=PHX.skillInput(keyCode,hold)
+    if not ok then error("SKILL_DISPATCH_FAILED("..tostring(keyCode.Name).."): "..tostring(why)) end
+    return true
 end
 
 local function aimAt(pos)
@@ -3921,7 +4111,11 @@ local function useConfiguredSkills(targetPos)
         for pass=1,2 do
             for _,k in ipairs(skillKeysForTooltip(tooltip)) do
                 if targetPos then aimAt(targetPos) end
-                pressKey(k, .11)
+                local sent,castReason=pcall(pressKey,k,.11)
+                if not sent then
+                    logLine("SKILL_CAST_ERROR","key="..k.Name.." weapon="..tostring(tooltip).." | "..tostring(castReason))
+                    return false
+                end
                 task.wait(.17)
             end
             task.wait(.06)
@@ -3938,6 +4132,23 @@ end
 
 local CombatState = nil
 local NetAttackCache = { Net = nil, RegisterAttack = nil, RegisterHit = nil }
+-- Only treat HP decrease on the SAME live Humanoid as observed damage.
+-- The sum of all HP can drop when a mob streams out/dies/despawns, creating a false positive.
+function PHX.waveHpDelta(models, previous)
+    local total,delta,current=0,0,{}
+    for _,model in ipairs(models or {}) do
+        local h=model and model:FindFirstChildOfClass("Humanoid")
+        if h and h.Parent==model then
+            total+=math.max(0,h.Health)
+            current[h]=h.Health>0
+            local old=previous[h]
+            if old~=nil and h.Health<old then delta+=old-math.max(0,h.Health) end
+            previous[h]=h.Health>0 and h.Health or nil
+        end
+    end
+    for h in pairs(previous) do if not current[h] then previous[h]=nil end end
+    return delta,total
+end
 PHX.FarmCombatDebug={LastDamageAt=os.clock(),LastNet="WAITING",Hits=0,Mode="NET",FailStreak=0,NativeAt=0}
 local function observedHealth(models)
     local total,n=0,0
@@ -3952,6 +4163,33 @@ local function networkOwned(part)
     local ok,value=pcall(isnetworkowner,part)
     if ok then return value==true end
     return nil
+end
+-- PHX V2.17.26: Maintain the NPC at a ground-relative, reachable hit position.
+-- Avoid CanCollide=false on every NPC body part: an unsupported Humanoid can fall
+-- through the map. A physics mover only runs on a nearby, locally movable NPC.
+function PHX.holdFarmNpc(part,targetPos,holds,prefix)
+    if not part or not part.Parent or not targetPos then return false,"INVALID_PART" end
+    local hold=holds[part]
+    if hold and (not hold.Parent or hold.Parent~=part) then holds[part]=nil;hold=nil end
+    if not hold then
+        hold=Instance.new("BodyPosition")
+        hold.Name=prefix or "PH_FarmNpcYSupport"
+        hold.MaxForce=Vector3.new(1400000,2000000,1400000)
+        hold.P=23000
+        hold.D=2300
+        hold.Position=targetPos
+        hold.Parent=part
+        holds[part]=hold
+    else
+        hold.Position=targetPos
+    end
+    return true,"HOLD_POSITION_REQUESTED_UNVERIFIED"
+end
+function PHX.releaseFarmNpcHolds(holds)
+    for part,hold in pairs(holds or {}) do
+        if hold and hold.Parent then pcall(function() hold:Destroy() end) end
+        holds[part]=nil
+    end
 end
 -- V2.17.10: No physical M1 in the combat dispatcher. UI/NPC interactions
 -- elsewhere in main remain unchanged.
@@ -4057,8 +4295,10 @@ PHX.ForestGolemPrepared=setmetatable({}, {__mode="k"})
 PHX.ForestGolemLastBring=setmetatable({}, {__mode="k"})
 PHX.ForestGolemOriginal=setmetatable({}, {__mode="k"})
 PHX.ForestGolemOriginalHumanoids=setmetatable({}, {__mode="k"})
+PHX.ForestBringHolds=setmetatable({}, {__mode="k"})
 
 function PHX.restoreForestGolemBring()
+    PHX.releaseFarmNpcHolds(PHX.ForestBringHolds)
     for part,prior in pairs(PHX.ForestGolemOriginal) do
         if part and part.Parent then
             pcall(function()
@@ -4089,68 +4329,90 @@ function PHX.bringForestPiratesLikeGolem(models,anchor)
     local playerRoot=root()
     if not playerRoot then return 0,0,0,{} end
     local now=os.clock()
-    local moved,near,owned=0,0,0
+    local moved,near,owned,skipped=0,0,0,0
     local candidates={}
     local attackTargets={}
+    -- Public Bring implementations commonly use short (~300-400 stud) pickup ranges.
+    -- A local 2,200-stud PivotTo can look successful while the server still owns the NPC.
+    local pickup=math.min(tonumber(CONFIG.FARM_COMBAT.BringRadius) or 350,
+        tonumber(CONFIG.FARM_COMBAT.SafeBringPickupRadius) or 350)
+    local unknownPickup=tonumber(CONFIG.FARM_COMBAT.UnknownOwnerPickupRadius) or 95
     for _,mob in ipairs(models or {}) do
         local humanoid,mr=PHX.farmMobRoot(mob)
-        if humanoid and mr and (mr.Position-playerRoot.Position).Magnitude<=CONFIG.FARM_COMBAT.BringRadius then
-            candidates[#candidates+1]={mob=mob,humanoid=humanoid,root=mr}
+        if humanoid and mr then
+            local dist=(mr.Position-playerRoot.Position).Magnitude
+            if dist<=pickup then
+                candidates[#candidates+1]={mob=mob,humanoid=humanoid,root=mr,dist=dist}
+            end
         end
     end
-    local spread= #candidates>1 and CONFIG.GOLEM_AURA.CLUSTER_RADIUS or 0
+    local spread=#candidates>1 and CONFIG.GOLEM_AURA.CLUSTER_RADIUS or 0
     for i,entry in ipairs(candidates) do
         local mob,humanoid,mr=entry.mob,entry.humanoid,entry.root
-        if networkOwned(mr)==true then owned+=1 end
-        if not PHX.ForestGolemPrepared[mob] then
-            PHX.ForestGolemPrepared[mob]=true
-            for _,body in ipairs(mob:GetDescendants()) do
-                if body:IsA("BasePart") then
-                    if not PHX.ForestGolemOriginal[body] then
+        local owner=networkOwned(mr)
+        if owner==true then owned+=1 end
+        -- False means server/another client owns the assembly: do not fake a Bring.
+        -- Nil means executor lacks ownership API: allow only very close experiments.
+        local movable=not mr.Anchored and (owner==true or (owner==nil and entry.dist<=unknownPickup))
+        if movable then
+            if not PHX.ForestGolemPrepared[mob] then
+                PHX.ForestGolemPrepared[mob]=true
+                for _,body in ipairs(mob:GetDescendants()) do
+                    if body:IsA("BasePart") and not PHX.ForestGolemOriginal[body] then
                         PHX.ForestGolemOriginal[body]={Size=body.Size,CanCollide=body.CanCollide}
                     end
                 end
+                if not PHX.ForestGolemOriginalHumanoids[humanoid] then
+                    PHX.ForestGolemOriginalHumanoids[humanoid]={WalkSpeed=humanoid.WalkSpeed,JumpPower=humanoid.JumpPower,AutoRotate=humanoid.AutoRotate}
+                end
             end
-            if not PHX.ForestGolemOriginalHumanoids[humanoid] then
-                PHX.ForestGolemOriginalHumanoids[humanoid]={WalkSpeed=humanoid.WalkSpeed,JumpPower=humanoid.JumpPower,AutoRotate=humanoid.AutoRotate}
-            end
-        end
-        -- Refresh each tick: the game can restore root size or NPC movement after replication.
-        pcall(function()
-            mr.Size=Vector3.new(CONFIG.FARM_COMBAT.ForestHitboxSize,CONFIG.FARM_COMBAT.ForestHitboxSize,CONFIG.FARM_COMBAT.ForestHitboxSize)
-            mr.CanCollide=false
-            humanoid.WalkSpeed=0
-            humanoid.JumpPower=0
-            humanoid.AutoRotate=false
-            for _,body in ipairs(mob:GetDescendants()) do
-                if body:IsA("BasePart") then body.CanCollide=false end
-            end
-        end)
-        local angle=(i-1)/math.max(#candidates,1)*math.pi*2
-        local slot=CFrame.new(anchor.Position+Vector3.new(math.cos(angle)*spread,0,math.sin(angle)*spread))
-        local drift=(mr.Position-slot.Position).Magnitude
-        if (PHX.ForestGolemLastBring[mob] or -math.huge)+CONFIG.FARM_COMBAT.ForestBringInterval<=now
-            and drift>=CONFIG.FARM_COMBAT.ForestRebringDrift then
-            PHX.ForestGolemLastBring[mob]=now
-            local ok=pcall(function()
-                mob:PivotTo(slot)
-                mr.CFrame=slot -- root alignment matters when a model pivot is offset
-                mr.AssemblyLinearVelocity=Vector3.zero
-                mr.AssemblyAngularVelocity=Vector3.zero
+            pcall(function()
+                -- Keep NPC ground collision: V2.17.25 turned every body part
+                -- into noclip and the mob fell below the NET hit radius.
+                local size=math.min(tonumber(CONFIG.FARM_COMBAT.ForestHitboxSize) or 3,3)
+                mr.Size=Vector3.new(size,size,size)
+                mr.CanCollide=true
+                humanoid.WalkSpeed=0
+                humanoid.JumpPower=0
+                humanoid.AutoRotate=false
+                -- Other body parts keep THEIR ORIGINAL CanCollide values.
             end)
-            if ok then moved+=1 end
+            local angle=(i-1)/math.max(#candidates,1)*math.pi*2
+            local slot=CFrame.new(anchor.Position+Vector3.new(math.cos(angle)*spread,0,math.sin(angle)*spread))
+            local drift=(mr.Position-slot.Position).Magnitude
+            if now-(PHX.ForestGolemLastBring[mob] or -math.huge)>=CONFIG.FARM_COMBAT.ForestBringInterval
+                and drift>=CONFIG.FARM_COMBAT.ForestRebringDrift then
+                PHX.ForestGolemLastBring[mob]=now
+                local ok=pcall(function()
+                    mob:PivotTo(slot)
+                    mr.AssemblyLinearVelocity=Vector3.zero
+                    mr.AssemblyAngularVelocity=Vector3.zero
+                end)
+                if ok then moved+=1 end
+            end
+            -- Physics hold prevents gravity falling through even if this NPC's
+            -- default limb collision is disabled by the Roblox rig.
+            if owner==true or owner==nil then
+                pcall(PHX.holdFarmNpc,mr,slot.Position,PHX.ForestBringHolds,"PH_ForestGroundSupport")
+            end
+            if (mr.Position-slot.Position).Magnitude<=CONFIG.FARM_COMBAT.ScrapBringVerifyRadius then
+                near+=1
+            end
+        else
+            skipped+=1
+            local prior=PHX.ForestBringHolds[mr]
+            if prior then pcall(function() prior:Destroy() end); PHX.ForestBringHolds[mr]=nil end
         end
-        -- Check actual local position AFTER the move, not before.
-        if (mr.Position-slot.Position).Magnitude<=CONFIG.FARM_COMBAT.ScrapBringVerifyRadius then
-            near+=1
-        end
-        -- The shared NET dispatcher uses the same nearby Pirate targets.
-        if (mr.Position-playerRoot.Position).Magnitude<=CONFIG.FARM_COMBAT.ForestAttackRange then
+        -- Collect targets in the real NET radius, not the broader visual Bring radius.
+        local netRange=math.min(CONFIG.FARM_COMBAT.ForestAttackRange,
+            tonumber(CONFIG.KILL_AURA.NetRange) or 35)
+        if (mr.Position-playerRoot.Position).Magnitude<=netRange then
             attackTargets[#attackTargets+1]=mob
         end
     end
     PHX.FarmCombatDebug.Brought=moved
     PHX.FarmCombatDebug.Owned=owned
+    PHX.FarmCombatDebug.BringSkippedNotOwned=skipped
     PHX.FarmCombatDebug.Near=near
     PHX.FarmCombatDebug.NetTargets=#attackTargets
     return moved,near,owned,attackTargets
@@ -4183,11 +4445,11 @@ function PHX.farmFixedScrapWave(camp,token,completed)
         if #models==0 then logLine("SCRAP_GOLEM_NET","NO_MOBS"); return false end
         if not equipTooltip("Melee") then logLine("SCRAP_GOLEM_NET","NO_MELEE"); return false end
         farmV19BoostSim()
-        logLine("SCRAP_GOLEM_NET",string.format("START | hoverY=%.1f clusterY=%.1f gap=18 | forestHitbox=%.0f",playerHover.Position.Y,mobAnchor.Position.Y,CONFIG.FARM_COMBAT.ForestHitboxSize))
+        logLine("SCRAP_GOLEM_NET",string.format("START | hoverY=%.1f clusterY=%.1f gap=18 | forestHitbox=%.0f | V2.17.26 ground support; NET has no native M1 animation",playerHover.Position.Y,mobAnchor.Position.Y,CONFIG.FARM_COMBAT.ForestHitboxSize))
         local untilTime=os.clock()+CONFIG.FARM_COMBAT.MaxWaveSeconds
-        local lastHP,damageAt=nil,os.clock()
+        local hpPrevious,damageAt={},os.clock()
         local lastDiag,lastBoost,lastFallback,lastStall=0,0,0,0
-        local sent=0
+        local sent,zeroTargetsSince,reacquires=0,nil,0
         while isRunning(token) and CHARACTER_EPOCH==epoch and os.clock()<untilTime do
             if completed and completed() then return true end
             local h,r=hum(),root()
@@ -4200,19 +4462,51 @@ function PHX.farmFixedScrapWave(camp,token,completed)
             local now=os.clock()
             if now-lastBoost>=3 then farmV19BoostSim();lastBoost=now end
             local brought,near,owned,attackTargets=PHX.bringForestPiratesLikeGolem(models,mobAnchor)
-            -- Use shared NET dispatcher; Bring geometry remains original.
+            if #attackTargets>0 then
+                zeroTargetsSince=nil
+            else
+                zeroTargetsSince=zeroTargetsSince or now
+            end
+            -- If there is no owned/bringable mob, hover above a natural live
+            -- target instead of doing nothing at a distant fixed camp position.
+            if zeroTargetsSince and now-zeroTargetsSince>=2.2 and reacquires<2 then
+                local nearest,dist=nil,math.huge
+                for _,candidate in ipairs(models) do
+                    local eh,er=PHX.farmMobRoot(candidate)
+                    if eh and er and er.Position.Y>=camp.Position.Y-16 then
+                        local d=(er.Position-r.Position).Magnitude
+                        if d<dist then nearest,dist=er,d end
+                    end
+                end
+                if nearest then
+                    reacquires+=1
+                    local newAnchor=CFrame.new(nearest.Position)
+                    local newHover=CFrame.new(nearest.Position+Vector3.new(0,11,0))
+                    logLine("SCRAP_NET_REACQUIRE",string.format("try=%d | naturalTargetDist=%.1f | stop-hover and tween",reacquires,dist))
+                    PHX.stopFarmHover()
+                    if not safeTween(newHover,340,token) or not PHX.maintainFarmHover(newHover) then
+                        logLine("SCRAP_NET_REACQUIRE","FAILED_TWEEN_OR_HOVER")
+                        return false
+                    end
+                    mobAnchor,playerHover=newAnchor,newHover
+                else
+                    logLine("SCRAP_NET_REACQUIRE","NO_TARGET_ABOVE_GROUND | possible NPC fall/stream-out")
+                end
+                zeroTargetsSince=nil
+            end
+            -- Use shared NET dispatcher; do not infer hit from FireServer.
             local tool=equipTooltip("Melee")
             local hitOk=false
             if tool and tool.Parent==char() then
                 if #attackTargets>0 then hitOk=PHX.killAuraDispatch(attackTargets,"NET") end
                 if hitOk then sent+=1 end
             end
-            local hp=observedHealth(models)
-            if lastHP and hp<lastHP-.2 then
+            local hpDelta,hp=PHX.waveHpDelta(models,hpPrevious)
+            if hpDelta>.2 then
                 damageAt=now
                 PHX.FarmCombatDebug.LastDamageAt=now
             end
-            lastHP=hp
+            PHX.netHitFeedback(hpDelta,now-damageAt,#attackTargets)
             -- NET dispatch sends RegisterAttack/RegisterHit; do not send
             -- a second attack that would duplicate remote requests.
             if (not hitOk or now-damageAt>=CONFIG.FARM_COMBAT.DamageTimeout)
@@ -4222,7 +4516,7 @@ function PHX.farmFixedScrapWave(camp,token,completed)
                 lastFallback=now
             end
             if now-lastDiag>=2.5 then
-                logLine("SCRAP_GOLEM_NET",string.format("LOOP | localNear=%d/%d moved=%d owned=%d netTargets=%d playerY=%.1f mobY=%.1f hp=%.0f sinceDamage=%.1f sent=%d attackOK=%s",near,#models,brought,owned,#attackTargets,r.Position.Y,mobAnchor.Position.Y,hp,now-damageAt,sent,tostring(hitOk)))
+                logLine("SCRAP_GOLEM_NET",string.format("LOOP | localNear=%d/%d moved=%d owned=%d skippedOwnership=%d netTargets=%d playerY=%.1f mobY=%.1f hp=%.0f sinceDamage=%.1f sent=%d attackOK=%s netReason=%s",near,#models,brought,owned,PHX.FarmCombatDebug.BringSkippedNotOwned or 0,#attackTargets,r.Position.Y,mobAnchor.Position.Y,hp,now-damageAt,sent,tostring(hitOk),tostring(PHX.KillAura.LastMessage)))
                 lastDiag=now
             end
             if now-damageAt>=CONFIG.FARM_COMBAT.RecoveryTimeout and now-lastStall>=3 then
@@ -4244,8 +4538,10 @@ end
 PHX.QuestFarmOriginalParts=setmetatable({}, {__mode="k"})
 PHX.QuestFarmOriginalHumanoids=setmetatable({}, {__mode="k"})
 PHX.QuestFarmLastBring=setmetatable({}, {__mode="k"})
+PHX.QuestBringHolds=setmetatable({}, {__mode="k"})
 
 function PHX.restoreQuestFarmBring()
+    PHX.releaseFarmNpcHolds(PHX.QuestBringHolds)
     for part,prior in pairs(PHX.QuestFarmOriginalParts) do
         if part and part.Parent then
             pcall(function()
@@ -4292,7 +4588,10 @@ function PHX.bringQuestMobCluster(models,anchor)
         local slot=CFrame.new(anchor.Position+offset)
         local owned=networkOwned(mr)
         if owned==false then unowned+=1 elseif owned==nil then unknown+=1 end
-        if CONFIG.FARM_COMBAT.QuestBringEnabled~=false and owned~=false then
+        -- Unknown ownership is allowed only for very nearby NPCs; false is never movable.
+        local canMove=(owned==true or (owned==nil and (mr.Position-rr.Position).Magnitude
+            <=(tonumber(CONFIG.FARM_COMBAT.UnknownOwnerPickupRadius) or 95)))
+        if CONFIG.FARM_COMBAT.QuestBringEnabled~=false and canMove and not mr.Anchored then
             if not PHX.QuestFarmOriginalParts[mr] then
                 PHX.QuestFarmOriginalParts[mr]={Size=mr.Size,CanCollide=mr.CanCollide}
             end
@@ -4300,9 +4599,10 @@ function PHX.bringQuestMobCluster(models,anchor)
                 PHX.QuestFarmOriginalHumanoids[h]={WalkSpeed=h.WalkSpeed,JumpPower=h.JumpPower,AutoRotate=h.AutoRotate}
             end
             pcall(function()
-                local size=CONFIG.FARM_COMBAT.QuestHitboxSize
+                -- Do not disable ground collision on the enlarged root.
+                local size=math.min(tonumber(CONFIG.FARM_COMBAT.QuestHitboxSize) or 3,3)
                 mr.Size=Vector3.new(size,size,size)
-                mr.CanCollide=false
+                mr.CanCollide=true
                 h.WalkSpeed=0
                 h.JumpPower=0
                 h.AutoRotate=false
@@ -4318,10 +4618,15 @@ function PHX.bringQuestMobCluster(models,anchor)
                 end)
                 if ok then moved+=1 end
             end
+            pcall(PHX.holdFarmNpc,mr,slot.Position,PHX.QuestBringHolds,"PH_QuestGroundSupport")
+        else
+            local prior=PHX.QuestBringHolds[mr]
+            if prior then pcall(function() prior:Destroy() end);PHX.QuestBringHolds[mr]=nil end
         end
         local distance=(mr.Position-rr.Position).Magnitude
         if (mr.Position-slot.Position).Magnitude<=8 then near+=1 end
-        if distance<=CONFIG.FARM_COMBAT.QuestAttackRange then
+        if distance<=math.min(CONFIG.FARM_COMBAT.QuestAttackRange,
+            tonumber(CONFIG.KILL_AURA.NetRange) or 35) then
             targets[#targets+1]=mob
         end
     end
@@ -4366,7 +4671,7 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
         local previousHP=setmetatable({}, {__mode="k"})
         local damageAt=os.clock()
         local lastDiag,lastFallback,lastBoost=0,0,0
-        local sends=0
+        local sends,zeroTargetsSince,reacquires=0,nil,0
         logLine("QUEST_NET",string.format("START %s | fixedY=%.1f mobY=%.1f | legacyBring=%s",name,hover.Position.Y,anchor.Position.Y,tostring(CONFIG.FARM_COMBAT.QuestBringEnabled)))
         while isRunning(token) and CHARACTER_EPOCH==epoch and os.clock()<deadline do
             if completed and completed() then return true end
@@ -4394,20 +4699,41 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
             local now=os.clock()
             if now-lastBoost>=3 then farmV19BoostSim();lastBoost=now end
             local moved,near,unowned,unknown,targets=PHX.bringQuestMobCluster(localModels,anchor)
+            if #targets>0 then zeroTargetsSince=nil else zeroTargetsSince=zeroTargetsSince or now end
+            if zeroTargetsSince and now-zeroTargetsSince>=2.2 and reacquires<2 then
+                local nearest,dist=nil,math.huge
+                for _,candidate in ipairs(localModels) do
+                    local _,er=PHX.farmMobRoot(candidate)
+                    if er and er.Position.Y>=camp.Position.Y-30 then
+                        local d=(er.Position-rr.Position).Magnitude
+                        if d<dist then nearest,dist=er,d end
+                    end
+                end
+                if nearest then
+                    reacquires+=1
+                    local newAnchor=CFrame.new(nearest.Position)
+                    local newHover=CFrame.new(nearest.Position+Vector3.new(0,11,0))
+                    logLine("QUEST_NET_REACQUIRE",string.format("%s | try=%d | naturalTargetDist=%.1f",name,reacquires,dist))
+                    PHX.stopFarmHover()
+                    if not safeTween(newHover,340,token) or not PHX.maintainFarmHover(newHover) then
+                        logLine("QUEST_NET_REACQUIRE",name.." | FAILED_TWEEN_OR_HOVER")
+                        return false
+                    end
+                    anchor,hover=newAnchor,newHover
+                else
+                    logLine("QUEST_NET_REACQUIRE",name.." | NO_GROUND_LEVEL_TARGET")
+                end
+                zeroTargetsSince=nil
+            end
             tool=equipTooltip("Melee") or tool
             local attackOK=false
             if tool and tool.Parent==char() and #targets>0 then
                 attackOK=PHX.killAuraDispatch(targets,"NET")
                 if attackOK then sends+=1 end
             end
-            for _,mob in ipairs(localModels) do
-                local mh=mob:FindFirstChildOfClass("Humanoid")
-                if mh then
-                    local oldHP=previousHP[mob]
-                    if oldHP and mh.Health<oldHP-.2 then damageAt=now end
-                    previousHP[mob]=mh.Health
-                end
-            end
+            local hpDelta=PHX.waveHpDelta(localModels,previousHP)
+            if hpDelta>.2 then damageAt=now end
+            PHX.netHitFeedback(hpDelta,now-damageAt,#targets)
             -- NET dispatcher sends the attack pair; never send native M1.
             if (not attackOK or now-damageAt>=CONFIG.FARM_COMBAT.DamageTimeout)
                 and now-lastFallback>=2 then
@@ -4418,7 +4744,7 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
                 lastFallback=now
             end
             if now-lastDiag>=2.5 then
-                logLine("QUEST_NET",string.format("%s | near=%d/%d moved=%d unowned=%d unknown=%d targets=%d hoverY=%.1f hpAge=%.1f sends=%d",name,near,#localModels,moved,unowned,unknown,#targets,rr.Position.Y,now-damageAt,sends))
+                logLine("QUEST_NET",string.format("%s | near=%d/%d moved=%d unowned=%d unknown=%d targets=%d hoverY=%.1f hpAge=%.1f sends=%d",name,near,#localModels,moved,unowned,unknown,#targets,rr.Position.Y,now-damageAt,sends).." | netReason="..tostring(PHX.KillAura.LastMessage))
                 lastDiag=now
             end
             task.wait(CONFIG.MELEE_ATTACK_INTERVAL)
@@ -4429,6 +4755,961 @@ function PHX.farmStableQuestWave(name,camp,token,completed)
     PHX.restoreQuestFarmBring()
     if not ok then logLine("QUEST_NET_ERROR",tostring(result));return false end
     return result==true
+end
+
+-- V2.17.28: SHORT BRING ONCE -> M1 -> NEXT PACK. NO continuous re-PivotTo loop.
+-- Preserve the V2.17.26 NET attack dispatcher and V2.17.27 smoothTween routing.
+-- IMPORTANT: client PivotTo is not evidence of server-authoritative NPC relocation.
+function PHX.farmAdaptiveMobWave(name,camp,token,completed)
+    if not camp or not isRunning(token) then return false end
+    local epoch=CHARACTER_EPOCH
+    local isForest=name=="Forest Pirate"
+    local label=isForest and "SCRAP_ROUTE_V28" or "QUEST_ROUTE_V28"
+    local height=13 -- within NET radius 35, below is the NPC pack position
+    local radius=math.min(100,math.max(20,tonumber(CONFIG.FARM_COMBAT.ShortBringRadius) or 80))
+    local unknownRadius=math.min(radius,math.max(10,tonumber(CONFIG.FARM_COMBAT.ShortBringUnknownOwnerRadius) or 48))
+    local netRange=math.min(35,tonumber(CONFIG.KILL_AURA.NetRange) or 35)
+    local stall=math.max(2.5,tonumber(CONFIG.FARM_COMBAT.ShortPackStallSeconds) or 4.5)
+    local maxPack=math.max(stall+2,tonumber(CONFIG.FARM_COMBAT.ShortPackMaxSeconds) or 19)
+    local maxWave=math.max(60,tonumber(CONFIG.FARM_COMBAT.MaxWaveSeconds) or 20)
+    local waveDeadline=0
+    local recent=setmetatable({}, {__mode="k"})
+    local hpState=setmetatable({}, {__mode="k"})
+    local pack=nil
+    local focus,hoverTarget=nil,nil
+    local totalSends,totalHops,totalMoved,totalDamage=0,0,0,0
+    local moveFailures,lastDiag,lastBoost=0,0,0
+
+    local function restorePack()
+        if not pack then return end
+        -- Restore movement once we leave the pack. Preserve ALL NPC collisions.
+        for humanoid,original in pairs(pack.Frozen or {}) do
+            if humanoid and humanoid.Parent then
+                pcall(function()
+                    humanoid.WalkSpeed=original.WalkSpeed
+                    humanoid.JumpPower=original.JumpPower
+                    humanoid.AutoRotate=original.AutoRotate
+                end)
+            end
+        end
+        pack=nil
+    end
+    local function cleanup()
+        restorePack()
+        if PHX.stopFarmHover then PHX.stopFarmHover() end
+        -- Cleanup any older worker holds; these are NOT used by short Bring.
+        if isForest then PHX.restoreForestGolemBring()
+        else PHX.restoreQuestFarmBring() end
+    end
+    local function collect()
+        return PHX.farmMobsNamed(name,camp.Position,CONFIG.FOREST_SCAN_RADIUS)
+    end
+    local function choose(models,avoidPack)
+        local rr=root()
+        local from=rr and rr.Position or camp.Position
+        local now=os.clock()
+        local best,bestScore=nil,math.huge
+        for _,mob in ipairs(models) do
+            local h,mr=PHX.farmMobRoot(mob)
+            if h and mr and mr.Position.Y>=camp.Position.Y-28 then
+                local recently=now-(recent[mob] or -math.huge)
+                local penalty=(recently<8 and (8-recently)*75 or 0)
+                if avoidPack and avoidPack.MemberSet[mob] then penalty+=650 end
+                local score=(mr.Position-from).Magnitude+penalty
+                if score<bestScore then best,bestScore=mob,score end
+            end
+        end
+        return best
+    end
+    local function makePack(nextMob,reason,models)
+        local h,mr=PHX.farmMobRoot(nextMob)
+        local rr=root()
+        if not h or not mr or not rr then return false end
+        restorePack()
+        if PHX.stopFarmHover then PHX.stopFarmHover() end
+        local anchor=mr.Position
+        local nextHover=CFrame.new(anchor+Vector3.new(0,height,0))
+        if (rr.Position-nextHover.Position).Magnitude>3 then
+            if not safeTween(nextHover,380,token,true) then
+                logLine(label,"TWEEN_FAILED | target="..tostring(nextMob.Name).." reason="..tostring(reason))
+                return false
+            end
+        end
+        if not PHX.maintainFarmHover or not PHX.maintainFarmHover(nextHover) then
+            logLine(label,"HOVER_FAILED | target="..tostring(nextMob.Name))
+            return false
+        end
+        local actualRoot=root()
+        if not actualRoot or (actualRoot.Position-nextHover.Position).Magnitude>8 then
+            logLine(label,"HOVER_TOO_FAR | cannot bring until player has arrived")
+            return false
+        end
+        focus=nextMob
+        hoverTarget=nextHover
+        totalHops+=1
+        local now=os.clock()
+        local current={Anchor=anchor,MemberSet={},Members={},Frozen=setmetatable({}, {__mode="k"}),
+            Started=now,LastDamageAt=now,StartedAttackAt=now,Sent=0,MoveCount=0,
+            Owned=0,Unknown=0,NotOwned=0,TooFar=0,Attempted=0,Reason=reason}
+        pack=current
+        local choices={}
+        -- Close to the PLAYER (not the distant camp spawn).
+        -- Keep mobs from similar ground level; never move a mob through an elevated platform.
+        for _,mob in ipairs(models or {}) do
+            local mh,mp=PHX.farmMobRoot(mob)
+            if mh and mp and math.abs(mp.Position.Y-anchor.Y)<=10 then
+                local d=(mp.Position-actualRoot.Position).Magnitude
+                if d<=radius then
+                    choices[#choices+1]={Mob=mob,Humanoid=mh,Root=mp,Distance=d}
+                end
+            end
+        end
+        table.sort(choices,function(a,b) return a.Distance<b.Distance end)
+        for i,entry in ipairs(choices) do
+            local mob,mh,mp=entry.Mob,entry.Humanoid,entry.Root
+            current.MemberSet[mob]=true
+            current.Members[#current.Members+1]=mob
+            current.Attempted+=1
+            local ownership=networkOwned(mp)
+            if ownership==true then current.Owned+=1
+            elseif ownership==false then current.NotOwned+=1
+            else current.Unknown+=1 end
+            local canMove=not mp.Anchored and (ownership==true or (ownership==nil and entry.Distance<=unknownRadius))
+            local allowed=isForest or CONFIG.FARM_COMBAT.QuestBringEnabled~=false
+            if allowed and canMove then
+                -- Bring ONCE, horizontally to a small ring directly underneath the player.
+                -- Never change CanCollide or resize any NPC body parts.
+                local angle=(i-1)*2*math.pi/math.max(#choices,1)
+                local offset=Vector3.new(math.cos(angle),0,math.sin(angle)) * (i==1 and 0 or 2.5)
+                local target=Vector3.new(anchor.X+offset.X,mp.Position.Y,anchor.Z+offset.Z)
+                if (mp.Position-target).Magnitude>2.5 then
+                    local ok=pcall(function()
+                        mob:PivotTo(mob:GetPivot() + (target-mp.Position))
+                        mp.AssemblyLinearVelocity=Vector3.zero
+                        mp.AssemblyAngularVelocity=Vector3.zero
+                    end)
+                    if ok then current.MoveCount+=1;totalMoved+=1 end
+                end
+                -- Stop NPC walking while player M1s. No BodyPosition and no re-PivotTo.
+                if not current.Frozen[mh] then
+                    current.Frozen[mh]={WalkSpeed=mh.WalkSpeed,JumpPower=mh.JumpPower,AutoRotate=mh.AutoRotate}
+                    pcall(function() mh.WalkSpeed=0;mh.JumpPower=0;mh.AutoRotate=false end)
+                end
+            elseif not allowed then
+                current.TooFar+=1
+            end
+        end
+        if not current.MemberSet[nextMob] then
+            current.Members[#current.Members+1]=nextMob
+            current.MemberSet[nextMob]=true
+        end
+        for _,mob in ipairs(current.Members) do recent[mob]=now end
+        logLine(label,string.format("BRING_ONCE | hop=%d reason=%s radius=%.0f attempted=%d moved=%d owned=%d unknown=%d blocked=%d pack=%d netRange=%.0f collision=UNCHANGED",
+            totalHops,tostring(reason),radius,current.Attempted,current.MoveCount,current.Owned,current.Unknown,current.NotOwned,#current.Members,netRange))
+        return true
+    end
+    local function livePackMembers()
+        local n=0
+        if pack then for _,mob in ipairs(pack.Members) do
+            if PHX.farmMobRoot(mob) then n+=1 end
+        end end
+        return n
+    end
+    local function attackTargets(models)
+        local rr=root()
+        local out={}
+        if not rr then return out end
+        for _,mob in ipairs(models or {}) do
+            local h,mr=PHX.farmMobRoot(mob)
+            if h and mr and (mr.Position-rr.Position).Magnitude<=netRange then
+                out[#out+1]=mob
+            end
+        end
+        return out
+    end
+    local ok,finished=pcall(function()
+        if not highTween(camp*CFrame.new(0,24,0),340,token) then return false end
+        local models={}
+        local spawnUntil=os.clock()+4
+        repeat
+            if not isRunning(token) or CHARACTER_EPOCH~=epoch then return false end
+            if completed and completed() then return true end
+            models=collect()
+            if #models>0 then break end
+            task.wait(.2)
+        until os.clock()>=spawnUntil
+        if #models==0 then logLine(label,"NO_MOBS");return false end
+        if not equipTooltip("Melee") then logLine(label,"NO_MELEE");return false end
+        farmV19BoostSim()
+        logLine(label,string.format("START | name=%s mobs=%d bringOnceRadius=%.0f NET=V2.17.26",name,#models,radius))
+        waveDeadline=os.clock()+maxWave
+        while isRunning(token) and CHARACTER_EPOCH==epoch and os.clock()<waveDeadline do
+            if completed and completed() then return true end
+            local ah,rr=hum(),root()
+            if not ah or ah.Health<=0 or ah.SeatPart or not rr then return false end
+            models=collect()
+            if #models==0 then return true end
+            local now=os.clock()
+            if now-lastBoost>=3 then farmV19BoostSim();lastBoost=now end
+            local count=livePackMembers()
+            local targets=attackTargets(models)
+            local reason=nil
+            if not pack then reason="FIRST_PACK"
+            elseif count==0 then reason="PACK_CLEARED"
+            elseif now-pack.Started>=maxPack then reason="PACK_TIMEOUT"
+            elseif now-pack.LastDamageAt>=stall and now-pack.Started>=stall then reason="NO_HP_PROGRESS"
+            elseif #targets==0 and now-pack.Started>=1.0 then reason="NO_NET_TARGETS"
+            end
+            if reason then
+                local old=pack
+                local nextMob=choose(models,old)
+                if not nextMob then
+                    logLine(label,"NO_REACHABLE_MOBS | visible="..#models)
+                    return false
+                end
+                if not makePack(nextMob,reason,models) then
+                    moveFailures+=1
+                    recent[nextMob]=now
+                    if moveFailures>=4 then logLine(label,"MOVE_FAILURE_LIMIT");return false end
+                    task.wait(.15)
+                    continue
+                end
+                moveFailures=0
+                targets=attackTargets(models)
+            end
+            local weapon=equipTooltip("Melee")
+            local didSend=false
+            if weapon and weapon.Parent==char() and #targets>0 then
+                didSend=PHX.killAuraDispatch(targets,"NET")
+                if didSend then
+                    totalSends+=1
+                    if pack then pack.Sent+=1 end
+                end
+            end
+            local delta=PHX.waveHpDelta(models,hpState)
+            if delta>.2 then
+                totalDamage+=delta
+                if pack then pack.LastDamageAt=os.clock() end
+                PHX.FarmCombatDebug.LastDamageAt=os.clock()
+            end
+            local hpAge=pack and (os.clock()-pack.LastDamageAt) or 0
+            PHX.netHitFeedback(delta,hpAge,#targets)
+            if now-lastDiag>=2.4 then
+                logLine(label,string.format("PACK_M1 | alive=%d inPack=%d netTargets=%d packMoved=%d sent=%d hops=%d hpDamage=%.0f hpAge=%.1f focus=%s net=%s",
+                    #models,livePackMembers(),#targets,pack and pack.MoveCount or 0,totalSends,totalHops,totalDamage,hpAge,
+                    tostring(focus and focus.Name),tostring(PHX.KillAura.LastMessage)))
+                lastDiag=now
+            end
+            -- No bring calls here. Every combat tick is M1-only until pack ends.
+            task.wait(isForest and CONFIG.GOLEM_AURA.ATTACK_INTERVAL or CONFIG.MELEE_ATTACK_INTERVAL)
+        end
+        logLine(label,string.format("WAVE_END | hops=%d netSent=%d bringMoves=%d verifiedHpDecrease=%.0f",totalHops,totalSends,totalMoved,totalDamage))
+        return false
+    end)
+    cleanup()
+    if not ok then logLine(label.."_ERROR",tostring(finished));return false end
+    return finished==true
+end
+
+-- V2.17.32 material-only combat: uploaded V1.2 XZ rebring + OriginalY+5 + NET M1.
+-- No calls to the shared Golem dispatcher/hover; no Prehistoric changes.
+-- MATERIAL FARM CORE BEGIN
+function PHX.newMaterialCombatWave(name,camp,token)
+    if name~="Forest Pirate" and name~="Hydra Enforcer" and name~="Venomous Assailant" then return nil end
+    local Config={Interval=.11,EquipWait=.10,Radius=60,Segment=48,TargetEps=3,
+        TweenDeadline=120,ApproachSpeed=340,HoverSpeed=360,SpawnWait=5,SpawnInterval=.20,
+        InitialRadius=1800,ScanRadius=2200,WaveSeconds=18,Hitbox=90,AnchorHeight=5,HoverGap=18,RebringDistance=40,BringYOffset=5}
+    local S={Players=Players,ReplicatedStorage=ReplicatedStorage,Workspace=workspace,
+        TweenService=TweenService,RunService=RunService}
+    local State={Alive=true,Generation=1,Camp=camp,Phase="APPROACH",Message="STARTING",
+        ActiveTween=nil,TweenConnection=nil,NoclipConnection=nil,Hover=nil,NpcBackup={},CharacterBackup={},
+        Hp=setmetatable({}, {__mode="k"}),NetRequests=0,AttackRequests=0,ObservedDamage=0,
+        TargetCount=0,NearCount=0,LocalStacked=0,OwnedTrue=0,OwnedFalse=0,OwnershipUnknown=0,
+        BringErrors=0,TweenSegments=0,SimulationBoost="NOT_ATTEMPTED",LastError=nil,KeepHover=false,Context=nil,
+        BringTracked=setmetatable({}, {__mode="k"}),Brought=0,RebringCount=0,BringMoves=0,
+        LastBringReason=nil,LastBringHorizontalDistance=nil,BodyColliders=0}
+    local K={}
+function K.Alive()
+    return State.Alive and PHX.MaterialCombat.Current==K
+        and (not PHX.generationAlive or PHX.generationAlive())
+end
+function K.Actor()
+    local c=LP.Character
+    local h=c and c:FindFirstChildOfClass("Humanoid")
+    local r=c and c:FindFirstChild("HumanoidRootPart")
+    if not c or not h or not r or not r:IsA("BasePart") then return nil,"CHARACTER_NOT_READY" end
+    if h.Health<=0 then return nil,"CHARACTER_DEAD" end
+    if h.SeatPart then return nil,"LEAVE_SEAT_TO_TEST" end
+    return {Character=c,Humanoid=h,Root=r,Generation=State.Generation,Epoch=CHARACTER_EPOCH,Token=token}
+end
+function K.ContextValid(context,tool)
+    if not context or not K.Alive() or context.Generation~=State.Generation
+        or context.Epoch~=CHARACTER_EPOCH or context.Token~=token or not isRunning(token) then return false end
+    local runtime=PHX.Runtime
+    if (PHX.isMovementLocked and PHX.isMovementLocked()) or (runtime and runtime.MovementLockLease)
+        or PHX.InventoryBusy or (runtime and (runtime.FruitGuiBusy or runtime.InteractionHold))
+        or (PHX.FruitAutoState and PHX.FruitAutoState.Busy)
+        or (DRAGON_GUARD_STATE and (DRAGON_GUARD_STATE.Busy or DRAGON_GUARD_STATE.Critical or DRAGON_GUARD_STATE.Pending)) then
+        return false
+    end
+    local current=K.Actor()
+    return current and current.Character==context.Character and current.Humanoid==context.Humanoid
+        and current.Root==context.Root and (not tool or (tool.Parent==current.Character and tool.Enabled~=false and K.IsMelee(tool))) or false
+end
+function K.NormalName(name)
+    return string.lower(tostring(name or "")):gsub("<.->",""):gsub("%s+"," "):gsub("^%s+",""):gsub("%s+$","")
+end
+function K.Matches(model)
+    return K.NormalName(model.Name):find(K.NormalName(name),1,true)~=nil
+end
+function K.IsMelee(tool)
+    if not tool or not tool:IsA("Tool") or tostring(tool.ToolTip or "")~="Melee" then return false end
+    return not string.lower(tostring(tool.Name or "")):find("fruit",1,true) and not tool:FindFirstChild("EatRemote",true)
+end
+function K.Equip(context)
+    if not K.ContextValid(context) then return nil,"CONTEXT_CHANGED" end
+    for _,tool in ipairs(context.Character:GetChildren()) do
+        if K.IsMelee(tool) then return K.ContextValid(context,tool) and tool or nil,"MELEE_DISABLED" end
+    end
+    local backpack=LP:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _,tool in ipairs(backpack:GetChildren()) do
+            if K.IsMelee(tool) then
+                local ok=pcall(function() context.Humanoid:EquipTool(tool) end)
+                if not ok then return nil,"EQUIP_FAILED" end
+                task.wait(Config.EquipWait)
+                if not K.ContextValid(context,tool) then return nil,"EQUIP_NOT_CONFIRMED" end
+                return tool,"MELEE_EQUIPPED"
+            end
+        end
+    end
+    return nil,"MELEE_NOT_FOUND"
+end
+function K.Npc(model,context,radius,center)
+    local folder=S.Workspace:FindFirstChild("Enemies")
+    if not context or not folder or not model or model.Parent~=folder or not model:IsA("Model") then return nil end
+    if S.Players:GetPlayerFromCharacter(model) or not K.Matches(model) then return nil end
+    local h=model:FindFirstChildOfClass("Humanoid")
+    local r=model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
+    if not h or h.Health<=0 or not r or not r:IsA("BasePart") then return nil end
+    local distance=(r.Position-(center or context.Root.Position)).Magnitude
+    if distance>(radius or Config.Radius) then return nil end
+    return {Model=model,Humanoid=h,Part=r,Distance=distance}
+end
+function K.Gather(context,radius,center)
+    local targets={}
+    local folder=S.Workspace:FindFirstChild("Enemies")
+    if folder then
+        for _,model in ipairs(folder:GetChildren()) do
+            local npc=K.Npc(model,context,radius,center)
+            if npc then targets[#targets+1]=npc end
+        end
+    end
+    table.sort(targets,function(a,b) return a.Distance<b.Distance end)
+    return targets
+end
+function K.ObserveDamage(targets)
+    for model,record in pairs(State.Hp) do
+        local h=record.Humanoid
+        if model.Parent and h.Parent==model then
+            local health=math.max(0,h.Health)
+            if health<record.Health then State.ObservedDamage+=record.Health-health;State.LastDamageAt=os.clock() end
+            record.Health=health
+        end
+        if not model.Parent or h.Parent~=model or h.Health<=0 then State.Hp[model]=nil end
+    end
+    for _,npc in ipairs(targets) do
+        local old=State.Hp[npc.Model]
+        if not old or old.Humanoid~=npc.Humanoid then
+            State.Hp[npc.Model]={Humanoid=npc.Humanoid,Health=npc.Humanoid.Health}
+        end
+    end
+end
+function K.Backup(bucket,owner,object,properties)
+    local record=bucket[object]
+    if not record then record={Owner=owner,Values={}};bucket[object]=record end
+    for _,property in ipairs(properties) do
+        if record.Values[property]==nil then
+            local ok,value=pcall(function() return object[property] end)
+            if ok then record.Values[property]=value end
+        end
+    end
+end
+function K.RestoreBucket(bucket)
+    for object,record in pairs(bucket) do
+        pcall(function()
+            if object.Parent and (object.Parent==record.Owner or object:IsDescendantOf(record.Owner)) then
+                for property,value in pairs(record.Values) do pcall(function()
+                    if bucket==State.NpcBackup and property=="AssemblyLinearVelocity" then
+                        -- Only horizontal velocity was changed; leave current gravity/ground motion intact.
+                        object[property]=Vector3.new(value.X,object[property].Y,value.Z)
+                    else object[property]=value end
+                end) end
+            end
+        end)
+    end
+    table.clear(bucket)
+end
+
+function K.RestoreNpcOwner(owner)
+    for object,record in pairs(State.NpcBackup) do
+        if record.Owner==owner then
+            pcall(function()
+                if object.Parent and (object.Parent==owner or object:IsDescendantOf(owner)) then
+                    for property,value in pairs(record.Values) do pcall(function()
+                        if property=="AssemblyLinearVelocity" then
+                            object[property]=Vector3.new(value.X,object[property].Y,value.Z)
+                        else object[property]=value end
+                    end) end
+                end
+            end)
+            State.NpcBackup[object]=nil
+        end
+    end
+    State.BringTracked[owner]=nil
+end
+
+function K.PruneNpcBackups()
+    local folder=S.Workspace:FindFirstChild("Enemies")
+    local retired={}
+    for model,record in pairs(State.BringTracked) do
+        if not folder or model.Parent~=folder or record.Humanoid.Parent~=model or record.Part.Parent~=model
+            or record.Humanoid.Health<=0 then retired[#retired+1]=model end
+    end
+    for _,model in ipairs(retired) do K.RestoreNpcOwner(model) end
+end
+function K.TrackConnection(connection)
+    local runtime=PHX.Runtime
+    if runtime then
+        if runtime.Connections then runtime.Connections[connection]=true end
+        if runtime.MovementConnections then runtime.MovementConnections[connection]=true end
+    end
+    return connection
+end
+function K.Disconnect(connection)
+    if not connection then return end
+    pcall(function() connection:Disconnect() end)
+    local runtime=PHX.Runtime
+    if runtime then
+        if runtime.Connections then runtime.Connections[connection]=nil end
+        if runtime.MovementConnections then runtime.MovementConnections[connection]=nil end
+    end
+end
+function K.TrackObject(object)
+    if PHX.Runtime and PHX.Runtime.MovementObjects then PHX.Runtime.MovementObjects[object]=true end
+    return object
+end
+function K.DestroyObject(object)
+    pcall(function() object:Destroy() end)
+    if PHX.Runtime and PHX.Runtime.MovementObjects then PHX.Runtime.MovementObjects[object]=nil end
+end
+function K.RestoreCharacter()
+    if State.NoclipConnection then K.Disconnect(State.NoclipConnection);State.NoclipConnection=nil end
+    K.RestoreBucket(State.CharacterBackup)
+end
+function K.StopHover()
+    local hover=State.Hover;State.Hover=nil
+    if not hover then return end
+    if hover.Connection then K.Disconnect(hover.Connection) end
+    for _,object in ipairs(hover.Objects) do K.DestroyObject(object) end
+    -- Restore only the original humanoid; never apply old values to a respawn.
+    if hover.Humanoid.Parent==hover.Character then
+        pcall(function() hover.Humanoid.AutoRotate=hover.AutoRotate end)
+    end
+end
+function K.Restore()
+    K.StopHover()
+    local tween=State.ActiveTween;State.ActiveTween=nil
+    if tween then pcall(function() tween:Cancel() end);if PHX.Runtime and PHX.Runtime.Tweens then PHX.Runtime.Tweens[tween]=nil end end
+    if State.TweenConnection then K.Disconnect(State.TweenConnection);State.TweenConnection=nil end
+    K.RestoreCharacter();K.RestoreBucket(State.NpcBackup);table.clear(State.BringTracked)
+end
+function K.PrepareCharacter(context)
+    if not K.ContextValid(context) then return false end
+    K.Backup(State.CharacterBackup,context.Character,context.Humanoid,{"AutoRotate"})
+    context.Humanoid.AutoRotate=false
+    for _,part in ipairs(context.Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            K.Backup(State.CharacterBackup,context.Character,part,{"CanCollide"})
+            part.CanCollide=false;part.AssemblyLinearVelocity=Vector3.zero;part.AssemblyAngularVelocity=Vector3.zero
+        end
+    end
+    return true
+end
+function K.Hold(context,cf)
+    if not K.ContextValid(context) then return false end
+    local hover=State.Hover
+    if hover and hover.Root==context.Root and hover.Generation==context.Generation
+        and hover.Position.Parent==context.Root and hover.Attachment.Parent==context.Root then
+        -- Update the force target only when it actually changes. No CFrame reset.
+        if (hover.Frame.Position-cf.Position).Magnitude>.01 then
+            hover.Frame=cf;hover.Position.Position=cf.Position
+        end
+        return true
+    end
+    K.StopHover()
+    hover={Root=context.Root,Humanoid=context.Humanoid,Character=context.Character,
+        Generation=context.Generation,Frame=cf,AutoRotate=context.Humanoid.AutoRotate,Objects={}}
+    State.Hover=hover
+    local ok,err=pcall(function()
+        local attachment=K.TrackObject(Instance.new("Attachment"));hover.Objects[#hover.Objects+1]=attachment
+        attachment.Name="PH_PlayerHoverAttachment";attachment.Parent=context.Root;hover.Attachment=attachment
+        local position=K.TrackObject(Instance.new("AlignPosition"));hover.Objects[#hover.Objects+1]=position
+        position.Name="PH_PlayerHoverPosition";position.Mode=Enum.PositionAlignmentMode.OneAttachment
+        position.Attachment0=attachment;position.Position=cf.Position
+        position.ApplyAtCenterOfMass=true;position.RigidityEnabled=false
+        position.Responsiveness=35;position.MaxVelocity=60
+        local mass=tonumber(context.Root.AssemblyMass) or 10
+        local gravity=tonumber(S.Workspace.Gravity) or 196.2
+        position.MaxForce=math.clamp(mass*math.max(gravity,1)*80,100000,1e9)
+        position.Parent=context.Root;hover.Position=position
+        context.Humanoid.AutoRotate=false
+        context.Root.AssemblyLinearVelocity=Vector3.zero;context.Root.AssemblyAngularVelocity=Vector3.zero
+        hover.Connection=K.TrackConnection(S.RunService.Stepped:Connect(function()
+            if State.Hover~=hover then return end
+            if not K.ContextValid(context) or position.Parent~=context.Root or attachment.Parent~=context.Root then
+                K.Stop("CONTEXT_CHANGED")
+            end
+        end))
+    end)
+    if not ok then K.StopHover();State.LastError=tostring(err);error("HOVER_ERROR: "..tostring(err)) end
+    return K.ContextValid(context)
+end
+function K.BoostSimulation()
+    local available,success=false,false
+    if type(setsimulationradius)=="function" then
+        available=true;success=pcall(setsimulationradius,math.huge,math.huge) or success
+    end
+    if type(sethiddenproperty)=="function" then
+        available=true;success=pcall(sethiddenproperty,LP,"SimulationRadius",math.huge) or success
+    end
+    State.SimulationBoost=success and "API_ACCEPTED_UNVERIFIED" or (available and "API_FAILED" or "API_UNAVAILABLE")
+end
+function K.BringAllowed()
+    return name=="Forest Pirate" or not (type(CONFIG)=="table" and type(CONFIG.FARM_COMBAT)=="table"
+        and CONFIG.FARM_COMBAT.QuestBringEnabled==false)
+end
+function K.SkipBring()
+    K.RestoreBucket(State.NpcBackup)
+    -- Preserve the first-seen Y while the same quest/NPC identity survives OFF/ON.
+    -- Re-enable allows an initial dispatch again, always to the same OriginalY+5.
+    for _,record in pairs(State.BringTracked) do record.InitialAttempted=false;record.Brought=false end
+    State.LocalStacked=0;State.OwnedTrue=0;State.OwnedFalse=0;State.OwnershipUnknown=0;State.BodyColliders=0
+    return true,"QUEST_BRING_OFF"
+end
+function K.HorizontalDistance(a,b)
+    local dx,dz=a.X-b.X,a.Z-b.Z
+    return math.sqrt(dx*dx+dz*dz)
+end
+
+function K.BringIdentityValid(npc)
+    local folder=S.Workspace:FindFirstChild("Enemies")
+    local model=npc.Model
+    local h=model:FindFirstChildOfClass("Humanoid")
+    local r=model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
+    return folder~=nil and model.Parent==folder and h==npc.Humanoid and r==npc.Part
+        and h.Health>0 and K.Matches(model) and not S.Players:GetPlayerFromCharacter(model)
+end
+
+function K.Bring(context,targets,anchor)
+    if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+    if not K.BringAllowed() then return K.SkipBring() end
+    K.PruneNpcBackups()
+    K.BoostSimulation()
+    if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+    if not K.BringAllowed() then return K.SkipBring() end
+    State.LocalStacked=0;State.OwnedTrue=0;State.OwnedFalse=0;State.OwnershipUnknown=0;State.BodyColliders=0
+    for _,target in ipairs(targets) do
+        if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+        local npc=K.Npc(target.Model,context,Config.ScanRadius,State.Camp.Position)
+        if npc then
+            local owned
+            if type(isnetworkowner)=="function" then local ok,value=pcall(isnetworkowner,npc.Part);if ok and type(value)=="boolean" then owned=value end end
+            if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+            if not K.BringAllowed() then return K.SkipBring() end
+            local fresh=K.Npc(target.Model,context,Config.ScanRadius,State.Camp.Position)
+            if not fresh or fresh.Humanoid~=npc.Humanoid or fresh.Part~=npc.Part then continue end
+            if owned==true then State.OwnedTrue+=1 elseif owned==false then State.OwnedFalse+=1 else State.OwnershipUnknown+=1 end
+            local tracked=State.BringTracked[npc.Model]
+            if tracked and (tracked.Humanoid~=npc.Humanoid or tracked.Part~=npc.Part) then
+                K.RestoreNpcOwner(npc.Model);tracked=nil
+            end
+            if not tracked then
+                tracked={Humanoid=npc.Humanoid,Part=npc.Part,Brought=false,InitialAttempted=false,
+                    OriginalY=npc.Part.Position.Y}
+                State.BringTracked[npc.Model]=tracked
+            end
+            local horizontal=K.HorizontalDistance(npc.Part.Position,context.Root.Position)
+            local moveReason=not tracked.InitialAttempted and "INITIAL" or (horizontal>Config.RebringDistance and "TOO_FAR" or nil)
+            local moved=false
+            local ok,err=pcall(function()
+                K.Backup(State.NpcBackup,npc.Model,npc.Humanoid,{"WalkSpeed","JumpPower","JumpHeight","AutoRotate"})
+                K.Backup(State.NpcBackup,npc.Model,npc.Part,{"Size","CanCollide"})
+                local hitbox=Vector3.new(Config.Hitbox,Config.Hitbox,Config.Hitbox)
+                if npc.Part.Size~=hitbox then npc.Part.Size=hitbox end
+                if npc.Part.CanCollide~=false then npc.Part.CanCollide=false end
+                if npc.Humanoid.WalkSpeed~=0 then npc.Humanoid.WalkSpeed=0 end
+                if npc.Humanoid.JumpPower~=0 then npc.Humanoid.JumpPower=0 end
+                if npc.Humanoid.JumpHeight~=0 then npc.Humanoid.JumpHeight=0 end
+                if npc.Humanoid.AutoRotate~=false then npc.Humanoid.AutoRotate=false end
+                if moveReason then
+                    -- Translate the rig in XZ and place its root at ORIGINAL spawn/first-seen Y + 5.
+                    -- tracked.OriginalY never changes during rebrings; no extra +5 on each move.
+                    -- PivotTo(pivot + shift) preserves the NPC's original rotation and rig offsets.
+                    local original=npc.Part.CFrame
+                    local goalY=tracked.OriginalY+Config.BringYOffset
+                    local shift=Vector3.new(anchor.Position.X-original.Position.X,
+                        goalY-original.Position.Y,anchor.Position.Z-original.Position.Z)
+                    local pivot=npc.Model:GetPivot()
+                    if not K.ContextValid(context) then return end
+                    local current=K.Npc(npc.Model,context,Config.ScanRadius,State.Camp.Position)
+                    if not current or current.Humanoid~=npc.Humanoid or current.Part~=npc.Part then
+                        if not K.BringIdentityValid(npc) then K.RestoreNpcOwner(npc.Model) end
+                        return
+                    end
+                    -- Back up only properties that this movement will change. Other body collisions stay intact.
+                    for _,part in ipairs(npc.Model:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            K.Backup(State.NpcBackup,npc.Model,part,{"AssemblyLinearVelocity","AssemblyAngularVelocity"})
+                        end
+                    end
+                    -- An initial dispatch is attempted once even if replication does not retain it.
+                    -- Later attempts require actual horizontal distance > RebringDistance.
+                    tracked.InitialAttempted=true
+                    if not K.BringAllowed() then K.SkipBring();return end
+                    npc.Model:PivotTo(pivot+shift)
+                    if not K.ContextValid(context) then return end
+                    if not K.BringAllowed() then K.SkipBring();return end
+                    current=K.Npc(npc.Model,context,Config.ScanRadius,State.Camp.Position)
+                    if not current or current.Humanoid~=npc.Humanoid or current.Part~=npc.Part then
+                        if not K.BringIdentityValid(npc) then K.RestoreNpcOwner(npc.Model) end
+                        return
+                    end
+                    for _,part in ipairs(npc.Model:GetDescendants()) do
+                        if part:IsA("BasePart") then
+                            local velocity=part.AssemblyLinearVelocity
+                            part.AssemblyLinearVelocity=Vector3.new(0,velocity.Y,0)
+                            part.AssemblyAngularVelocity=Vector3.zero
+                        end
+                    end
+                    if K.HorizontalDistance(npc.Part.Position,anchor.Position)<=3 then
+                        tracked.Brought=true;moved=true
+                    end
+                end
+            end)
+            if not ok then State.BringErrors+=1;State.LastError=tostring(err) end
+            if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+            if not K.BringAllowed() then return K.SkipBring() end
+            if moved then
+                State.BringMoves+=1;State.LastBringReason=moveReason;State.LastBringHorizontalDistance=horizontal
+                if moveReason=="INITIAL" then State.Brought+=1 else State.RebringCount+=1 end
+            end
+            local counted=K.Npc(npc.Model,context,Config.ScanRadius,State.Camp.Position)
+            if counted and counted.Humanoid==npc.Humanoid and counted.Part==npc.Part
+                and K.HorizontalDistance(counted.Part.Position,anchor.Position)<=3 then State.LocalStacked+=1 end
+            if counted and counted.Humanoid==npc.Humanoid and counted.Part==npc.Part then
+                for _,part in ipairs(npc.Model:GetDescendants()) do
+                    if part:IsA("BasePart") and part~=npc.Part and part.CanCollide==true then State.BodyColliders+=1 end
+                end
+            end
+        end
+    end
+    return true,"LOCAL_STACK_REQUESTED"
+end
+function K.Tween(context,target,speed)
+    if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+    K.StopHover() -- travel owns movement; hover never fights an active tween.
+    local deadline=os.clock()+Config.TweenDeadline
+    local ok,reached,reason=pcall(function()
+        K.PrepareCharacter(context)
+        State.NoclipConnection=K.TrackConnection(S.RunService.Stepped:Connect(function()
+            if not K.ContextValid(context) then K.Stop("CONTEXT_CHANGED");return end
+            local prepared,err=pcall(K.PrepareCharacter,context)
+            if not prepared then
+                State.LastError=tostring(err);K.Stop("NOCLIP_ERROR: "..tostring(err))
+            end
+        end))
+        while K.ContextValid(context) do
+            if os.clock()>deadline then return false,"TWEEN_TIMEOUT" end
+            local delta=target.Position-context.Root.Position
+            local distance=delta.Magnitude
+            local settle=distance<=Config.TargetEps
+            local stepDistance=settle and distance or math.min(Config.Segment,distance)
+            local nextCF=settle and target or context.Root.CFrame:Lerp(target,stepDistance/distance)
+            local duration=math.max(stepDistance/speed,settle and .03 or .04)
+            local tween=S.TweenService:Create(context.Root,TweenInfo.new(duration,Enum.EasingStyle.Linear),{CFrame=nextCF})
+            if not K.ContextValid(context) then pcall(function() tween:Cancel() end);return false,"CONTEXT_CHANGED" end
+            State.ActiveTween=tween
+            if PHX.Runtime and PHX.Runtime.Tweens then PHX.Runtime.Tweens[tween]=true end
+            local finished,playbackState=false,nil
+            local connection=K.TrackConnection(tween.Completed:Connect(function(value) finished=true;playbackState=value end))
+            State.TweenConnection=connection
+            tween:Play();State.TweenSegments+=1
+            while not finished do
+                if not K.ContextValid(context) or os.clock()>deadline then
+                    pcall(function() tween:Cancel() end);K.Disconnect(connection)
+                    return false,os.clock()>deadline and "TWEEN_TIMEOUT" or "CONTEXT_CHANGED"
+                end
+                K.PrepareCharacter(context)
+                task.wait(.03)
+            end
+            K.Disconnect(connection);State.TweenConnection=nil;State.ActiveTween=nil
+            if PHX.Runtime and PHX.Runtime.Tweens then PHX.Runtime.Tweens[tween]=nil end
+            if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+            if playbackState~=Enum.PlaybackState.Completed then return false,"TWEEN_CANCELLED" end
+            if settle and (context.Root.Position-target.Position).Magnitude<=Config.TargetEps then return true,"ARRIVED" end
+            task.wait(.015)
+        end
+        return false,"CONTEXT_CHANGED"
+    end)
+    if State.ActiveTween then
+        pcall(function() State.ActiveTween:Cancel() end)
+        if PHX.Runtime and PHX.Runtime.Tweens then PHX.Runtime.Tweens[State.ActiveTween]=nil end
+        State.ActiveTween=nil
+    end
+    if State.TweenConnection then K.Disconnect(State.TweenConnection);State.TweenConnection=nil end
+    K.RestoreCharacter()
+    if not ok then State.LastError=tostring(reached);return false,"TWEEN_ERROR: "..tostring(reached) end
+    return reached==true,reason
+end
+function K.AuraEnabled()
+    return not (type(CONFIG)=="table" and type(CONFIG.KILL_AURA)=="table" and CONFIG.KILL_AURA.Enabled==false)
+end
+function K.Net(context,tool,targets)
+    if not K.ContextValid(context,tool) then return false,"CONTEXT_CHANGED" end
+    if not K.AuraEnabled() then return false,"KILL_AURA_OFF" end
+    local modules=S.ReplicatedStorage:FindFirstChild("Modules")
+    local net=modules and modules:FindFirstChild("Net")
+    local attack=net and net:FindFirstChild("RE/RegisterAttack")
+    local hit=net and net:FindFirstChild("RE/RegisterHit")
+    if not attack or not hit or not attack:IsA("RemoteEvent") or not hit:IsA("RemoteEvent") then return false,"NET_REMOTES_UNAVAILABLE" end
+    local hits,base={},nil
+    for _,target in ipairs(targets) do
+        local npc=K.Npc(target.Model,context)
+        if npc then base=base or npc.Part;hits[#hits+1]={npc.Model,npc.Part} end
+    end
+    State.NearCount=#hits
+    if not base then return false,"NO_LIVE_NEARBY_NPC" end
+    if not K.AuraEnabled() then return false,"KILL_AURA_OFF" end
+    local okA=pcall(function() attack:FireServer(.05) end)
+    if not okA then return false,"REGISTER_ATTACK_FAILED" end
+    State.AttackRequests+=1
+    if not K.ContextValid(context,tool) then return false,"CONTEXT_CHANGED" end
+    if not K.AuraEnabled() then return false,"KILL_AURA_OFF" end
+    hits,base={},nil
+    for _,target in ipairs(targets) do
+        local npc=K.Npc(target.Model,context)
+        if npc then base=base or npc.Part;hits[#hits+1]={npc.Model,npc.Part} end
+    end
+    State.NearCount=#hits
+    if not base then return false,"NO_LIVE_NEARBY_NPC" end
+    if not K.AuraEnabled() then return false,"KILL_AURA_OFF" end
+    local okH=pcall(function() hit:FireServer(base,hits) end)
+    if not K.ContextValid(context,tool) then return false,"CONTEXT_CHANGED" end
+    if okH then State.NetRequests+=1 end
+    return okH,okH and "NET_REQUESTED" or "REGISTER_HIT_FAILED"
+end
+function K.GetStatus()
+    return {Alive=K.Alive(),Preset=name,Phase=State.Phase,Message=State.Message,Radius=Config.Radius,
+        Interval=Config.Interval,Hitbox=Config.Hitbox,HoverMode="ALIGN_POSITION",HoverActive=State.Hover~=nil,KeepHover=State.KeepHover,
+        TargetCount=State.TargetCount,NearCount=State.NearCount,LocalStacked=State.LocalStacked,
+        OwnedTrue=State.OwnedTrue,OwnedFalse=State.OwnedFalse,OwnershipUnknown=State.OwnershipUnknown,
+        NetRequests=State.NetRequests,AttackRequests=State.AttackRequests,ObservedDamage=State.ObservedDamage,
+        LastDamageAt=State.LastDamageAt,TweenSegments=State.TweenSegments,SimulationBoost=State.SimulationBoost,
+        BringErrors=State.BringErrors,LastError=State.LastError,
+        BringMode="XZ_Y_OFFSET_ONCE_DISTANCE_REBRING",RebringDistance=Config.RebringDistance,BringYOffset=Config.BringYOffset,
+        Brought=State.Brought,RebringCount=State.RebringCount,BringMoves=State.BringMoves,
+        LastBringReason=State.LastBringReason,LastBringHorizontalDistance=State.LastBringHorizontalDistance,BodyColliders=State.BodyColliders,
+        Note="Local stack/NET requests do not prove server damage. Observed HP loss may include other attackers."}
+end
+function K.CanReuse(nextName,nextCamp,nextToken)
+    return nextName==name and nextToken==token and nextCamp~=nil
+        and (nextCamp.Position-camp.Position).Magnitude<=.01
+        and State.Context and K.ContextValid(State.Context)
+        and State.Hover and State.Hover.Root==State.Context.Root
+        and State.Hover.Attachment.Parent==State.Context.Root and State.Hover.Position.Parent==State.Context.Root or false
+end
+function K.KeepHover() return State.KeepHover==true end
+function K.Stop(reason)
+    State.Alive=false;State.Generation+=1;State.KeepHover=false;State.Message=reason or "STOPPED"
+    K.Restore()
+end
+function K.Run(completed)
+    State.KeepHover=false
+    local context,why=K.Actor()
+    if not context or not K.ContextValid(context) then State.Message=why or "CONTEXT_CHANGED";return false end
+    State.Context=State.Context or context
+    if not K.ContextValid(State.Context) then State.Message="CONTEXT_CHANGED";K.Restore();return false end
+    local ok,result=pcall(function()
+        if completed and completed() then
+            if not K.ContextValid(context) then return false end
+            State.Message="COMPLETED";return true
+        end
+        if not K.ContextValid(context) then return false end
+        local moved,moveWhy
+        if not State.Hover then
+            State.Message="TWEEN_APPROACH"
+            moved,moveWhy=K.Tween(context,camp*CFrame.new(0,18,0),Config.ApproachSpeed)
+            if not moved then State.Message=moveWhy;return false end
+            if not K.Hold(context,camp*CFrame.new(0,18,0)) then return false end
+        end
+        State.Phase="SPAWN_WAIT";State.Message="WAITING_SPAWN"
+        local targets={}
+        local spawnUntil=os.clock()+Config.SpawnWait
+        repeat
+            if not K.ContextValid(context) then return false end
+            if completed and completed() then
+                if not K.ContextValid(context) then return false end
+                State.Message="COMPLETED";return true
+            end
+            if not K.ContextValid(context) then return false end
+            targets=K.Gather(context,Config.InitialRadius,camp.Position)
+            K.ObserveDamage(targets);State.TargetCount=#targets
+            if #targets>0 then break end
+            task.wait(Config.SpawnInterval)
+        until os.clock()>=spawnUntil
+        if #targets==0 then State.Message="WAITING_SPAWN";State.KeepHover=true;return false end
+        local hover=camp*CFrame.new(0,Config.AnchorHeight+Config.HoverGap,0)
+        State.Message="TWEEN_HOVER"
+        if not State.Hover or (State.Hover.Frame.Position-hover.Position).Magnitude>.01 then
+            moved,moveWhy=K.Tween(context,hover,Config.HoverSpeed)
+            if not moved then State.Message=moveWhy;return false end
+        end
+        if not K.Hold(context,hover) then return false end
+        State.Phase="WAVE";State.Message="WAVE_READY"
+        local deadline=os.clock()+Config.WaveSeconds
+        local lastDiag=0
+        while K.ContextValid(context) and os.clock()<deadline do
+            if completed and completed() then
+                if not K.ContextValid(context) then return false end
+                State.Message="COMPLETED";return true
+            end
+            if not K.ContextValid(context) then return false end
+            targets=K.Gather(context,Config.ScanRadius,camp.Position)
+            K.ObserveDamage(targets);State.TargetCount=#targets
+            if #targets==0 then State.Message="PACK_CLEARED";State.KeepHover=true;return true end
+            local brought,bringWhy=K.Bring(context,targets,camp*CFrame.new(0,Config.AnchorHeight,0))
+            if not brought then State.Message=bringWhy;return false end
+            if not K.Hold(context,hover) then return false end
+            local nearby=K.Gather(context)
+            State.NearCount=#nearby
+            local tool,equipWhy=K.Equip(context)
+            if not tool then State.Message=equipWhy;return false end
+            local sent,sendWhy=K.Net(context,tool,nearby)
+            State.Message=sendWhy
+            if not K.ContextValid(context,tool) then return false end
+            if os.clock()-lastDiag>=2.4 then
+                if type(logLine)=="function" then
+                    logLine("MATERIAL_HOVER_NET",string.format("%s | mobs=%d near=%d stacked=%d hitbox=90 sends=%d observedHP=%.0f hover=ALIGN_POSITION bring=XZ_ONCE_YPLUS5",
+                        name,State.TargetCount,State.NearCount,State.LocalStacked,State.NetRequests,State.ObservedDamage))
+                end
+                lastDiag=os.clock()
+            end
+            task.wait(Config.Interval)
+        end
+        State.Message=K.ContextValid(context) and "WAVE_END" or "CONTEXT_CHANGED"
+        State.KeepHover=K.ContextValid(context)
+        return false
+    end)
+    pcall(K.ObserveDamage,{})
+    if not ok then State.LastError=tostring(result);State.Message="MATERIAL_FARM_ERROR" end
+    if ok and State.KeepHover then
+        -- Check the goal again before retaining hover across the outer farm loop.
+        -- This callback may yield; stale actors/locks never authorize a new tick.
+        local checked,finished=pcall(function() return completed and completed()==true end)
+        if not checked then
+            ok=false;State.LastError=tostring(finished);State.Message="MATERIAL_FARM_ERROR"
+        elseif finished and K.ContextValid(context) then
+            result=true;State.Message="COMPLETED";State.KeepHover=false
+        end
+        State.KeepHover=ok and State.KeepHover and K.ContextValid(context) and State.Hover~=nil or false
+    end
+    if State.KeepHover then K.PruneNpcBackups() else K.Restore() end
+    if not ok and type(logLine)=="function" then logLine("MATERIAL_FARM_ERROR",State.LastError) end
+    return ok and result==true
+end
+    return K
+end
+
+PHX.MaterialCombat={Current=nil,Busy=false,Worker=nil,LastReport={Message="IDLE"}}
+function PHX.MaterialCombat.RunWave(name,camp,token,completed)
+    -- Only material quests; Golem/unknown callers remain outside this controller.
+    if name~="Forest Pirate" and name~="Hydra Enforcer" and name~="Venomous Assailant" then return false end
+    if not camp or not isRunning(token) or PHX.MaterialCombat.Busy then return false end
+    local wave=PHX.MaterialCombat.Current
+    if wave and not wave.CanReuse(name,camp,token) then
+        PHX.MaterialCombat.Stop("MATERIAL_GOAL_CHANGED");wave=nil
+    end
+    if not wave then
+        if PHX.stopFarmHover then pcall(PHX.stopFarmHover) end
+        if name=="Forest Pirate" then
+            if PHX.restoreForestGolemBring then pcall(PHX.restoreForestGolemBring) end
+        elseif PHX.restoreQuestFarmBring then pcall(PHX.restoreQuestFarmBring) end
+        if not isRunning(token) then return false end
+        wave=PHX.newMaterialCombatWave(name,camp,token)
+        PHX.MaterialCombat.Current=wave
+    end
+    PHX.MaterialCombat.Busy=true;PHX.MaterialCombat.Worker=wave
+    local ok,result=pcall(wave.Run,completed)
+    if PHX.MaterialCombat.Current==wave then
+        local message=wave.GetStatus().Message
+        if not ok or not wave.KeepHover() then wave.Stop(message);PHX.MaterialCombat.Current=nil end
+        PHX.MaterialCombat.LastReport=wave.GetStatus()
+    else
+        -- Cancelled old worker cleanup is local to that wave, never a new wave.
+        wave.Stop("SUPERSEDED")
+    end
+    if PHX.MaterialCombat.Worker==wave then PHX.MaterialCombat.Busy=false;PHX.MaterialCombat.Worker=nil end
+    if not ok and type(logLine)=="function" then logLine("MATERIAL_FARM_ERROR",tostring(result)) end
+    return ok and result==true
+end
+function PHX.MaterialCombat.Stop(reason)
+    local wave=PHX.MaterialCombat.Current or PHX.MaterialCombat.Worker
+    if not wave then return end
+    wave.Stop(reason)
+    PHX.MaterialCombat.LastReport=wave.GetStatus()
+    if PHX.MaterialCombat.Current==wave then PHX.MaterialCombat.Current=nil end
+    if PHX.MaterialCombat.Worker==wave then PHX.MaterialCombat.Busy=false;PHX.MaterialCombat.Worker=nil end
+end
+function PHX.MaterialCombat.GetStatus()
+    local wave=PHX.MaterialCombat.Current
+    return wave and wave.GetStatus() or PHX.MaterialCombat.LastReport
+end
+-- MATERIAL FARM CORE END
+
+-- Register only this controller's cleanup. Old movement/Prehistoric function
+-- definitions remain untouched; idle material cleanup has no effects.
+-- MATERIAL FARM LIFECYCLE BEGIN
+do
+    local oldTravel=PHX.restoreTravel
+    PHX.restoreTravel=function(...)
+        if PHX.MaterialCombat.Current or PHX.MaterialCombat.Worker then PHX.MaterialCombat.Stop("RESTORE_TRAVEL") end
+        if oldTravel then return oldTravel(...) end
+    end
+    local oldMovement=PHX.restoreMovement
+    PHX.restoreMovement=function(...)
+        if PHX.MaterialCombat.Current or PHX.MaterialCombat.Worker then PHX.MaterialCombat.Stop("RESTORE_MOVEMENT") end
+        if oldMovement then return oldMovement(...) end
+    end
+    -- A quest receipt can arrive between batches, so collect/drop travel may
+    -- start without another completed callback. Hand off the retained force.
+    local oldTween=safeTween
+    safeTween=function(...)
+        if PHX.MaterialCombat.Current or PHX.MaterialCombat.Worker then PHX.MaterialCombat.Stop("TRAVEL_HANDOFF") end
+        return oldTween(...)
+    end
+    -- A separately executing proven test would otherwise compete with main.
+    local test=ENV.__PH_TWEEN_BRING_FAST_ATTACK
+    if type(test)=="table" and type(test.Stop)=="function" then pcall(test.Stop) end
+end
+-- MATERIAL FARM LIFECYCLE END
+
+-- Replace only the three farm combat loops; quest/boat/volcano/egg logic is unchanged.
+function PHX.farmFixedScrapWave(camp,token,completed)
+    return PHX.MaterialCombat.RunWave("Forest Pirate",camp,token,completed)
+end
+function PHX.farmStableQuestWave(name,camp,token,completed)
+    return PHX.MaterialCombat.RunWave(name,camp,token,completed)
 end
 
 function PHX.farmMobWave(name,camp,token,completed)
@@ -6117,6 +7398,84 @@ local function moveToRelic(island, token)
     return safeTween(target, CONFIG.FOSSIL.SAFE_SPEED, token)
 end
 
+-- V2.17.21: PC + Delta Android: activate the REAL Prehistoric proximity prompt,
+-- not keyboard E / mouse / touchscreen. Tested standalone by the user on 2026-10-11.
+-- This is a prompt dispatch, NOT a verified server RemoteEvent name.
+local function getVolcanoActivationPrompt(island)
+    local core = island and island:FindFirstChild("Core")
+    if not core then return nil,"PREHISTORIC_CORE_MISSING" end
+    local node = core:FindFirstChild("ActivationPrompt")
+    local prompt = node and (node:IsA("ProximityPrompt") and node
+        or node:FindFirstChildWhichIsA("ProximityPrompt",true))
+    if prompt then return prompt,"CORE_ACTIVATION_PROMPT" end
+    local relic = core:FindFirstChild("PrehistoricRelic")
+    prompt = relic and relic:FindFirstChildWhichIsA("ProximityPrompt",true)
+    if prompt then return prompt,"RELIC_FALLBACK_PROMPT" end
+    return nil,"ACTIVATION_PROMPT_NOT_FOUND"
+end
+
+local function volcanoPromptWorldPosition(prompt)
+    local ancestor=prompt and prompt.Parent
+    while ancestor and ancestor ~= workspace do
+        if ancestor:IsA("Attachment") then return ancestor.WorldPosition end
+        if ancestor:IsA("BasePart") then return ancestor.Position end
+        if ancestor:IsA("Model") then
+            local ok,cf=pcall(function() return ancestor:GetPivot() end)
+            if ok and cf then return cf.Position end
+        end
+        ancestor=ancestor.Parent
+    end
+    return nil
+end
+
+local function dispatchDirectVolcanoStart(island,token)
+    if not island or not island.Parent or not isRunning(token) then
+        return false,"EVENT_OR_AUTOMATION_UNAVAILABLE"
+    end
+    if PHX.eventActive(island) then return true,"EVENT_ALREADY_ACTIVE" end
+    local prompt,where=getVolcanoActivationPrompt(island)
+    if not prompt or not prompt.Parent then
+        logLine("FOSSIL_DIRECT_REJECT",where)
+        return false,where
+    end
+    if not prompt.Enabled then
+        logLine("FOSSIL_DIRECT_REJECT","PROMPT_DISABLED "..where)
+        return false,"PROMPT_DISABLED"
+    end
+    local rr=root()
+    local pp=volcanoPromptWorldPosition(prompt)
+    if not rr or not pp then
+        logLine("FOSSIL_DIRECT_REJECT","NO_PLAYER_ROOT_OR_PROMPT_POSITION")
+        return false,"POSITION_UNAVAILABLE"
+    end
+    local distance=(rr.Position-pp).Magnitude
+    local maxDistance=math.max(1,tonumber(prompt.MaxActivationDistance) or 10)+1.5
+    logLine("FOSSIL_DIRECT_SCAN",string.format("source=%s dist=%.2f maxDist=%.2f hold=%.2f enabled=%s",
+        where,distance,maxDistance,tonumber(prompt.HoldDuration) or 0,tostring(prompt.Enabled)))
+    if distance>maxDistance then
+        logLine("FOSSIL_DIRECT_REJECT",string.format("PROMPT_TOO_FAR dist=%.2f allowed=%.2f",distance,maxDistance))
+        return false,"PROMPT_TOO_FAR"
+    end
+    local mode,ok,err
+    if type(fireproximityprompt)=="function" then
+        mode="FIREPROXIMITYPROMPT"
+        ok,err=pcall(function() fireproximityprompt(prompt) end)
+    else
+        mode="PROMPT_INPUT_HOLD_API"
+        ok,err=pcall(function()
+            prompt:InputHoldBegin()
+            local holdUntil=os.clock()+math.max(.15,(tonumber(prompt.HoldDuration) or 0)+.18)
+            while island.Parent and isRunning(token) and os.clock()<holdUntil do task.wait(.05) end
+            prompt:InputHoldEnd()
+        end)
+        if not ok then pcall(function() prompt:InputHoldEnd() end) end
+    end
+    logLine("FOSSIL_DIRECT_DISPATCH","method="..mode.." pcallOK="..tostring(ok)
+        .." source="..where.." err="..tostring(ok and "nil" or err))
+    if not ok then return false,"DIRECT_DISPATCH_FAILED" end
+    return true,mode
+end
+
 local function startEventAsMaster(island, token)
     if not isMaster() then return PHX.eventActive(island) end
     if PHX.eventActive(island) then return true end
@@ -6142,13 +7501,13 @@ local function startEventAsMaster(island, token)
         if PHX.isSoloAutomation() then
             local history=PHX.FossilAttempts[island] or {Count=1,At=os.clock()}
             if os.clock()-history.At < 14 then
-                PHX.eventStatus("SOLO: waiting for Fossil HUD after E hold (no STOP)","FOSSIL_WAIT")
+                PHX.eventStatus("SOLO: waiting for Fossil HUD after Direct Prompt (no STOP)","FOSSIL_WAIT")
                 task.wait(.7)
                 return false
             end
             if history.Count >= 2 then
                 if not PHX.afkSoloEnabled() then
-                    PHX.eventStatus("SOLO: Fossil not confirmed after 2 holds; awaiting manual start / HUD (runner stays ON)","FOSSIL_WAIT")
+                    PHX.eventStatus("SOLO: Fossil not confirmed after 2 direct attempts; awaiting manual start / HUD (runner stays ON)","FOSSIL_WAIT")
                     task.wait(1)
                     return false
                 end
@@ -6157,8 +7516,8 @@ local function startEventAsMaster(island, token)
                         task.wait(1)
                         return false
                     end
-                    PHX.eventStatus("AFK SOLO: Fossil failed 4x -> safely return to Tiki", "FOSSIL_RECOVERY")
-                    logLine("AFK_FOSSIL_RECOVER", "four E holds without raid HUD; return for new island")
+                    PHX.eventStatus("AFK SOLO: Fossil direct start failed 4x -> safely return to Tiki", "FOSSIL_RECOVERY")
+                    logLine("AFK_FOSSIL_RECOVER", "four direct prompt attempts without raid HUD; return for new island")
                     PHX.PendingDepartureIsland=island
                     if resetBackToTiki and resetBackToTiki(token) then
                         PHX.CompletedIslands[island]=true
@@ -6189,34 +7548,39 @@ local function startEventAsMaster(island, token)
     end)
     task.wait(CONFIG.FOSSIL.SETTLE_TIME)
     if not isRunning(token) then return false end
+    -- Recheck immediately before direct prompt, not only before the Tween.
+    -- SOLO: local player at Relic; TEAM: Master + 3 verified members nearby.
+    local realNear=countTeamNear(target.Position,CONFIG.RELIC_RADIUS,island)
+    local needed=PHX.requiredFossilPlayers()
+    if realNear<needed then
+        logLine("FOSSIL_DIRECT_GATE",string.format("BLOCKED mode=%s near=%d required=%d post_tween=true",PHX.automationMode(),realNear,needed))
+        return false
+    end
+    logLine("FOSSIL_DIRECT_GATE",string.format("ALLOWED mode=%s near=%d required=%d post_tween=true",PHX.automationMode(),realNear,needed))
     PHX.FossilAttempted[island] = true
     if PHX.isSoloAutomation() then
         local history=PHX.FossilAttempts[island] or {Count=0,At=0}
         history.Count+=1
         history.At=os.clock()
         PHX.FossilAttempts[island]=history
-        setStatus("SOLO: exact Fossil pose -> donor V2.9 Virtual HOLD E 3s")
-        logLine("FOSSIL_SOLO", "Hold E begin | attempt="..history.Count)
-        local down=pcall(function() PHX.keyEvent(true,Enum.KeyCode.E,false,game) end)
-        if not down then
-            pcall(function() PHX.keyEvent(false,Enum.KeyCode.E,false,game) end)
-            PHX.FossilAttempted[island]=nil
-            return false
-        end
-        local untilAt=os.clock()+(CONFIG.FOSSIL.HOLD_SECONDS or 3)
-        while isRunning(token) and island.Parent and os.clock()<untilAt do task.wait(.04) end
-        pcall(function() PHX.keyEvent(false,Enum.KeyCode.E,false,game) end)
-        logLine("FOSSIL_SOLO","Hold E released")
-        if not isRunning(token) or not island.Parent then return false end
-    else
-        setStatus(roleText()..": exact Fossil pose -> TEAM click/touch hold 3s")
-        if not PHX.holdInteraction(getRelic(island), CONFIG.FOSSIL.HOLD_SECONDS, token) then return false end
     end
-    local deadline = os.clock()+(PHX.isSoloAutomation() and 5 or 3)
+    setStatus(roleText()..": direct Volcano ActivationPrompt (NO E / NO CLICK)")
+    local dispatched,method=dispatchDirectVolcanoStart(island,token)
+    if not dispatched then
+        -- Do not count a failed preflight as a real activation attempt.
+        PHX.FossilAttempted[island]=nil
+        logLine("FOSSIL_DIRECT_RETRY", "dispatch not sent, reason="..tostring(method))
+        PHX.eventStatus(roleText()..": Direct Volcano unavailable: "..tostring(method),"FOSSIL_WAIT")
+        task.wait(.6)
+        return false
+    end
+    logLine("FOSSIL_DIRECT_WAIT", "dispatched="..tostring(method).." awaiting raid confirmation")
+    local deadline = os.clock()+7
     repeat
         PHX.RaidHUDCache = nil
         if PHX.eventActive(island) then
             PHX.EventState.Error = nil
+            logLine("FOSSIL_DIRECT_CONFIRMED", "method="..tostring(method).." raidHUD_or_island_attribute=true")
             noteProgress("FOSSIL_STARTED")
             return true
         end
@@ -6225,10 +7589,10 @@ local function startEventAsMaster(island, token)
     if isRunning(token) then
         if PHX.isSoloAutomation() then
             PHX.EventState.Error="FOSSIL_HUD_PENDING"
-            PHX.eventStatus("SOLO Fossil E hold complete; HUD pending, no STOP / no rapid E spam", "FOSSIL_WAIT")
-            logLine("FOSSIL_SOLO","HUD unconfirmed after 5s; runner retained for bounded recovery")
+            PHX.eventStatus("SOLO Fossil direct prompt complete; HUD pending, no STOP / no rapid retry", "FOSSIL_WAIT")
+            logLine("FOSSIL_DIRECT_UNCONFIRMED","HUD unconfirmed after 7s; runner retained for bounded recovery")
         else
-            PHX.pauseEvent("FOSSIL_UNCONFIRMED", "TEAM Fossil hold unconfirmed -> paused for inspection")
+            PHX.pauseEvent("FOSSIL_UNCONFIRMED", "TEAM Direct Prompt unconfirmed -> paused for inspection")
         end
     end
     return false
@@ -6869,7 +8233,32 @@ end
 -- No separate attack worker while main automation is active.
 PHX.KillAura = {Requests=0,NativeRequests=0,NetRequests=0,ObservedDamage=0,
     LastDamageAt=nil,LastStepAt=0,TargetCount=0,Hp=setmetatable({}, {__mode="k"}),
-    LastMessage="READY"}
+    LastMessage="READY",AutoHitPart=nil,LastAutoSwitchAt=0}
+-- Stay with a hit-part mode while HP is falling. If a wave stalls for several
+-- seconds, try the alternative head/root part ONCE per 5s. Does not invent RPCs.
+function PHX.netHitFeedback(hpDelta,stalledSeconds,targetCount)
+    local aura=PHX.KillAura
+    if not aura or (tonumber(targetCount) or 0)<=0 then return end
+    local now=os.clock()
+    if (tonumber(hpDelta) or 0)>.2 then
+        aura.LastVerifiedHpAt=now
+        aura.LastAutoSwitchAt=now
+        return
+    end
+    if CONFIG.KILL_AURA.NetMode~="NET_HEAD" then
+        aura.AutoHitPart=nil
+        return
+    end
+    if (tonumber(stalledSeconds) or 0)>=4.5
+        and now-(aura.LastAutoSwitchAt or 0)>=5
+        and (aura.NetRequests or 0)>0 then
+        aura.AutoHitPart=aura.AutoHitPart=="ROOT" and "HEAD" or "ROOT"
+        aura.LastAutoSwitchAt=now
+        logLine("NET_STALL_PART_SWITCH","auto="..aura.AutoHitPart
+            .." | lastHpAge="..string.format("%.1f",stalledSeconds)
+            .." | client HP still needs verification")
+    end
+end
 function PHX.killAuraRelease()
     -- If another caller was interrupted during a mouse press, release it.
     if PHX.Runtime and PHX.Runtime.HeldMouse then
@@ -6950,7 +8339,8 @@ function PHX.killAuraDispatch(models,backend)
     if selected~="NET_HEAD" and selected~="NET_ROOT" and selected~="NET_HEAD_0" then
         selected="NET_HEAD"
     end
-    local useHead=selected~="NET_ROOT"
+    local autoPart=selected=="NET_HEAD" and aura.AutoHitPart or nil
+    local useHead=autoPart~="ROOT" and selected~="NET_ROOT"
     local delay=selected=="NET_HEAD_0" and 0 or .05
     local radius=math.max(1,tonumber(CONFIG.KILL_AURA.NetRange) or 35)
 
@@ -6968,6 +8358,13 @@ function PHX.killAuraDispatch(models,backend)
                 and not Players:GetPlayerFromCharacter(model) then
                 local enemyHum=model:FindFirstChildOfClass("Humanoid")
                 local part=model:FindFirstChild(useHead and "Head" or "HumanoidRootPart")
+                if useHead and (not part or (part.Position-actorRoot.Position).Magnitude>radius) then
+                    -- Missing/out-of-range Head: the root is a valid fallback candidate.
+                    local alternative=model:FindFirstChild("HumanoidRootPart")
+                    if alternative and (alternative.Position-actorRoot.Position).Magnitude<=radius then
+                        part=alternative
+                    end
+                end
                 if enemyHum and enemyHum.Health>0 and part and part:IsA("BasePart")
                     and (part.Position-actorRoot.Position).Magnitude<=radius then
                     hits[#hits+1]={model,part}
@@ -6982,6 +8379,10 @@ function PHX.killAuraDispatch(models,backend)
     aura.TargetCount=count
     if not base then
         aura.LastMessage="NO_VALID_HIT_PART_WITHIN_RANGE"
+        if now-(aura.LastNoTargetsLogAt or -math.huge)>3 then
+            aura.LastNoTargetsLogAt=now
+            logLine("NET_NO_VALID_TARGET","candidateModels="..tostring(#(models or {})).." | radius="..tostring(radius).." | M1 packet not sent")
+        end
         return false
     end
     local registerAttack,registerHit=resolveNetAttack()
@@ -7003,7 +8404,7 @@ function PHX.killAuraDispatch(models,backend)
         if not freshBase then return false,"TARGETS_EXPIRED_AFTER_ATTACK_RPC" end
         local sentHit,hitError=pcall(function() registerHit:FireServer(freshBase,freshHits) end)
         if not sentHit then return false,"HIT_RPC_ERROR:"..tostring(hitError) end
-        return true,"REQUESTED_NOT_VERIFIED | mode="..selected.." | targets="..freshCount
+        return true,"REQUESTED_NOT_VERIFIED | mode="..selected.." | hitPart="..(useHead and "HEAD" or "ROOT").." | targets="..freshCount
     end)
     aura.NetDispatchBusy=false
     if not ok then
@@ -7036,6 +8437,8 @@ function PHX.setRecoveryNetMode(selected)
         return false,"INVALID_NET_MODE"
     end
     CONFIG.KILL_AURA.NetMode=selected
+    PHX.KillAura.AutoHitPart=nil
+    PHX.KillAura.LastAutoSwitchAt=os.clock()
     PHX.KillAura.LastNetAttemptAt=-math.huge
     PHX.KillAura.LastMessage="NET_MODE_SELECTED:"..selected
     logLine("RECOVERY_NET_MODE",selected)
@@ -7972,18 +9375,113 @@ function PHX.freezeEggRoster(state)
     return state.Frozen
 end
 
+-- V2.17.22: same DIRECT ItemReplicationService cache that the successful
+-- standalone Dragon Egg Probe V1 read: IdMap.Material["Dragon Egg"]=565,
+-- IdMap.Tool["Dragon Egg"]=1276 on the tested build. Always resolve live IDs
+-- from IdMap instead of assuming these numbers never change.
+-- This read is client-cache evidence, not proof of server-side award.
+PHX.EggDirectCache = {LastCount=nil,LastError=nil,LastLogAt=0,LastErrorAt=0,Reads=0}
+function PHX.eggDirectSnapshot()
+    local dc=PHX.DirectCache
+    if not dc or not dc.Service then
+        local module=ReplicatedStorage:FindFirstChild("ItemReplicationService")
+        if not module or not module:IsA("ModuleScript") then return nil,"ITEM_SERVICE_MISSING" end
+        dc.Service=require(module)
+    end
+    if not dc.IdMap then
+        local module=ReplicatedStorage:FindFirstChild("IdMap")
+        if not module or not module:IsA("ModuleScript") then return nil,"IDMAP_MISSING" end
+        dc.IdMap=require(module)
+    end
+    local service,idMap=dc.Service,dc.IdMap
+    if type(service)~="table" or not service.IsInitialized or not service.IS_CLIENT then
+        return nil,"ITEM_SERVICE_NOT_READY"
+    end
+    local key=service.KEYS and service.KEYS.QUANTITY
+    if key==nil then return nil,"QUANTITY_KEY_MISSING" end
+    local ids,idDetails={},{}
+    for _,category in ipairs({"Material","Tool"}) do
+        local section=idMap and idMap[category]
+        if type(section)=="table" then
+            for name,id in pairs(section) do
+                if type(name)=="string" and name:lower():gsub("[%s_%-]+","")=="dragonegg" then
+                    ids[tostring(id)]=true
+                    idDetails[#idDetails+1]=category.."="..tostring(id)
+                end
+            end
+        end
+    end
+    if not next(ids) then return nil,"DRAGON_EGG_ID_NOT_FOUND" end
+    local records=service:GetItems(key)
+    if type(records)~="table" then return nil,"GETITEMS_NOT_TABLE" end
+    local count,matches,scanned=0,0,0
+    for _,record in pairs(records) do
+        if type(record)=="table" then
+            scanned+=1
+            if ids[tostring(record.ItemId)] then
+                matches+=1
+                local quantity=tonumber(record.Value)
+                if not quantity or quantity~=quantity or quantity<0 or quantity==math.huge then
+                    return nil,"INVALID_EGG_QUANTITY: "..tostring(record.Value)
+                end
+                count+=quantity
+            end
+        end
+    end
+    return {Count=count,Matches=matches,Scanned=scanned,Ids=table.concat(idDetails,",")}
+end
+
 function PHX.readEggCount()
-    local ok, inv = pcall(function() return CommF:InvokeServer("getInventory") end)
-    if not ok or type(inv) ~= "table" then return nil end
-    local count = PHX.exactMaterialCount(inv, "Dragon Egg")
-    if count ~= nil then return count end
-    if PHX.inventoryHasMaterialSchema(inv) then return 0 end
-    return nil
+    local state=PHX.EggDirectCache
+    local ok,snapshot,err=pcall(PHX.eggDirectSnapshot)
+    local data=ok and type(snapshot)=="table" and snapshot or nil
+    if not data then
+        local reason=ok and tostring(err) or tostring(snapshot)
+        if state.LastError~=reason or os.clock()-(state.LastErrorAt or 0)>10 then
+            logLine("EGG_CACHE_WAIT","source=DIRECT_CACHE error="..reason.."; NO RESET without +1 verification")
+            state.LastErrorAt=os.clock()
+        end
+        state.LastError=reason
+        return nil
+    end
+    state.Reads+=1
+    state.LastError=nil
+    if state.LastCount~=data.Count or state.Reads==1 or os.clock()-(state.LastLogAt or 0)>12 then
+        logLine("EGG_CACHE_SCAN",string.format("count=%.0f matches=%d records=%d ids=%s",data.Count,data.Matches,data.Scanned,data.Ids))
+        state.LastLogAt=os.clock()
+    end
+    state.LastCount=data.Count
+    return data.Count
 end
 
 function PHX.confirmEggPickup(before)
-    local after = PHX.readEggCount()
-    return before ~= nil and after ~= nil and after > before, after
+    if type(before)~="number" then return false,nil end
+    local after=PHX.readEggCount()
+    if after==nil or after<before+1 then return false,after end
+    -- Two separate cache reads guard against a transient replicated snapshot.
+    task.wait(.18)
+    local stable=PHX.readEggCount()
+    if stable~=nil and stable>=before+1 then
+        logLine("EGG_CACHE_PLUS_ONE",string.format("baseline=%.0f current=%.0f delta=+%.0f verified=2_SCANS",before,stable,stable-before))
+        return true,stable
+    end
+    return false,stable
+end
+
+function PHX.eggGainResetGuard(progress,stage)
+    if type(progress)~="table" or progress.EggState~="CONFIRMED" then
+        return true -- no allocated egg is separately handled by the existing roster policy
+    end
+    local before=progress.EggBaseline
+    if type(before)~="number" then
+        logLine("EGG_RESET_BLOCKED",tostring(stage).." MISSING_BASELINE")
+        return false
+    end
+    local ok,after=PHX.confirmEggPickup(before)
+    logLine(ok and "EGG_RESET_GATE_OK" or "EGG_RESET_BLOCKED",
+        tostring(stage).." baseline="..tostring(before).." now="..tostring(after).." delta="..
+        tostring(after and after-before or "UNKNOWN").." +1_required=true")
+    return ok
 end
 
 -- V2.17.19: observable, bounded fallback for a visible E / Collect prompt.
@@ -8051,6 +9549,9 @@ local function collectAssignedEgg(island, token)
         return PHX.secureDragonWindow(CONFIG.DRAGON_GUARD.POST_EGG_GUARD_SECONDS,token)
     end
     local pending = progress.EggPending
+    if pending and type(pending.BeforeCount)=="number" and progress.EggBaseline==nil then
+        progress.EggBaseline=pending.BeforeCount
+    end
     local resumedConfirmed = pending and pending.Attempted and PHX.confirmEggPickup(pending.BeforeCount)
     if not isRunning(token) then return false end
     if resumedConfirmed then
@@ -8110,7 +9611,13 @@ local function collectAssignedEgg(island, token)
         if not pending then
             local before = PHX.readEggCount()
             if not isRunning(token) then return false end
+            if before==nil then
+                PHX.pauseEvent("EGG_CACHE_NOT_READY", "Dragon Egg direct cache unavailable before pickup; wait for initialized ItemReplicationService")
+                return false
+            end
             pending = {Egg=egg, BeforeCount=before, Rank=rank, Attempted=false}
+            progress.EggBaseline=before
+            logLine("EGG_CACHE_BASELINE", "slot="..tostring(rank).." before="..tostring(before).." source=DIRECT_CACHE")
             progress.EggPending = pending
         end
         local before = pending.BeforeCount
@@ -8574,32 +10081,165 @@ function PHX.acceptHuntViaDialogue(token)
     return false
 end
 
+-- V2.17.30: Quest Remote uses the game dialogue backend, but movement to Dragon Hunter is REQUIRED by this automation.
+-- Never perform a quest Remote request if travel or the NPC approach verification fails.
+-- The game's dialogue calls RF/DragonHunter with {Context="RequestQuest"}, then checks {Context="Check"}.
+-- Unlike the previously unverified craft RPC, this quest protocol is present in the game's DragonHunter dialogue.
+PHX.DragonHunterQuestRemoteState = PHX.DragonHunterQuestRemoteState or {
+    NextRequestAt=0, LastRawStatus="NONE", LastRequestAt=-math.huge, LastOutcome="NOT_STARTED"
+}
+
+function PHX.dragonHunterQuestReplyPreview(value)
+    local kind=typeof(value)
+    if kind=="string" then return string.sub(value,1,190) end
+    if kind=="nil" then return "nil" end
+    if kind~="table" then return tostring(value) end
+    local parts={}
+    for _,k in ipairs({"Text","Context","CancelQuest","Quest","Message","Error","Status"}) do
+        local v=value[k]
+        if v~=nil then
+            local repr=typeof(v)=="table" and "<table>" or string.sub(tostring(v),1,110)
+            parts[#parts+1]=k.."="..repr
+        end
+    end
+    return #parts>0 and table.concat(parts," | ") or "table(no standard fields)"
+end
+
+-- Tween only when taking a new quest: do not interfere with ordinary farming movement.
+-- The STAND point is about six studs from the NPC. No click, Prompt or dialogue GUI is used.
+local function approachDragonHunterForQuest(token)
+    if not isRunning(token) then return false end
+    local stand=CONFIG.DRAGON_HUNTER.STAND
+    local npc=CONFIG.DRAGON_HUNTER.NPC.Position
+    local before=root()
+    if not before then
+        logLine("DRAGON_HUNTER_APPROACH","FAILED | no living character root")
+        return false
+    end
+    local startDistance=(before.Position-stand.Position).Magnitude
+    logLine("DRAGON_HUNTER_APPROACH",string.format("START | standDistance=%.1f | NPCDistance=%.1f",startDistance,(before.Position-npc).Magnitude))
+    if startDistance>8 then
+        setStatus("Tween to Dragon Hunter -> then RequestQuest remote")
+        local moved=safeTween(stand,CONFIG.PLAYER_TWEEN_SPEED,token)
+        if not moved then
+            logLine("DRAGON_HUNTER_APPROACH","TWEEN_FAILED | RequestQuest NOT sent")
+            setStatus("Dragon Hunter tween failed; quest remote paused")
+            return false
+        end
+    end
+    if not isRunning(token) then return false end
+    local after=root()
+    if not after then return false end
+    local standDistance=(after.Position-stand.Position).Magnitude
+    local npcDistance=(after.Position-npc).Magnitude
+    if standDistance>10 or npcDistance>16 then
+        logLine("DRAGON_HUNTER_APPROACH",string.format("TOO_FAR | stand=%.1f npc=%.1f | RequestQuest NOT sent",standDistance,npcDistance))
+        setStatus("Dragon Hunter not reached; quest remote paused")
+        return false
+    end
+    task.wait(.2) -- let arrival settle before the server-side quest request
+    if not isRunning(token) then return false end
+    after=root()
+    if not after or (after.Position-npc).Magnitude>16 then
+        logLine("DRAGON_HUNTER_APPROACH","POSITION_CHANGED | quest remote paused")
+        return false
+    end
+    logLine("DRAGON_HUNTER_APPROACH",string.format("ARRIVED | stand=%.1f npc=%.1f | Remote now allowed",(after.Position-stand.Position).Magnitude,(after.Position-npc).Magnitude))
+    return true
+end
+
 local function receiveDragonHunterQuest(token)
     if not isRunning(token) then return false end
+    -- Explicit order: travel to Hydra -> tween to NPC -> confirm range -> only then Check / RequestQuest.
+    if not approachDragonHunterForQuest(token) then return false end
     local rf=PHX.dragonHunterRemote()
     if not isRunning(token) then return false end
-    if not rf then setStatus("RF/DragonHunter missing"); return false end
-    if not safeTween(CONFIG.DRAGON_HUNTER.STAND,200,token) then return false end
-    task.wait(.25)
-    if not isRunning(token) then return false end
-
-    local okCheck,checked=pcall(function() return rf:InvokeServer({Context="Check"}) end)
-    if not isRunning(token) then return false end
-    local text=okCheck and PHX.questTextFromValue(checked) or ""
-    if text ~= "" then return PHX.latchQuest(text,"EXISTING QUEST") end
-
-    local okRequest,response=pcall(function() return rf:InvokeServer({Context="RequestQuest"}) end)
-    if not isRunning(token) then return false end
-    text=okRequest and PHX.questTextFromValue(response) or ""
-    if text == "" then
-        task.wait(.35)
-        if not isRunning(token) then return false end
-        local okDelayed,delayed=pcall(function() return rf:InvokeServer({Context="Check"}) end)
-        if not isRunning(token) then return false end
-        text=okDelayed and PHX.questTextFromValue(delayed) or ""
+    if not rf or not rf:IsA("RemoteFunction") then
+        logLine("DRAGON_HUNTER_RPC","ERROR | RF/DragonHunter missing or not a RemoteFunction")
+        setStatus("Dragon Hunter quest RF missing; cannot accept quest")
+        return false
     end
-    if text == "" then setStatus("Dragon Hunter did not return a Hunt quest"); return false end
-    return PHX.latchQuest(text,"ACCEPTED QUEST")
+
+    local state=PHX.DragonHunterQuestRemoteState
+    local previousAcceptedAt=PHX.LastQuestAcceptedAt or -math.huge
+    local previousFinished=previousAcceptedAt>-math.huge and PHX.QuestCompletedAt>=previousAcceptedAt
+    local previousText=tostring(PHX.ActiveQuestText or "")
+
+    local function callQuestRF(context, phase)
+        if not isRunning(token) then return false,nil end
+        local started=os.clock()
+        local ok,raw=pcall(function() return rf:InvokeServer({Context=context}) end)
+        if not isRunning(token) then return false,nil end
+        logLine("DRAGON_HUNTER_RPC",string.format("%s | %s ok=%s elapsed=%.2fs reply=%s",
+            tostring(phase),tostring(context),tostring(ok),os.clock()-started,
+            ok and PHX.dragonHunterQuestReplyPreview(raw) or string.sub(tostring(raw),1,190)))
+        if not ok then state.LastOutcome="RPC_"..tostring(context).."_ERROR" end
+        return ok,raw
+    end
+
+    -- The response may contain the existing quest or the literal 'Locked'.
+    -- Check does not consume quests; RequestQuest is sent once, only when needed.
+    local checkOK,initial=callQuestRF("Check","BEFORE")
+    if not isRunning(token) then return false end
+    if checkOK and initial=="Locked" then
+        state.LastOutcome="NPC_LOCKED"
+        setStatus("Dragon Hunter quest LOCKED (check Dojo requirements)")
+        return false
+    end
+    local current=checkOK and PHX.questTextFromValue(initial) or ""
+    if current~="" and (not previousFinished or current~=previousText) then
+        state.LastOutcome="EXISTING_QUEST_CONFIRMED"
+        return PHX.latchQuest(current,"DRAGON HUNTER RF CHECK")
+    end
+
+    -- Limit retries across failed farm cycles. A nil RPC response is not proof of quest success.
+    local now=os.clock()
+    if now < (state.NextRequestAt or 0) then
+        state.LastOutcome="REQUEST_COOLDOWN"
+        logLine("DRAGON_HUNTER_RPC",string.format("THROTTLED | next request in %.1fs; still no independently confirmed active quest",state.NextRequestAt-now))
+        return false
+    end
+    state.NextRequestAt=now+5.0
+    state.LastRequestAt=now
+    local requestOK,response=callQuestRF("RequestQuest","ACCEPT")
+    if not isRunning(token) then return false end
+    if not requestOK then
+        state.LastOutcome="REQUEST_ERROR"
+        setStatus("Dragon Hunter RequestQuest remote failed (see log)")
+        return false
+    end
+    if response=="Locked" then
+        state.LastOutcome="REQUEST_LOCKED"
+        setStatus("Dragon Hunter quest locked by server")
+        return false
+    end
+    local requestText=PHX.questTextFromValue(response)
+    -- RequestQuest may return no quest text even if the server starts it; verify using Check.
+    local deadlines={0.15,0.40,0.80,1.40,2.20}
+    local verifyStart=os.clock()
+    for index,delay in ipairs(deadlines) do
+        local waitTime=math.max(0,verifyStart+delay-os.clock())
+        if waitTime>0 then task.wait(waitTime) end
+        if not isRunning(token) then return false end
+        local ok,checked=callQuestRF("Check","VERIFY_"..index)
+        if not isRunning(token) then return false end
+        if ok and checked=="Locked" then
+            state.LastOutcome="CHECK_LOCKED_AFTER_REQUEST"
+            setStatus("Dragon Hunter quest locked after RequestQuest")
+            return false
+        end
+        local text=ok and PHX.questTextFromValue(checked) or ""
+        if text~="" then
+            state.LastOutcome="QUEST_CONFIRMED_BY_CHECK"
+            return PHX.latchQuest(text,"DRAGON HUNTER RF REQUEST+CHECK")
+        end
+    end
+    -- A request response containing quest-like text is supporting evidence, but without a
+    -- confirming Check may describe an offer or stale quest. Never farm based solely on that.
+    state.LastOutcome="REQUEST_UNCONFIRMED"
+    logLine("DRAGON_HUNTER_RPC","UNCONFIRMED | requestText="..string.sub(requestText,1,150).." | before="..string.sub(current,1,150).." | no quest returned by Check")
+    setStatus("Dragon Hunter RequestQuest sent but no active quest confirmed; retry after cooldown")
+    return false
 end
 
 PHX._HydraTreeCache = PHX._HydraTreeCache or {At=-math.huge, List={}}
@@ -8832,7 +10472,11 @@ function PHX.treeSkillsNoViewLock(token)
             for _=1,2 do
                 for _,key in ipairs(skillKeysForTooltip(tooltip)) do
                     if not isRunning(token) or not hum() or hum().Health<=0 then return false end
-                    pressKey(key,.10)
+                    local didCast,castReason=pcall(pressKey,key,.10)
+                    if not didCast then
+                        logLine("TREE_SKILL_ERROR","key="..key.Name.." | "..tostring(castReason))
+                        return false
+                    end
                     task.wait(.16)
                 end
                 task.wait(.05)
@@ -9011,7 +10655,7 @@ local function farmBlazeEmbers(token)
             local kind = questKind()
 
             if kind == "NONE" or completedPrevious then
-                setStatus("Returning Dragon Hunter NPC -> receive next Hunt")
+                setStatus("Dragon Hunter NPC tween -> direct quest RequestQuest / Check (no dialogue GUI)")
                 if not receiveDragonHunterQuest(token) then
                     task.wait(.8)
                     kind = "NONE"
@@ -9709,130 +11353,279 @@ function PHX.craftV19OpenWindow(token)
     return nil,"CRAFT_WINDOW_NOT_OPEN"
 end
 
-local function craftVolcanicMagnet(token)
-    local owner=coroutine.running()
-    PHX.CraftUiBusy,PHX.CraftUiOwner=true,owner
-    local ok,result=pcall(function()
-        if not isRunning(token) then return false end
-        if not PHX.StashBaselineReady then setStatus("Craft paused: startup Stash unknown; use manual Stash check"); return false end
-        local beforeMagnet=PHX.cachedMaterialCount("Volcanic Magnet")
-        if beforeMagnet == nil then return false end
-        if beforeMagnet>0 then return true end
-        local window,openWhy=PHX.craftV19OpenWindow(token)
-        logLine("CRAFT_V19_PATH",tostring(openWhy))
-        if not window or not PHX.guiVisible(window) then
-            setStatus("V1.9 Magnet craft path failed: "..tostring(openWhy))
-            return false
-        end
-        logLine("CRAFT_STATE","WINDOW_CONFIRMED -> VERIFY_RESULT -> CONFIRM_ONCE")
-        logLine("CRAFT_WINDOW", "opened="..tostring(window:GetFullName()).." | size="..tostring(window.AbsoluteSize))
-        local recipeName,recipeProof=PHX.craftWindowRecipe(window)
-        if recipeName ~= "volcanicmagnet" then
-            PHX.logCraftWindowProof(window,"MAGNET_RECIPE_NOT_VERIFIED:"..tostring(recipeProof)..":"..tostring(recipeName))
-            logLine("CRAFT_BLOCKED", "Output card not proven; click NOT sent; verify visible result label")
-            setStatus("Cannot verify Volcanic Magnet recipe ("..tostring(recipeProof)..") - craft NOT pressed")
-            return false
-        end
-        logLine("CRAFT_RECIPE_PROOF", tostring(recipeName).." / "..tostring(recipeProof))
-        local confirm,buttonProof=PHX.craftConfirmButton(window)
-        if not confirm or not PHX.guiVisible(confirm) then
-            PHX.logCraftWindowProof(window,"CONFIRM_BUTTON_NOT_FOUND")
-            setStatus("Craft button not located - window left open")
-            return false
-        end
-        logLine("CRAFT_TARGET","Volcanic Magnet confirmed | recipe="..tostring(recipeProof)
-            .." | button="..confirm:GetFullName().." | selected="..tostring(buttonProof)
-            .." position="..tostring(confirm.AbsolutePosition).." size="..tostring(confirm.AbsoluteSize))
-        local beforeScrap=PHX.cachedMaterialCount("Scrap Metal")
-        local beforeEmber=PHX.cachedMaterialCount("Blaze Ember")
-        local popupBefore=PHX.StashScanQueue.NextId
-        PHX.CraftPendingVerification={BeforeMagnet=beforeMagnet,BeforeScrap=beforeScrap,BeforeEmber=beforeEmber,AfterPopupId=popupBefore}
-        PHX.CraftVerificationBlocked=true -- preserve uncertainty before the yielding confirm click
-        if PHX.StashSession then PHX.StashSession.Verified=false end
-        PHX.PickupSuppress["Volcanic Magnet"]={Until=os.clock()+8}
-        if not isRunning(token) then PHX.PickupSuppress["Volcanic Magnet"]=nil; return false end
-        logLine("CRAFT_CLICK","ONE attempt via V1.9 Activated-first; no repeated clicks")
-        local attempted,clickBackend=PHX.craftV19FireButton(confirm)
-        logLine("CRAFT_CLICK_BACKEND",tostring(clickBackend))
-        if not attempted then
-            PHX.PickupSuppress["Volcanic Magnet"]=nil
-            PHX.CraftPendingVerification=nil
-            PHX.CraftVerificationBlocked=false
-            setStatus("Could not send Craft button click; window left open")
-            logLine("CRAFT_CLICK_FAILED","Native Craft button input was not dispatched")
-            return false
-        end
-        local receiptSeen=PHX.waitGui(function()
-            local newId=(PHX.StashScanQueue and PHX.StashScanQueue.NextId) or popupBefore
-            return PHX.craftWindow()==nil or newId>popupBefore
-                or ((PHX.cachedMaterialCount("Volcanic Magnet") or 0)>beforeMagnet)
-        end,4.5)
-        if not receiptSeen then
-            PHX.PickupSuppress["Volcanic Magnet"]=nil
-            PHX.CraftVerificationBlocked=true
-            logLine("CRAFT_CLICK_UNVERIFIED","Click dispatched but no close/receipt/count change; NO retry")
-            setStatus("Craft click dispatched but no transaction verified; do NOT retry automatically")
-            return false
-        end
-        if PHX.craftWindow()~=nil then
-            logLine("CRAFT_WINDOW","still open after craft; close for Stash verification")
-            PHX.closeCraftWindow()
-        end
-        PHX.CraftUiBusy=false
-        local synced,why=PHX.waitForCraftInventory(token,popupBefore,8)
-        PHX.PickupSuppress["Volcanic Magnet"]=nil
-        if not synced then
-            PHX.CraftVerificationBlocked=true
-            setStatus("Craft not verified by popup + Stash | "..tostring(why))
-            return false
-        end
-        local after=PHX.cachedMaterialCount("Volcanic Magnet")
-        local scrapAfter=PHX.cachedMaterialCount("Scrap Metal")
-        local emberAfter=PHX.cachedMaterialCount("Blaze Ember")
-        if after and after-beforeMagnet>=1 then
-            PHX.CraftVerificationBlocked=false
-            PHX.CraftPendingVerification=nil
-            if PHX.updateMagnetCache then PHX.updateMagnetCache(after,"CRAFT_VERIFIED") end
-            setStatus("VERIFIED Volcanic Magnet +"..(after-beforeMagnet))
-            logLine("CRAFT_OK","magnet="..beforeMagnet.."->"..after.." scrap="..tostring(beforeScrap).."->"..tostring(scrapAfter).." ember="..tostring(beforeEmber).."->"..tostring(emberAfter))
-            return true
-        end
-        PHX.CraftVerificationBlocked=true
-        setStatus("Crafted popup did not prove a Magnet increase; counters kept from real Stash")
-        return false
-    end)
-    if PHX.CraftUiOwner==owner then PHX.CraftUiBusy=false;PHX.CraftUiOwner=nil end
-    if not ok then
-        PHX.CraftVerificationBlocked=PHX.CraftPendingVerification~=nil
-        logLine("CRAFT_ERROR",tostring(result))
-        setStatus("Craft error: "..tostring(result))
-        return false
+-- REMOTE MAGNET CORE BEGIN
+-- V2.17.31: observed RF/Craft protocol; one mutating RPC, verified by fresh EtcItems.
+-- The RPC worker is deliberately not registered in Runtime.Tasks: cancelling an
+-- InvokeServer coroutine must never release the shared flight gate prematurely.
+(function()
+    local M={Report={Status="READY"}}
+    PHX.RemoteMagnet=M
+    local names={"Scrap Metal","Blaze Ember","Volcanic Magnet"}
+    local key=tostring(LP.UserId).."@"..tostring(game.PlaceId).."@"..tostring(game.JobId)
+    local gate=ENV.__PH_MAGNET_REMOTE_CRAFT_FLIGHT
+    if type(gate)~="table" then gate={Busy=false};ENV.__PH_MAGNET_REMOTE_CRAFT_FLIGHT=gate end
+    local pendingByAccount=ENV.__PH_MAIN_MAGNET_PENDING_V1
+    if type(pendingByAccount)~="table" then pendingByAccount={};ENV.__PH_MAIN_MAGNET_PENDING_V1=pendingByAccount end
+
+    local function copyCounts(value)
+        local result={}
+        for _,name in ipairs(names) do result[name]=value[name] end
+        return result
     end
-    return result
+
+    function PHX.remoteMagnetCounts(data)
+        if type(data)~="table" or type(rawget(data,"EtcItems"))~="table" then return nil,"ETC_ITEMS_UNAVAILABLE" end
+        local full=true
+        for _,field in ipairs({"Items","CraftProgression","DragonQuest","CraftingRecipes"}) do
+            if type(rawget(data,field))~="table" then full=false end
+        end
+        local result={}
+        for _,name in ipairs(names) do
+            local quantity=rawget(data.EtcItems,name)
+            if quantity==nil and full then quantity=0 end
+            if type(quantity)~="number" or quantity~=quantity or quantity<0
+                or quantity>=9007199254740992 or quantity%1~=0 then return nil,"INVALID_COUNTS" end
+            result[name]=quantity
+        end
+        return result
+    end
+
+    local function pending()
+        local record=pendingByAccount[key]
+        if type(record)=="table" and type(record.Before)=="table" then return record end
+        return nil
+    end
+
+    function PHX.remoteMagnetHasPending()
+        local record=pending()
+        if record then
+            PHX.CraftVerificationBlocked=true
+            PHX.CraftPendingVerification=record
+        end
+        return record~=nil
+    end
+
+    local function context(token)
+        local character,humanoid,part=char(),hum(),root()
+        if not character or not humanoid or not part then return nil,"CHARACTER_UNAVAILABLE" end
+        return {Token=token,Character=character,Humanoid=humanoid,Root=part,
+            Epoch=CHARACTER_EPOCH,Generation=SCRIPT_GENERATION,Deadline=os.clock()+12}
+    end
+
+    local function current(ctx,preflight)
+        if not ctx or not PHX.generationAlive() or not isRunning(ctx.Token) then return false,"STOPPED" end
+        if ctx.Generation~=SCRIPT_GENERATION or CHARACTER_EPOCH~=ctx.Epoch
+            or LP.Character~=ctx.Character or char()~=ctx.Character or hum()~=ctx.Humanoid or root()~=ctx.Root
+            or not ctx.Character.Parent or not ctx.Humanoid.Parent or not ctx.Root.Parent
+            or ctx.Humanoid.Health<=0 then return false,"CHARACTER_CHANGED" end
+        if ctx.Humanoid.SeatPart or PHX.isMovementLocked() then return false,"BOAT_OR_SEATED" end
+        if DRAGON_GUARD_STATE.Critical or DRAGON_GUARD_STATE.Pending
+            or (PHX.findPhysicalDragonFruits and #PHX.findPhysicalDragonFruits()>0) then return false,"DRAGON_PROTECTED" end
+        if preflight and os.clock()>=ctx.Deadline then return false,"PRECHECK_TIMEOUT" end
+        return true
+    end
+
+    local function publish(ctx,message)
+        M.Report.Status=message
+        local checked,valid=pcall(current,ctx,false)
+        if checked and valid then pcall(setStatus,message) end
+    end
+
+    local function remotes()
+        local modules=ReplicatedStorage:FindFirstChild("Modules")
+        local net=modules and modules:FindFirstChild("Net")
+        local craft=net and net:FindFirstChild("RF/Craft")
+        local read=net and net:FindFirstChild("RF/GetCraftPlayerData")
+        if not craft or not read or not craft:IsA("RemoteFunction") or not read:IsA("RemoteFunction") then return nil,nil end
+        return craft,read
+    end
+
+    local function inventory(read)
+        local ok,data=pcall(function() return read:InvokeServer() end)
+        if not ok then return nil,"INVENTORY_RPC_ERROR" end
+        return PHX.remoteMagnetCounts(data)
+    end
+
+    local function commit(ctx,counts,source)
+        if not current(ctx,false) then return false end
+        local sources={}
+        for _,name in ipairs(names) do
+            PHX.setKnownMaterial(name,counts[name],source)
+            sources[name]=source
+        end
+        PHX.StashBaselineReady=true
+        PHX.StashLastError=nil
+        if PHX.cacheStashSession then PHX.cacheStashSession(counts,sources) end
+        if PHX.updateMagnetCache then PHX.updateMagnetCache(counts["Volcanic Magnet"],source) end
+        if PHX.UI and PHX.UI.updateCounters then pcall(PHX.UI.updateCounters) end
+        return true
+    end
+
+    local function verifyReceipt(record,counts)
+        if counts["Volcanic Magnet"]<record.Before["Volcanic Magnet"]+1 then return false end
+        record.Verified=true
+        record.After=copyCounts(counts)
+        record.VerifiedAt=os.clock()
+        M.Report.CraftVerified=true
+        M.Report.After=copyCounts(counts)
+        M.Report.MaterialDelta={Scrap=counts["Scrap Metal"]-record.Before["Scrap Metal"],
+            Ember=counts["Blaze Ember"]-record.Before["Blaze Ember"],
+            Magnet=counts["Volcanic Magnet"]-record.Before["Volcanic Magnet"]}
+        return true
+    end
+
+    local function settle(ctx,record,counts)
+        if not record.Verified or pendingByAccount[key]~=record or not commit(ctx,counts,"REMOTE_MAGNET_VERIFIED") then return false end
+        pendingByAccount[key]=nil
+        PHX.CraftPendingVerification=nil
+        PHX.CraftVerificationBlocked=false
+        PHX.PickupSuppress["Volcanic Magnet"]=nil
+        pcall(logLine,"CRAFT_REMOTE_OK",string.format("Magnet=%s->%s Scrap=%s->%s Ember=%s->%s",
+            tostring(record.Before["Volcanic Magnet"]),tostring(counts["Volcanic Magnet"]),
+            tostring(record.Before["Scrap Metal"]),tostring(counts["Scrap Metal"]),
+            tostring(record.Before["Blaze Ember"]),tostring(counts["Blaze Ember"])))
+        publish(ctx,"VERIFIED remote Volcanic Magnet · fresh inventory confirmed")
+        return counts["Volcanic Magnet"]>0
+    end
+
+    local function verify(ctx,read,record)
+        for _=1,8 do
+            if not current(ctx,false) then return false,"STOPPED_OR_PROTECTED" end
+            local counts,why=inventory(read)
+            -- An already in-flight read can complete after OFF/respawn/reexecute.
+            -- Preserve its receipt, but never publish stale counters or resume automation.
+            if counts then
+                verifyReceipt(record,counts)
+                if not current(ctx,false) then return false,"STOPPED_OR_PROTECTED" end
+                M.Report.After=copyCounts(counts)
+                if record.Verified then return settle(ctx,record,counts),"VERIFIED" end
+                commit(ctx,counts,"REMOTE_MAGNET_VERIFY_READ")
+            elseif current(ctx,false) then M.Report.LastReadError=why end
+            if not current(ctx,false) then return false,"STOPPED_OR_PROTECTED" end
+            task.wait(.35)
+        end
+        M.Report.Uncertain=true
+        publish(ctx,"Remote Magnet craft unconfirmed · no automatic craft retry")
+        return false,"CRAFT_UNCONFIRMED"
+    end
+
+    local function operation(token,crafting)
+        local ctx,why=context(token)
+        local valid,guard=current(ctx,true)
+        if not valid then return false,why or guard end
+        if gate.Busy then setStatus("Remote Magnet request still pending · no duplicate craft");return false,"REQUEST_PENDING" end
+        if PHX.CraftUiBusy then return false,"CRAFT_BUSY" end
+        local craft,read=remotes()
+        if not craft then setStatus("Magnet remotes unavailable · no NPC fallback");return false,"REMOTES_UNAVAILABLE" end
+        local record=pending()
+        if not crafting and not record then return false,"NO_PENDING_CRAFT" end
+        local owner={Done=false,Result=false,Reason="REQUEST_PENDING"}
+        gate.Busy=true;gate.Owner=owner
+        PHX.CraftUiBusy=true;PHX.CraftUiOwner=owner
+        M.Report={Status="PRECHECK",CraftRequested=false,CraftVerified=false}
+        task.spawn(function()
+            local ok,problem=pcall(function()
+                if not current(ctx,true) then owner.Reason="STOPPED_OR_PROTECTED";return end
+                if record then
+                    PHX.CraftVerificationBlocked=true;PHX.CraftPendingVerification=record
+                    M.Report.Before=copyCounts(record.Before)
+                    owner.Result,owner.Reason=verify(ctx,read,record)
+                    return
+                end
+                local checked,response=pcall(function() return craft:InvokeServer("Check","Volcanic Magnet") end)
+                if not current(ctx,true) then owner.Reason="STOPPED_OR_PROTECTED";return end
+                if not checked or type(response)~="table" or type(response.Result)~="table"
+                    or response.Result.Name~="Volcanic Magnet" or response.Result.Recipe~="Volcanic Magnet"
+                    or response.Result.Count~=1 then publish(ctx,"Remote Magnet recipe check failed");owner.Reason="RECIPE_CHECK_FAILED";return end
+                local before,readWhy=inventory(read)
+                if not current(ctx,true) then owner.Reason="STOPPED_OR_PROTECTED";return end
+                if not before then publish(ctx,"Remote Magnet material read failed: "..tostring(readWhy));owner.Reason=readWhy;return end
+                M.Report.Before=copyCounts(before)
+                commit(ctx,before,"REMOTE_MAGNET_PRECHECK")
+                if before["Volcanic Magnet"]>0 then owner.Result=true;owner.Reason="MAGNET_ALREADY_PRESENT";return end
+                if before["Scrap Metal"]<10 or before["Blaze Ember"]<15 then
+                    publish(ctx,"Magnet requires 10 Scrap Metal + 15 Blaze Ember");owner.Reason="INSUFFICIENT_MATERIALS";return
+                end
+                if response.Result.Could~=true then publish(ctx,"Server Magnet recipe unavailable");owner.Reason="RECIPE_UNAVAILABLE";return end
+                if not current(ctx,true) then owner.Reason="STOPPED_OR_PROTECTED";return end
+                record={Before=copyCounts(before),BeforeMagnet=before["Volcanic Magnet"],
+                    BeforeScrap=before["Scrap Metal"],BeforeEmber=before["Blaze Ember"],
+                    StartedAt=os.clock(),Generation=SCRIPT_GENERATION,Remote=true,Verified=false}
+                pendingByAccount[key]=record -- write before yielding the only mutating RPC
+                PHX.CraftPendingVerification=record;PHX.CraftVerificationBlocked=true
+                if PHX.StashSession then PHX.StashSession.Verified=false end
+                PHX.PickupSuppress["Volcanic Magnet"]={Until=os.clock()+30}
+                M.Report.CraftRequested=true
+                publish(ctx,"Remote craft · ONE Volcanic Magnet request")
+                -- Status publication can run observers; validate immediately before dispatch.
+                if not current(ctx,true) then
+                    pendingByAccount[key]=nil;PHX.CraftPendingVerification=nil;PHX.CraftVerificationBlocked=false
+                    PHX.PickupSuppress["Volcanic Magnet"]=nil;owner.Reason="STOPPED_BEFORE_CRAFT";return
+                end
+                record.Sent=true
+                local sent,result=pcall(function() return craft:InvokeServer("Craft","Volcanic Magnet",1,{}) end)
+                record.RpcReturned=sent
+                M.Report.RpcReturned=sent
+                if type(result)=="table" and type(result.Result)=="table" then M.Report.ResultCould=result.Result.Could end
+                -- Could=false after spending materials is NOT a craft failure flag.
+                if not current(ctx,false) then owner.Reason="STOPPED_OR_PROTECTED";return end
+                owner.Result,owner.Reason=verify(ctx,read,record)
+            end)
+            if not ok then
+                owner.Reason="OPERATION_ERROR"
+                M.Report.Uncertain=pending()~=nil
+                M.Report.Error="OPERATION_ERROR"
+                publish(ctx,"Remote Magnet error · receipt check required before retry")
+            end
+            if gate.Owner==owner then gate.Busy=false;gate.Owner=nil end
+            if PHX.CraftUiOwner==owner then PHX.CraftUiBusy=false;PHX.CraftUiOwner=nil end
+            owner.Done=true
+        end)
+        while not owner.Done and os.clock()<ctx.Deadline do
+            if not current(ctx,false) then return false,"STOPPED_OR_PROTECTED" end
+            task.wait(.05)
+        end
+        if not current(ctx,false) then return false,"STOPPED_OR_PROTECTED" end
+        if not owner.Done then
+            publish(ctx,"Remote Magnet timeout · RPC still pending, craft retry blocked")
+            return false,"REQUEST_STILL_PENDING"
+        end
+        return owner.Result,owner.Reason
+    end
+
+    function PHX.remoteMagnetCraft(token) return operation(token,true) end
+    function PHX.remoteMagnetResolvePending(token) return operation(token,false) end
+    function M.GetReport()
+        local out={}
+        for field,value in pairs(M.Report) do
+            if type(value)=="table" then local copy={};for k,v in pairs(value) do copy[k]=v end;out[field]=copy else out[field]=value end
+        end
+        return out
+    end
+    PHX.remoteMagnetHasPending() -- restore only pending state; no RPC on execute.
+end)()
+-- REMOTE MAGNET CORE END
+
+local function craftVolcanicMagnet(token)
+    -- Material goal receipts can arrive between batches; release that hover
+    -- before handing control to the craft stage. No Prehistoric controller call.
+    if PHX.MaterialCombat then PHX.MaterialCombat.Stop("MAGNET_CRAFT_STAGE") end
+    return PHX.remoteMagnetCraft(token)
 end
 
 local function recoverMagnet(token)
-    if not PHX.StashBaselineReady then setStatus("MAGNET UNKNOWN: startup Stash incomplete; use manual Stash check"); return false end
-    local count=PHX.cachedMaterialCount("Volcanic Magnet")
-    if count and count>0 then
-        PHX.CraftVerificationBlocked=false
-        PHX.CraftPendingVerification=nil
-        return true
-    end
-    if PHX.CraftVerificationBlocked then
-        local pending=PHX.CraftPendingVerification
-        if pending then
-            local verified=PHX.waitForCraftInventory(token,pending.AfterPopupId,2)
-            local after=PHX.cachedMaterialCount("Volcanic Magnet")
-            if verified and after and after>pending.BeforeMagnet then
-                PHX.CraftVerificationBlocked=false
-                PHX.CraftPendingVerification=nil
-                return true
-            end
+    -- Pending RPC receipts take priority over stale positive IdMap/cache counts.
+    -- Resolve with fresh RF inventory only; never repeat an uncertain craft.
+    if PHX.remoteMagnetHasPending() or PHX.CraftVerificationBlocked then
+        if PHX.remoteMagnetHasPending() then
+            return PHX.remoteMagnetResolvePending(token)
         end
-        setStatus("Prior craft unverified: waiting for crafted popup or manual Stash check")
+        setStatus("Prior legacy craft unverified · manual verification required; no automatic retry")
         return false
     end
+    if not PHX.StashBaselineReady then setStatus("MAGNET UNKNOWN: startup Stash incomplete; use manual Stash check"); return false end
+    local count=PHX.cachedMaterialCount("Volcanic Magnet")
+    if count and count>0 then return true end
     if count==nil then setStatus("MAGNET UNKNOWN: manual Stash check required"); return false end
     local scrap=PHX.cachedMaterialCount("Scrap Metal")
     local ember=PHX.cachedMaterialCount("Blaze Ember")
@@ -9964,10 +11757,11 @@ local function runPrehistoricEvent(island, token)
         if PHX.afkSoloEnabled() and not progress.Egg and progress.AFKRewardWaitAt
             and os.clock()-progress.AFKRewardWaitAt>=CONFIG.AFK_SOLO.EGG_RECOVERY_TIMEOUT
             and not PHX.eventActive(island) and not PHX.raidTimerStillRunning() then
-            progress.Egg=true
-            progress.EggState="AFK_SKIPPED_UNVERIFIED"
-            progress.EggPending=nil
-            logLine("AFK_EGG_TIMEOUT", "90s no verified pickup; raid ended; move to next cycle")
+            -- V2.17.22: never silently convert a missing assigned egg into
+            -- a reset permit. Retry safely instead of discarding the +1 proof.
+            logLine("AFK_EGG_TIMEOUT", "90s without verified Dragon Egg +1; NO RESET, recovery wait")
+            PHX.pauseEvent("AFK_EGG_PLUS_ONE_PENDING", "Wait for confirmed Dragon Egg quantity delta +1")
+            return false
         end
         if not progress.Egg then
             PHX.EventState.Phase = "EGG"
@@ -9995,6 +11789,10 @@ local function runPrehistoricEvent(island, token)
             and progress.PostEggGuard == true then
             local relic,origin=PHX.afkRelicProof(island)
             if relic and relic > CONFIG.AFK_SOLO.EGG_FAST_RESET_RELIC_ABOVE then
+                if not PHX.eggGainResetGuard(progress,"AFK_SOLO_PRE_RESET") then
+                    PHX.pauseEvent("EGG_PLUS_ONE_LOST", "Dragon Egg quantity +1 not stable before AFK reset")
+                    return false
+                end
                 PHX.AFKRewardExit={Island=island,Progress=progress,Character=LP.Character,
                     Confirmed=true,Relic=relic,At=os.clock()}
                 PHX.CompletedIslands[island]=true
@@ -10035,6 +11833,10 @@ local function runPrehistoricEvent(island, token)
     end
 
     PHX.EventState.Phase = "REWARD_GUARD"
+    if not PHX.eggGainResetGuard(progress,"PRE_REWARD_GUARD") then
+        PHX.pauseEvent("EGG_PLUS_ONE_LOST", "Dragon Egg not +1 in direct ItemReplicationService cache; reset blocked")
+        return false
+    end
     setStatus("Reward verification -> Dragon storage guard before reset")
     if not PHX.secureDragonWindow(CONFIG.DRAGON_GUARD.PRE_RESET_GUARD_SECONDS,token) then return false end
     progress.Guard = true
@@ -12618,6 +14420,30 @@ function PHX.buildUI()
     toggle(boatNoclipCard, 83, "FAST DIRECT BUY BOAT", "Thử BuyBoat RPC ngay; chỉ đến Boat Dealer nếu server từ chối và xác minh chưa trừ tiền.",
         function() return CONFIG.BOAT_FAST_BUY.Enabled end,
         function(value) CONFIG.BOAT_FAST_BUY.Enabled=value==true; return true end)
+    local skillCard = card(settingsPage, 159, 1.85, "skill pressure rock quest tree delta android touch PC keyboard")
+    text(skillCard, "SKILL INPUT · DELTA ANDROID", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
+    text(skillCard, "Android: gửi Touch tới nút Skill thật. PC: dùng phím. Không gọi Remote chưa xác minh.",
+        10, C.Muted, UDim2.fromOffset(11, 29), UDim2.new(1, -22, 0, 39))
+    local skillModeButton = button(skillCard, "SKILL MODE · "..CONFIG.SKILL_INPUT.Mode,
+        UDim2.fromOffset(11, 71), UDim2.new(1, -22, 0, 32), C.CyanSoft)
+    PHX.connect(skillModeButton.Activated,function()
+        if U.PassThrough then return end
+        local options={"AUTO","TOUCH","KEYBOARD"}
+        local current=CONFIG.SKILL_INPUT.Mode
+        local index=1
+        for i,v in ipairs(options) do if v==current then index=i;break end end
+        CONFIG.SKILL_INPUT.Mode=options[index%#options+1]
+        skillModeButton.Text="SKILL MODE · "..CONFIG.SKILL_INPUT.Mode
+        if PHX.saveUserConfig then PHX.saveUserConfig() end
+        if U.notice then U.notice("Skill input: "..CONFIG.SKILL_INPUT.Mode,true) end
+    end)
+    local skillScanButton = button(skillCard, "QUÉT NÚT SKILL (F9)",
+        UDim2.fromOffset(11, 112), UDim2.new(1, -22, 0, 32), C.LavenderSoft)
+    PHX.connect(skillScanButton.Activated,function()
+        if U.PassThrough then return end
+        PHX.skillTouchDiagnostic()
+        if U.notice then U.notice("Đã log SKILL_TOUCH_SCAN trong F9",true) end
+    end)
     local fruitCard = card(settingsPage, 347, 2, "trái cây fruit random auto store dragon kitsune leopard discord V6 prepare roll")
     text(fruitCard, "DIRECT RANDOM / AUTO STORE", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
     U.FruitToggle = toggle(fruitCard, 31, "Auto Random Fruit", "V6 Direct Gacha; tự mua khi đủ cooldown và tự nhớ lần tới.", function() return CONFIG.FRUIT_AUTO.Enabled == true end, function(value)
