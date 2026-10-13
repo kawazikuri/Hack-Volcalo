@@ -1,32 +1,5 @@
--- V2.17.32: Uploaded material bring INITIAL once / XZ>40 rebring / OriginalY+5; remote Magnet retained.
--- V2.17.31: Verified remote Magnet craft + isolated Scrap/Dragon Hunter bring, NET M1 and player hover.
--- Uploaded V2.17.30 Prehistoric/Lava Golem, quest receiver, boats, cache and fruit logic preserved.
--- V2.17.30: Tween to Dragon Hunter STAND BEFORE quest Remote RequestQuest/Check; skip NPC GUI. Preserves V2.17.28 Bring Once + NET M1.
--- Based on V2.17.29, only changes the Dragon Hunter quest receiver's movement gate and status.
--- PX PREHISTORIC V2.17.28 | SHORT BRING ONCE (80 studs) -> NET M1 until pack clear -> smooth hop to next mob; based on V2.17.27.
--- PX PREHISTORIC V2.17.27 | Adaptive mob routing, closer-range Bring, smooth intra-farm tween; preserve V2.17.26 successful NET M1.
--- V2.17.26: FIX NPC noclip/falling; guarded BodyPosition bring, natural-target reacquire, NET send diagnostics.
--- V2.17.25: Bring+NET M1 reliability | stable V2.17.23 base, excludes unverified V2.17.24 Magnet RPC.
--- V2.17.23: Delta Android skill touch bridge (game mobile GUI, not an unverified ability Remote); PC keyboard preserved.
--- V2.17.22: Dragon Egg cache +1 verification (IdMap Material 565, Tool 1276 observed), reset gated on verified gain.
--- V2.17.21: Direct Volcano ActivationPrompt only after SOLO arrival / TEAM Master + 3 crew near Relic.
--- V2.17.20: Pressure Rock cast-after-approach, extended skill hold and diagnostics; preserves V2.17.19 Dragon Egg recovery.
--- PX PREHISTORIC V2.17.17 | TEAM: MASTER/BOAT may sail without Magnet; SLAVES must craft/verify Magnet before boarding.
--- PX PREHISTORIC V2.17.16 | Golem-only local Humanoid.Health=0 (EXPERIMENT, server kill UNVERIFIED).
--- Forest Pirate, Dragon Hunter, idle NPC combat retain V2.17.15 Recovery NET unchanged.
--- The client can hide a Golem without removing it from the SERVER or protecting Fossil Relic.
--- PX PREHISTORIC V2.17.15 | Tiki first -> Fast Direct BuyBoat after Magnet craft or character reset.
--- Fast Direct uses ONE CommF_ BuyBoat RPC without tweening to Boat Dealer; fallback only after proven rejection.
--- PX PREHISTORIC V2.17.11 | Original Bring + verified-in-test Recovery NET; Egg unchanged
--- NET_HEAD default mirrors isolated PX KillAura Recovery Test V1 (35 studs / 0.30 s).
--- Modes selectable in Settings: NET_HEAD / NET_ROOT / NET_HEAD_0.
--- No independent attack worker when main automation is running; no mouse clicks in combat.
--- V2.17.05 FAST DIRECT BUY BOAT: avoids dealer travel on initial test; preserves one-RPC verification.
--- Plesneviy Xyu CONFIG V2.17.10 | V2.17.08 Bring + Kill Aura donor NET; SOLO Golem first
--- Integration: V2.16.38 main; donor PH_KILL_AURA_TEST_V1; PH_REMOVE_LAVA_TEST_V1; PX STASH TRACKER V4
--- Real-time quantities are client-cache observations; absent records can mean zero OR not replicated.
--- PX PREHISTORIC V2.16.34 | HYDRA/VENOM STABLE HOVER + GOLEM M1 | CLEAN TEST
-local SCRIPT_EXECUTED_AT = os.clock() -- deadline starts before PlayerGui or remotes can yield
+
+local SCRIPT_EXECUTED_AT = os.clock() 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -39,7 +12,7 @@ local Lighting = game:GetService("Lighting")
 
 local LP = Players.LocalPlayer
 local PG = LP:WaitForChild("PlayerGui")
-local PHX = {} -- helper namespace; keeps Delta/Luau main-chunk local count below compiler limit
+local PHX = {} 
 
 local ENV = (getgenv and getgenv()) or _G
 if ENV.__PH_GACHA_ACCOUNT and ENV.__PH_GACHA_ACCOUNT~=LP.UserId then
