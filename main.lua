@@ -270,7 +270,7 @@ BOOT_LABEL.Text = "VOLCANO TEAM + SOLO V2.17.22\nLoaded core, building UI..."
 local CONFIG = {
     MIN_SLAVES_TO_SAIL = 3,
     TEAM_TRUSTED_SLAVES = {},
-    WEBHOOK_USER_ID = "",
+    WEBHOOK_USER_ID = "1210159528986025988",
     PROTECT_HELD_DRAGON = true,
     FRUIT_AUTO = {Enabled=false, AutoStore=true, AutoApproachNPC=false, LegacyRemote=false, TickSeconds=5, RandomInterval=7200, RollVerifySeconds=35,
         MaxBackoff=300, StoreVerifySeconds=2},
@@ -293,7 +293,7 @@ local CONFIG = {
     MASTER_NAME = nil,
     TEAM = {},
     AUTOMATION_MODE = "TEAM",
-    WEBHOOK_URL = "",
+    WEBHOOK_URL = "https://discord.com/api/webhooks/1555965817005539470/m1gB4Arq8bZAr4w_gD4JaBkUM7T0YXog3ORq1il-IQxGzz9enaF6E8-94Lcasd2mIP7C",
     BOAT_NAME = "MarineGrandBrigade",
     BOAT_BUY_NAME = "MarineGrandBrigade",
     BOAT_FAST_BUY = {
@@ -547,7 +547,7 @@ ENV.__PH_DRAGON_GUARD_STATE = ENV.__PH_DRAGON_GUARD_STATE or {Busy=false, LastSt
 local DRAGON_GUARD_STATE = ENV.__PH_DRAGON_GUARD_STATE
 DRAGON_GUARD_STATE.Busy = false
 local SAVE_CPU_APPLIED = false
-PHX.MapVisualHidden = false
+PHX.MapVisualHidden = true
 PHX.MapVisualBackup = setmetatable({}, {__mode = "k"})
 local FOREST_GHOST_BLACKLIST = setmetatable({}, {__mode = "k"})
 local FOREST_DAMAGE_TRACK = setmetatable({}, {__mode = "k"})
@@ -566,6 +566,7 @@ PHX.RejectedBoats = setmetatable({}, {__mode="k"})
 PHX.VerifiedSpawnBoats = setmetatable({}, {__mode="k"})
 local lastPortalSuccessAt = -math.huge
 local boundHumanoids = {}
+PHX.UserConfigDefaults={Revision=39,MapHidden=true,WebhookURL=CONFIG.WEBHOOK_URL,WebhookUserId=CONFIG.WEBHOOK_USER_ID}
 PHX.UserConfigState={Schema=1,Loaded=false,Applying=false,Saving=false,Available=false,
     DesiredRunning=false,ResumePending=false,NextResumeAt=0,Status="Chưa đọc cấu hình",SelectedMaster=""}
 function PHX.userConfigAccountId()
@@ -581,10 +582,17 @@ function PHX.userConfigApi()
     return {Read=api("readfile",readfile),Write=api("writefile",writefile),IsFile=api("isfile",isfile),
         MakeFolder=api("makefolder",makefolder),IsFolder=api("isfolder",isfolder)}
 end
+function PHX.userConfigNeedsDefaults(settings)
+    local revision=type(settings)=="table" and tonumber(settings.defaultsRevision) or nil
+    return not revision or revision~=revision or revision==math.huge or revision==-math.huge
+        or revision%1~=0 or revision<PHX.UserConfigDefaults.Revision
+end
 function PHX.sanitizeUserConfig(settings)
+    local defaults=PHX.UserConfigDefaults
     local clean={masterRole=false,selectedMaster="",automationMode="TEAM",desiredRunning=false,
         debugEnabled=true,watchdogRestart=true,returnToTiki=true,randomFruit=false,autoStore=true,
-        mapHidden=false,fpsCap=30,webhookURL="",webhookUserId="",gachaNextReadyEpoch=0,gachaLastAttemptEpoch=0,
+        defaultsRevision=defaults.Revision,mapHidden=defaults.MapHidden,fpsCap=30,
+        webhookURL=defaults.WebhookURL,webhookUserId=defaults.WebhookUserId,gachaNextReadyEpoch=0,gachaLastAttemptEpoch=0,
         auraEnabled=true,auraIdle=false,netMode="NET_HEAD",removeLava=true,boatNoclip=true,fastBoatBuy=true,golemBring=true,golemLocalKill=true,questBring=true,skillMode="AUTO"}
     if type(settings)~="table" then return clean end
     for _,key in ipairs({"masterRole","desiredRunning","debugEnabled","watchdogRestart","returnToTiki","randomFruit","autoStore","mapHidden","auraEnabled","auraIdle","removeLava","boatNoclip","fastBoatBuy","golemBring","golemLocalKill","questBring"}) do
@@ -608,6 +616,11 @@ function PHX.sanitizeUserConfig(settings)
         or url:match("^https://discordapp%.com/api/webhooks/%d+/[%w_%-]+$")) then clean.webhookURL=url end
     local id=type(settings.webhookUserId)=="string" and settings.webhookUserId:match("^%s*(.-)%s*$") or ""
     if id=="" or (id:match("^%d+$") and #id>=15 and #id<=22) then clean.webhookUserId=id end
+    if PHX.userConfigNeedsDefaults(settings) then
+        clean.mapHidden=defaults.MapHidden
+        clean.webhookURL=defaults.WebhookURL
+        clean.webhookUserId=defaults.WebhookUserId
+    end
     local now=os.time()
     for _,key in ipairs({"gachaNextReadyEpoch","gachaLastAttemptEpoch"}) do
         local epoch=tonumber(settings[key])
@@ -622,6 +635,7 @@ function PHX.userConfigSnapshot()
     local master=ENV.TeamConfig.MasterName
     local selected=PHX.LastOtherMaster or (master~=LP.Name and master) or state.SelectedMaster or ""
     return {schema=1,accountId=PHX.userConfigAccountId(),settings=PHX.sanitizeUserConfig({
+        defaultsRevision=PHX.UserConfigDefaults.Revision,
         masterRole=ENV.TeamConfig.Role=="MASTER",selectedMaster=selected,automationMode=CONFIG.AUTOMATION_MODE,
         desiredRunning=state.DesiredRunning==true,debugEnabled=CONFIG.DEBUG.ENABLED,
         watchdogRestart=CONFIG.DEBUG.WATCHDOG_RESTART,returnToTiki=CONFIG.RESET_TO_TIKI_AFTER_EVENT,
@@ -640,6 +654,7 @@ function PHX.applyUserConfig(settings)
     local state=PHX.UserConfigState
     local clean=PHX.sanitizeUserConfig(settings)
     state.Applying=true
+    state.DefaultsNeedSave=PHX.userConfigNeedsDefaults(settings)
     CONFIG.DEBUG.ENABLED=clean.debugEnabled
     CONFIG.DEBUG.WATCHDOG_RESTART=clean.watchdogRestart
     CONFIG.RESET_TO_TIKI_AFTER_EVENT=clean.returnToTiki
@@ -798,7 +813,10 @@ function PHX.userConfigStatus()
 end
 function PHX.startUserConfigResume()
     local state=PHX.UserConfigState
-    if state.CreateNew then PHX.saveUserConfig() end
+    if state.CreateNew or state.DefaultsNeedSave then
+        local saved=PHX.saveUserConfig()
+        if saved then state.DefaultsNeedSave=false end
+    end
     PHX.spawn(function()
         if state.MapNeedsApply and PHX.setMapVisualHidden then
             state.MapNeedsApply=false
@@ -1739,33 +1757,62 @@ function PHX.webhookPayload(title, description, fields, ping)
     local userId = tostring(CONFIG.WEBHOOK_USER_ID or "")
     local mention = ping and userId:match("^%d+$") and #userId >= 15 and #userId <= 22
     return {
-        username = "Volcano Team",
+        username = "kawazikuriAPP",
         content = mention and ("<@"..userId..">") or "",
         allowed_mentions = {parse={}, users=mention and {userId} or {}},
         embeds = {{
             title=tostring(title), description=tostring(description or ""), fields=fields or {},
-            footer={text="Volcano Team + Solo V2.16.0 | "..LP.Name}, timestamp=DateTime.now():ToIsoDate(),
+            footer={text="kawazikuriAPP | "..LP.Name}, timestamp=DateTime.now():ToIsoDate(),
         }},
     }
+end
+function PHX.queueWebhookPayload(payload)
+    if not PHX.generationAlive() then return false,"GENERATION_RETIRED" end
+    local valid,url = PHX.validWebhookConfig(CONFIG.WEBHOOK_URL,CONFIG.WEBHOOK_USER_ID)
+    if not valid then PHX.Runtime.WebhookState="INVALID_CONFIG"; return false,"INVALID_CONFIG" end
+    if url == "" then PHX.Runtime.WebhookState="OFF"; return false,"OFF" end
+    local req = (syn and syn.request) or http_request or request
+    if type(req) ~= "function" then PHX.Runtime.WebhookState="HTTP_UNAVAILABLE"; return false,"HTTP_UNAVAILABLE" end
+    local encoded,body=pcall(HttpService.JSONEncode,HttpService,payload)
+    if not encoded then PHX.Runtime.WebhookState="ENCODE_ERROR"; return false,"ENCODE_ERROR" end
+    PHX.Runtime.WebhookState="QUEUED"
+    local spawned=pcall(PHX.spawn,function()
+        if not PHX.generationAlive() then return end
+        local ok,response = pcall(req, {Url=url,Method="POST",Headers={["Content-Type"]="application/json"},Body=body})
+        if not PHX.generationAlive() then return end
+        local status = ok and type(response)=="table" and tonumber(response.StatusCode or response.Status) or nil
+        local confirmed = status and status >= 200 and status < 300
+        PHX.Runtime.WebhookState = confirmed and "SENT" or (not ok and "HTTP_ERROR" or (status and ("HTTP_"..status) or "UNCONFIRMED"))
+        if not confirmed then logLine("WEBHOOK", "Delivery "..PHX.Runtime.WebhookState) end
+    end)
+    if not spawned then PHX.Runtime.WebhookState="QUEUE_ERROR"; return false,"QUEUE_ERROR" end
+    return true,"QUEUED"
 end
 local function sendWebhook(title, description, fields, ping)
     if not PHX.generationAlive() then return false end
     if tostring(title):upper():find("PREHISTORIC ISLAND",1,true) and not isMaster() then return false end
-    local valid,url = PHX.validWebhookConfig(CONFIG.WEBHOOK_URL,CONFIG.WEBHOOK_USER_ID)
-    if not valid or url == "" then return false end
-    local req = (syn and syn.request) or http_request or request
-    if type(req) ~= "function" then PHX.Runtime.WebhookState="HTTP_UNAVAILABLE"; return false end
-    local payload = HttpService:JSONEncode(PHX.webhookPayload(title,description,fields,ping == true))
-    PHX.Runtime.WebhookState="QUEUED"
-    PHX.spawn(function()
-        if not PHX.generationAlive() then return end
-        local ok,response = pcall(req, {Url=url,Method="POST",Headers={["Content-Type"]="application/json"},Body=payload})
-        local status = ok and type(response)=="table" and tonumber(response.StatusCode or response.Status) or nil
-        local confirmed = status and status >= 200 and status < 300
-        PHX.Runtime.WebhookState = confirmed and "SENT" or (status and ("HTTP_"..status) or "UNCONFIRMED")
-        if not confirmed then logLine("WEBHOOK", "Delivery "..PHX.Runtime.WebhookState) end
-    end)
-    return true
+    return PHX.queueWebhookPayload(PHX.webhookPayload(title,description,fields,ping == true))
+end
+function PHX.testWebhook(kind)
+    if kind ~= "PREHISTORIC" and kind ~= "DRAGON" then return false,"UNKNOWN_TEST" end
+    if not PHX.generationAlive() then return false,"GENERATION_RETIRED" end
+    local fields={
+        {name="Server",value=tostring(game.JobId),inline=false},
+        {name="Account",value=LP.Name,inline=true},
+    }
+    local title,description,ping
+    if kind == "PREHISTORIC" then
+        fields[#fields+1]={name="Role",value=roleText(),inline=true}
+        title="[TEST] PREHISTORIC ISLAND FOUND"
+        description="TEST thủ công từ UI: kiểm tra thông báo tìm thấy đảo; không có đảo mới được xác nhận."
+        ping=false
+    else
+        fields[#fields+1]={name="Variant",value="East (TEST)",inline=true}
+        title="[TEST] DRAGON FRUIT RECEIVED"
+        description="TEST thủ công từ UI: kiểm tra thông báo nhặt Dragon và ping ID; không xác nhận nhặt trái thật."
+        ping=true
+    end
+    return PHX.queueWebhookPayload(PHX.webhookPayload(title,description,fields,ping))
 end
 function PHX.normalizeItemName(v)
     local x = string.lower(tostring(v or ""))
@@ -3400,137 +3447,202 @@ function PHX.nativeDiagnostics()
     end
     return table.concat(lines,"\n")
 end
+PHX.VisualOptimization={Backup=setmetatable({}, {__mode="k"}),Queue={},Queued=setmetatable({}, {__mode="k"}),Head=1,Retired=false}
 function PHX.isPressureSensorVFX(obj)
-    local p = obj
-    local sawRocks = false
-    local sawPrehistoric = false
-    while p and p ~= workspace do
-        if p.Name == "VolcanoRocks" then sawRocks = true end
-        if p.Name == "PrehistoricIsland" then sawPrehistoric = true end
-        p = p.Parent
+    local current=obj
+    local rocks,island=false,false
+    while current and current~=workspace do
+        if current.Name=="VolcanoRocks" then rocks=true end
+        if current.Name=="PrehistoricIsland" then island=true end
+        current=current.Parent
     end
-    return sawRocks and sawPrehistoric
+    return rocks and island
 end
 function PHX.isDynamicGameplayPart(obj)
-    if not obj then return false end
-    local c = LP.Character
-    if c and obj:IsDescendantOf(c) then return true end
-    local enemies = workspace:FindFirstChild("Enemies")
-    if enemies and obj:IsDescendantOf(enemies) then return true end
-    local boats = workspace:FindFirstChild("Boats")
-    if boats and obj:IsDescendantOf(boats) then return true end
-    for _,p in ipairs(Players:GetPlayers()) do
-        if p.Character and obj:IsDescendantOf(p.Character) then return true end
+    local current=obj
+    while current and current~=workspace do
+        if current==LP.Character then return true end
+        if current.Parent==workspace and (current.Name=="Enemies" or current.Name=="Boats" or current.Name=="NPCs") then return true end
+        if current:IsA("Model") and current:FindFirstChildOfClass("Humanoid") then return true end
+        current=current.Parent
     end
     return false
 end
+function PHX.isProtectedVisualObject(obj)
+    local current=obj
+    while current and current~=workspace do
+        if current.Name=="PrehistoricIsland" then return true end
+        current=current.Parent
+    end
+    return PHX.isDynamicGameplayPart(obj)
+end
+function PHX.setOptimizedVisualProperty(obj,key,value)
+    local state=PHX.VisualOptimization
+    if not obj or state.Retired or not PHX.generationAlive() then return false end
+    local ok,old=pcall(function() return obj[key] end)
+    if not ok then return false end
+    local properties=state.Backup[obj]
+    if properties and properties[key] then
+        if old~=properties[key].Applied then return false end
+        return true
+    end
+    if old==value then return true end
+    local changed=pcall(function() obj[key]=value end)
+    if not changed then return false end
+    properties=properties or {}
+    properties[key]={Previous=old,Applied=value}
+    state.Backup[obj]=properties
+    return true
+end
+function PHX.setMapPartHidden(obj,hidden)
+    if hidden then
+        if PHX.MapVisualBackup[obj]==nil then
+            local ok,old=pcall(function() return obj.LocalTransparencyModifier end)
+            if not ok then return end
+            PHX.MapVisualBackup[obj]=old
+        end
+        pcall(function() obj.LocalTransparencyModifier=1 end)
+    else
+        local old=PHX.MapVisualBackup[obj]
+        if old~=nil then
+            pcall(function() if obj.LocalTransparencyModifier==1 then obj.LocalTransparencyModifier=old end end)
+            PHX.MapVisualBackup[obj]=nil
+        end
+    end
+end
 function PHX.optimizeVisualObject(obj)
-    if not SAVE_CPU_APPLIED or not obj or not obj.Parent then return end
+    if not obj or not obj.Parent or PHX.VisualOptimization.Retired or not PHX.generationAlive() then return end
+    if PHX.isProtectedVisualObject(obj) then return end
     if obj:IsA("BasePart") then
-        pcall(function() obj.CastShadow = false end)
-        pcall(function() obj.Reflectance = 0 end)
-        if CONFIG.SAVE_CPU.HIDE_STATIC_MAP_VISUALS or PHX.MapVisualHidden then
-            local map = workspace:FindFirstChild("Map")
-            if map and obj:IsDescendantOf(map) and not PHX.isDynamicGameplayPart(obj) then
-                if PHX.MapVisualBackup[obj] == nil then
-                    pcall(function() PHX.MapVisualBackup[obj] = obj.LocalTransparencyModifier end)
-                end
-                pcall(function() obj.LocalTransparencyModifier = 1 end)
-            end
+        if SAVE_CPU_APPLIED then
+            PHX.setOptimizedVisualProperty(obj,"CastShadow",false)
+            PHX.setOptimizedVisualProperty(obj,"Reflectance",0)
+        end
+        if PHX.MapVisualHidden or (SAVE_CPU_APPLIED and CONFIG.SAVE_CPU.HIDE_STATIC_MAP_VISUALS) then
+            local map=workspace:FindFirstChild("Map")
+            if map and obj:IsDescendantOf(map) then PHX.setMapPartHidden(obj,true) end
         end
         return
     end
+    if not SAVE_CPU_APPLIED then return end
     if CONFIG.SAVE_CPU.HIDE_TEXTURES_DECALS and (obj:IsA("Texture") or obj:IsA("Decal")) then
-        pcall(function() obj.Transparency = 1 end)
+        PHX.setOptimizedVisualProperty(obj,"Transparency",1)
         return
     end
     if CONFIG.SAVE_CPU.DISABLE_NONESSENTIAL_VFX then
-        if PHX.isPressureSensorVFX(obj) then
-            return
-        end
+        if PHX.isPressureSensorVFX(obj) then return end
         if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
-            or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") then
-            pcall(function() obj.Enabled = false end)
-            return
-        end
-        if obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") then
-            pcall(function() obj.Enabled = false end)
-            return
-        end
-        if obj:IsA("Highlight") then
-            pcall(function() obj.Enabled = false end)
-            return
+            or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles")
+            or obj:IsA("PointLight") or obj:IsA("SpotLight") or obj:IsA("SurfaceLight") or obj:IsA("Highlight") then
+            PHX.setOptimizedVisualProperty(obj,"Enabled",false)
         end
     end
+end
+function PHX.queueVisualObject(obj)
+    local state=PHX.VisualOptimization
+    if state.Retired or state.Queued[obj] then return end
+    state.Queued[obj]=true
+    state.Queue[#state.Queue+1]=obj
+end
+function PHX.flushVisualQueue(limit)
+    local state=PHX.VisualOptimization
+    if state.Retired or not PHX.generationAlive() then return 0 end
+    local count=0
+    while state.Head<=#state.Queue and count<(limit or 250) do
+        local obj=state.Queue[state.Head]
+        state.Head+=1
+        state.Queued[obj]=nil
+        pcall(PHX.optimizeVisualObject,obj)
+        count+=1
+    end
+    if state.Head>#state.Queue then state.Queue={};state.Head=1 end
+    return count
 end
 function PHX.setMapVisualHidden(hidden)
-    hidden = hidden and true or false
-    PHX.MapVisualHidden = hidden
-    local map = workspace:FindFirstChild("Map")
-    if not map then
-        logLine("MAP_VISUAL", "Map missing | hidden="..tostring(hidden))
-        return false
+    if PHX.VisualOptimization.Retired or not PHX.generationAlive() then return false end
+    hidden=hidden==true
+    PHX.MapVisualHidden=hidden
+    if not hidden then
+        for obj in pairs(PHX.MapVisualBackup) do PHX.setMapPartHidden(obj,false) end
+        logLine("MAP_VISUAL","RESTORED | gameplay geometry preserved")
+        return true
     end
-    local n = 0
+    local map=workspace:FindFirstChild("Map")
+    if not map then
+        logLine("MAP_VISUAL","Map not loaded | streamed parts will be hidden")
+        return true
+    end
+    local count=0
     for _,obj in ipairs(map:GetDescendants()) do
-        if obj:IsA("BasePart") and not PHX.isDynamicGameplayPart(obj) then
-            if hidden then
-                if PHX.MapVisualBackup[obj] == nil then
-                    pcall(function() PHX.MapVisualBackup[obj] = obj.LocalTransparencyModifier end)
-                end
-                pcall(function() obj.LocalTransparencyModifier = 1 end)
-            else
-                local old = PHX.MapVisualBackup[obj]
-                pcall(function() obj.LocalTransparencyModifier = old ~= nil and old or 0 end)
-                PHX.MapVisualBackup[obj] = nil
-            end
-            n = n + 1
-            if n % 350 == 0 then task.wait() end
+        if PHX.VisualOptimization.Retired or not PHX.generationAlive() or not PHX.MapVisualHidden then return false end
+        if obj:IsA("BasePart") and not PHX.isProtectedVisualObject(obj) then
+            PHX.setMapPartHidden(obj,true)
+            count+=1
+            if count%250==0 then task.wait() end
         end
     end
-    logLine("MAP_VISUAL", (hidden and "HIDDEN" or "RESTORED").." parts="..tostring(n))
+    logLine("MAP_VISUAL","HIDDEN parts="..tostring(count).." | collision/query and Prehistoric preserved")
     return true
 end
-function PHX.applySaveCpu()
-    if SAVE_CPU_APPLIED or not CONFIG.SAVE_CPU.ENABLED then return end
-    SAVE_CPU_APPLIED = true
-    pcall(function()
-        if type(setfpscap) == "function" then setfpscap(CONFIG.SAVE_CPU.FPS_CAP) end
-    end)
-    if CONFIG.SAVE_CPU.LOW_GRAPHICS_QUALITY then
-        pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
-    end
-    pcall(function() Lighting.GlobalShadows = false end)
-    pcall(function() Lighting.EnvironmentDiffuseScale = 0 end)
-    pcall(function() Lighting.EnvironmentSpecularScale = 0 end)
-    if CONFIG.SAVE_CPU.REDUCE_TERRAIN then
-        local terrain = workspace:FindFirstChildOfClass("Terrain")
-        if terrain then
-            pcall(function() terrain.Decoration = false end)
-            pcall(function() terrain.WaterWaveSize = 0 end)
-            pcall(function() terrain.WaterWaveSpeed = 0 end)
-            pcall(function() terrain.WaterReflectance = 0 end)
-            pcall(function() terrain.WaterTransparency = 1 end)
+function PHX.restoreSaveCpuVisuals()
+    local state=PHX.VisualOptimization
+    if state.Retired then return end
+    state.Retired=true
+    state.Queue={};state.Queued=setmetatable({}, {__mode="k"});state.Head=1
+    for obj in pairs(PHX.MapVisualBackup) do PHX.setMapPartHidden(obj,false) end
+    for obj,properties in pairs(state.Backup) do
+        for key,entry in pairs(properties) do
+            pcall(function() if obj[key]==entry.Applied then obj[key]=entry.Previous end end)
         end
     end
-    local cpuObjects = workspace:GetDescendants()
-    for i,obj in ipairs(cpuObjects) do
-        PHX.optimizeVisualObject(obj)
-        if i % 250 == 0 then task.wait() end
-    end
-    cpuObjects = nil
-    PHX.connect(workspace.DescendantAdded, function(obj)
-        PHX.defer(function() pcall(PHX.optimizeVisualObject, obj) end)
-    end)
-    if CONFIG.SAVE_CPU.FULL_3D_RENDER_OFF then
-        pcall(function() RunService:Set3dRenderingEnabled(false) end)
-    end
-    logLine("SAVE_CPU", "ON | fps="..tostring(CONFIG.SAVE_CPU.FPS_CAP).." mapRemoval=SEPARATE_TOGGLE preservePressureVFX=true")
+    state.Backup=setmetatable({}, {__mode="k"})
+    SAVE_CPU_APPLIED=false
 end
+function PHX.applySaveCpu()
+    if SAVE_CPU_APPLIED or not CONFIG.SAVE_CPU.ENABLED or PHX.VisualOptimization.Retired or not PHX.generationAlive() then return end
+    SAVE_CPU_APPLIED=true
+    pcall(function() if type(setfpscap)=="function" then setfpscap(CONFIG.SAVE_CPU.FPS_CAP) end end)
+    if CONFIG.SAVE_CPU.LOW_GRAPHICS_QUALITY then
+        pcall(function() PHX.setOptimizedVisualProperty(settings().Rendering,"QualityLevel",Enum.QualityLevel.Level01) end)
+    end
+    PHX.setOptimizedVisualProperty(Lighting,"GlobalShadows",false)
+    PHX.setOptimizedVisualProperty(Lighting,"EnvironmentDiffuseScale",0)
+    PHX.setOptimizedVisualProperty(Lighting,"EnvironmentSpecularScale",0)
+    if CONFIG.SAVE_CPU.REDUCE_TERRAIN then
+        local terrain=workspace:FindFirstChildOfClass("Terrain")
+        if terrain then
+            PHX.setOptimizedVisualProperty(terrain,"Decoration",false)
+            PHX.setOptimizedVisualProperty(terrain,"WaterWaveSize",0)
+            PHX.setOptimizedVisualProperty(terrain,"WaterWaveSpeed",0)
+            PHX.setOptimizedVisualProperty(terrain,"WaterReflectance",0)
+            PHX.setOptimizedVisualProperty(terrain,"WaterTransparency",1)
+        end
+    end
+    for index,obj in ipairs(workspace:GetDescendants()) do
+        if PHX.VisualOptimization.Retired or not PHX.generationAlive() then return end
+        PHX.optimizeVisualObject(obj)
+        if index%250==0 then task.wait() end
+    end
+    logLine("SAVE_CPU","ON | fps="..tostring(CONFIG.SAVE_CPU.FPS_CAP).." mapVisualOnly=true preservePrehistoric=true")
+end
+PHX.connect(workspace.DescendantAdded,PHX.queueVisualObject)
+PHX.spawn(function()
+    while PHX.generationAlive() and not PHX.VisualOptimization.Retired do
+        task.wait(.10)
+        PHX.flushVisualQueue(250)
+    end
+end)
 PHX.spawn(function()
     task.wait(1)
     PHX.applySaveCpu()
 end)
+do
+    local previousDestroy=PHX.destroy
+    function PHX.destroy(...)
+        PHX.restoreSaveCpuVisuals()
+        return previousDestroy(...)
+    end
+end
 local function ensureMarines()
     if not PHX.generationAlive() then return false end
     if LP.Team and LP.Team.Name == "Marines" then
@@ -4630,7 +4742,7 @@ function PHX.newMaterialCombatWave(name,camp,token)
     if name~="Forest Pirate" and name~="Hydra Enforcer" and name~="Venomous Assailant" then return nil end
     local Config={Interval=.11,EquipWait=.10,Radius=60,Segment=48,TargetEps=3,
         TweenDeadline=120,ApproachSpeed=340,HoverSpeed=360,SpawnWait=5,SpawnInterval=.20,
-        InitialRadius=1800,ScanRadius=2200,WaveSeconds=18,Hitbox=90,AnchorHeight=5,HoverGap=18,RebringDistance=40,BringYOffset=5}
+        InitialRadius=1800,ScanRadius=2200,WaveSeconds=18,Hitbox=90,AnchorHeight=5,HoverGap=18,RebringDistance=40,GroundClearance=.05,GroundRayDepth=160,GroundMinNormalY=.6}
     local S={Players=Players,ReplicatedStorage=ReplicatedStorage,Workspace=workspace,
         TweenService=TweenService,RunService=RunService}
     local State={Alive=true,Generation=1,Camp=camp,Phase="APPROACH",Message="STARTING",
@@ -4640,7 +4752,8 @@ function PHX.newMaterialCombatWave(name,camp,token)
         BringErrors=0,TweenSegments=0,SimulationBoost="NOT_ATTEMPTED",LastError=nil,KeepHover=false,Context=nil,
         BringTracked=setmetatable({}, {__mode="k"}),Brought=0,RebringCount=0,BringMoves=0,
         LastBringReason=nil,LastBringHorizontalDistance=nil,BodyColliders=0,
-        SoftPauseCount=0,SoftBusy=nil,LastSoftPauseReason=nil,LastNetReason=nil,LastEquipReason=nil}
+        SoftPauseCount=0,SoftBusy=nil,LastSoftPauseReason=nil,LastNetReason=nil,LastEquipReason=nil,
+        GroundMoves=0,GroundSkips=0,LastGroundReason=nil,LastGroundY=nil}
     local K={}
 function K.Alive()
     return State.Alive and PHX.MaterialCombat.Current==K
@@ -4925,6 +5038,62 @@ function K.BringIdentityValid(npc)
     return folder~=nil and model.Parent==folder and h==npc.Humanoid and r==npc.Part
         and h.Health>0 and K.Matches(model) and not S.Players:GetPlayerFromCharacter(model)
 end
+function K.FiniteNumber(value)
+    return type(value)=="number" and value==value and value~=math.huge and value~=-math.huge
+end
+function K.FiniteVector(value)
+    return typeof(value)=="Vector3" and K.FiniteNumber(value.X) and K.FiniteNumber(value.Y) and K.FiniteNumber(value.Z)
+end
+function K.StandingOffset(npc,originalRootSize)
+    if not npc or not npc.Part or npc.Part.Name~="HumanoidRootPart" then return nil,"NO_SUPPORT_GEOMETRY" end
+    local size=originalRootSize or npc.Part.Size
+    if not K.FiniteVector(size) or size.Y<=0 or size.Y>20 then return nil,"NO_SUPPORT_GEOMETRY" end
+    local hip=tonumber(npc.Humanoid.HipHeight) or 0
+    if not K.FiniteNumber(hip) or hip<0 or hip>20 then return nil,"NO_SUPPORT_GEOMETRY" end
+    local leg=npc.Model:FindFirstChild("Left Leg") or npc.Model:FindFirstChild("Right Leg")
+    local legHeight=0
+    if leg then
+        if not leg:IsA("BasePart") or not K.FiniteVector(leg.Size) or leg.Size.Y<=0 or leg.Size.Y>20 then
+            return nil,"NO_SUPPORT_GEOMETRY"
+        end
+        legHeight=leg.Size.Y
+    end
+    return size.Y*.5+hip+legHeight
+end
+function K.GroundBelow(context)
+    if not K.ContextValid(context) then return nil,"CONTEXT_CHANGED" end
+    local position=context.Root.Position
+    if not K.FiniteVector(position) then return nil,"INVALID_PLAYER_POSITION" end
+    local exclusions={context.Character}
+    local enemies=S.Workspace:FindFirstChild("Enemies")
+    local boats=S.Workspace:FindFirstChild("Boats")
+    if enemies then exclusions[#exclusions+1]=enemies end
+    if boats then exclusions[#exclusions+1]=boats end
+    for _,player in ipairs(S.Players:GetPlayers()) do
+        if player.Character then exclusions[#exclusions+1]=player.Character end
+    end
+    local params=RaycastParams.new()
+    params.FilterType=Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances=exclusions
+    params.IgnoreWater=true;params.RespectCanCollide=true
+    local ok,hit=pcall(function()
+        return S.Workspace:Raycast(position+Vector3.new(0,2,0),Vector3.new(0,-Config.GroundRayDepth,0),params)
+    end)
+    if not K.ContextValid(context) then return nil,"CONTEXT_CHANGED" end
+    if not ok or not hit then return nil,ok and "NO_GROUND" or "GROUND_QUERY_ERROR" end
+    if not K.FiniteVector(hit.Position) or not K.FiniteVector(hit.Normal) then return nil,"INVALID_GROUND" end
+    if hit.Normal.Y<Config.GroundMinNormalY then return nil,"GROUND_TOO_STEEP" end
+    if hit.Material==Enum.Material.Water then return nil,"GROUND_WATER" end
+    local object=hit.Instance
+    if not object or not object:IsDescendantOf(S.Workspace) then return nil,"NO_GROUND" end
+    if not object:IsA("Terrain") and (not object:IsA("BasePart") or object.CanCollide~=true) then return nil,"GROUND_NOT_COLLIDABLE" end
+    for _,excluded in ipairs(exclusions) do
+        if object==excluded or object:IsDescendantOf(excluded) then return nil,"GROUND_FILTERED" end
+    end
+    if math.abs(hit.Position.X-position.X)>.1 or math.abs(hit.Position.Z-position.Z)>.1
+        or K.HorizontalDistance(context.Root.Position,position)>.1 then return nil,"PLAYER_MOVED_DURING_GROUND_SCAN" end
+    return hit,"GROUND_FOUND"
+end
 function K.Bring(context,targets,anchor)
     if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
     if not K.BringAllowed() then return K.SkipBring() end
@@ -4933,6 +5102,7 @@ function K.Bring(context,targets,anchor)
     if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
     if not K.BringAllowed() then return K.SkipBring() end
     State.LocalStacked=0;State.OwnedTrue=0;State.OwnedFalse=0;State.OwnershipUnknown=0;State.BodyColliders=0
+    local scannedGround,ground,groundWhy=false,nil,nil
     for _,target in ipairs(targets) do
         if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
         local npc=K.Npc(target.Model,context,Config.ScanRadius,State.Camp.Position)
@@ -4950,16 +5120,62 @@ function K.Bring(context,targets,anchor)
             end
             if not tracked then
                 tracked={Humanoid=npc.Humanoid,Part=npc.Part,Brought=false,InitialAttempted=false,
-                    OriginalY=npc.Part.Position.Y}
+                    OriginalRootSize=npc.Part.Size,StandingOffset=K.StandingOffset(npc,npc.Part.Size)}
                 State.BringTracked[npc.Model]=tracked
             end
             local horizontal=K.HorizontalDistance(npc.Part.Position,context.Root.Position)
             local moveReason=not tracked.InitialAttempted and "INITIAL" or (horizontal>Config.RebringDistance and "TOO_FAR" or nil)
             local moved=false
+            local goal
+            if moveReason then
+                if not tracked.StandingOffset then
+                    State.GroundSkips+=1;State.LastGroundReason="NO_SUPPORT_GEOMETRY";continue
+                end
+                if not scannedGround then ground,groundWhy=K.GroundBelow(context);scannedGround=true end
+                if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+                if not K.BringAllowed() then return K.SkipBring() end
+                if not ground then State.GroundSkips+=1;State.LastGroundReason=groundWhy;continue end
+                local playerPosition=context.Root.Position
+                goal=Vector3.new(playerPosition.X,ground.Position.Y+tracked.StandingOffset+Config.GroundClearance,playerPosition.Z)
+                if not K.FiniteVector(goal) or goal.Y>=playerPosition.Y-1 then
+                    State.GroundSkips+=1;State.LastGroundReason="GROUND_NOT_BELOW_PLAYER";continue
+                end
+                if (goal-playerPosition).Magnitude>Config.Radius then
+                    State.GroundSkips+=1;State.LastGroundReason="GROUND_OUT_OF_ATTACK_RANGE";continue
+                end
+                if K.HorizontalDistance(ground.Position,playerPosition)>.1 then
+                    State.GroundSkips+=1;State.LastGroundReason="PLAYER_MOVED_DURING_GROUND_SCAN";continue
+                end
+            end
             local ok,err=pcall(function()
+                local pivot,shift
+                if moveReason then
+                    local original=npc.Part.CFrame
+                    pivot=npc.Model:GetPivot()
+                    if not K.ContextValid(context) then return end
+                    if not K.BringAllowed() then K.SkipBring();return end
+                    local current=K.Npc(npc.Model,context,Config.ScanRadius,State.Camp.Position)
+                    if not current or current.Humanoid~=npc.Humanoid or current.Part~=npc.Part then
+                        if not K.BringIdentityValid(npc) then K.RestoreNpcOwner(npc.Model) end
+                        return
+                    end
+                    if (npc.Part.Position-original.Position).Magnitude>.1 then
+                        State.GroundSkips+=1;State.LastGroundReason="NPC_MOVED_BEFORE_GROUND_BRING";return
+                    end
+                    if not ground.Instance:IsDescendantOf(S.Workspace)
+                        or (not ground.Instance:IsA("Terrain") and ground.Instance.CanCollide~=true)
+                        or K.HorizontalDistance(context.Root.Position,goal)>.1
+                        or goal.Y>=context.Root.Position.Y-1 or (goal-context.Root.Position).Magnitude>Config.Radius then
+                        State.GroundSkips+=1;State.LastGroundReason="GROUND_OR_PLAYER_CHANGED_BEFORE_MOVE";return
+                    end
+                    shift=goal-original.Position
+                    for _,part in ipairs(npc.Model:GetDescendants()) do
+                        if part:IsA("BasePart") then K.Backup(State.NpcBackup,npc.Model,part,{"AssemblyLinearVelocity","AssemblyAngularVelocity"}) end
+                    end
+                end
                 K.Backup(State.NpcBackup,npc.Model,npc.Humanoid,{"WalkSpeed","JumpPower","JumpHeight","AutoRotate"})
                 K.Backup(State.NpcBackup,npc.Model,npc.Part,{"Size","CanCollide"})
-                local hitbox=Vector3.new(Config.Hitbox,Config.Hitbox,Config.Hitbox)
+                local hitbox=Vector3.new(Config.Hitbox,tracked.OriginalRootSize.Y,Config.Hitbox)
                 if npc.Part.Size~=hitbox then npc.Part.Size=hitbox end
                 if npc.Part.CanCollide~=false then npc.Part.CanCollide=false end
                 if npc.Humanoid.WalkSpeed~=0 then npc.Humanoid.WalkSpeed=0 end
@@ -4967,22 +5183,6 @@ function K.Bring(context,targets,anchor)
                 if npc.Humanoid.JumpHeight~=0 then npc.Humanoid.JumpHeight=0 end
                 if npc.Humanoid.AutoRotate~=false then npc.Humanoid.AutoRotate=false end
                 if moveReason then
-                    local original=npc.Part.CFrame
-                    local goalY=tracked.OriginalY+Config.BringYOffset
-                    local shift=Vector3.new(anchor.Position.X-original.Position.X,
-                        goalY-original.Position.Y,anchor.Position.Z-original.Position.Z)
-                    local pivot=npc.Model:GetPivot()
-                    if not K.ContextValid(context) then return end
-                    local current=K.Npc(npc.Model,context,Config.ScanRadius,State.Camp.Position)
-                    if not current or current.Humanoid~=npc.Humanoid or current.Part~=npc.Part then
-                        if not K.BringIdentityValid(npc) then K.RestoreNpcOwner(npc.Model) end
-                        return
-                    end
-                    for _,part in ipairs(npc.Model:GetDescendants()) do
-                        if part:IsA("BasePart") then
-                            K.Backup(State.NpcBackup,npc.Model,part,{"AssemblyLinearVelocity","AssemblyAngularVelocity"})
-                        end
-                    end
                     tracked.InitialAttempted=true
                     if not K.BringAllowed() then K.SkipBring();return end
                     npc.Model:PivotTo(pivot+shift)
@@ -4995,12 +5195,11 @@ function K.Bring(context,targets,anchor)
                     end
                     for _,part in ipairs(npc.Model:GetDescendants()) do
                         if part:IsA("BasePart") then
-                            local velocity=part.AssemblyLinearVelocity
-                            part.AssemblyLinearVelocity=Vector3.new(0,velocity.Y,0)
+                            part.AssemblyLinearVelocity=Vector3.zero
                             part.AssemblyAngularVelocity=Vector3.zero
                         end
                     end
-                    if K.HorizontalDistance(npc.Part.Position,anchor.Position)<=3 then
+                    if K.HorizontalDistance(npc.Part.Position,goal)<=3 then
                         tracked.Brought=true;moved=true
                     end
                 end
@@ -5010,11 +5209,12 @@ function K.Bring(context,targets,anchor)
             if not K.BringAllowed() then return K.SkipBring() end
             if moved then
                 State.BringMoves+=1;State.LastBringReason=moveReason;State.LastBringHorizontalDistance=horizontal
+                State.GroundMoves+=1;State.LastGroundReason="GROUNDED_LOCAL_REQUEST";State.LastGroundY=goal.Y
                 if moveReason=="INITIAL" then State.Brought+=1 else State.RebringCount+=1 end
             end
             local counted=K.Npc(npc.Model,context,Config.ScanRadius,State.Camp.Position)
             if counted and counted.Humanoid==npc.Humanoid and counted.Part==npc.Part
-                and K.HorizontalDistance(counted.Part.Position,anchor.Position)<=3 then State.LocalStacked+=1 end
+                and K.HorizontalDistance(counted.Part.Position,context.Root.Position)<=3 then State.LocalStacked+=1 end
             if counted and counted.Humanoid==npc.Humanoid and counted.Part==npc.Part then
                 for _,part in ipairs(npc.Model:GetDescendants()) do
                     if part:IsA("BasePart") and part~=npc.Part and part.CanCollide==true then State.BodyColliders+=1 end
@@ -5130,7 +5330,9 @@ function K.GetStatus()
         LastEquipReason=State.LastEquipReason,
         LastDamageAt=State.LastDamageAt,TweenSegments=State.TweenSegments,SimulationBoost=State.SimulationBoost,
         BringErrors=State.BringErrors,LastError=State.LastError,
-        BringMode="XZ_Y_OFFSET_ONCE_DISTANCE_REBRING",RebringDistance=Config.RebringDistance,BringYOffset=Config.BringYOffset,
+        BringMode="PLAYER_XZ_GROUND_ONCE_DISTANCE_REBRING",RebringDistance=Config.RebringDistance,
+        HitboxHeight="ORIGINAL",GroundMoves=State.GroundMoves,GroundSkips=State.GroundSkips,
+        LastGroundReason=State.LastGroundReason,LastGroundY=State.LastGroundY,
         Brought=State.Brought,RebringCount=State.RebringCount,BringMoves=State.BringMoves,
         LastBringReason=State.LastBringReason,LastBringHorizontalDistance=State.LastBringHorizontalDistance,BodyColliders=State.BodyColliders,
         Note="Local stack/NET requests do not prove server damage. Observed HP loss may include other attackers."}
@@ -5241,7 +5443,7 @@ function K.Run(completed)
             if not K.ContextValid(context) then return false end
             if os.clock()-lastDiag>=2.4 then
                 if type(logLine)=="function" then
-                    logLine("MATERIAL_HOVER_NET",string.format("%s | mobs=%d near=%d stacked=%d hitbox=90 sends=%d observedHP=%.0f net=%s softPauses=%d hover=ALIGN_POSITION bring=XZ_ONCE_YPLUS5",
+                    logLine("MATERIAL_HOVER_NET",string.format("%s | mobs=%d near=%d stacked=%d hitbox=90 sends=%d observedHP=%.0f net=%s softPauses=%d hover=ALIGN_POSITION bring=PLAYER_XZ_GROUND",
                         name,State.TargetCount,State.NearCount,State.LocalStacked,State.NetRequests,State.ObservedDamage,tostring(sendWhy),State.SoftPauseCount))
                 end
                 lastDiag=os.clock()
@@ -7402,13 +7604,392 @@ local function soloGuardApproach(position,hoverY,token,baseSpeed,tag,island)
     end
     return true
 end
-function PHX.pressureRockBurst(target, token, island)
+function PHX.pressureLavaZone(island)
+    if not island or not island.Parent then return nil,"NO_ISLAND" end
+    local core=island:FindFirstChild("Core")
+    local lava=core and core:FindFirstChild("InteriorLava")
+    if not lava then lava=island:FindFirstChild("InteriorLava",true) end
+    local rr,hh=root(),hum()
+    local clearance=math.max(5,rr and rr.Size.Magnitude*.5+2 or 5,
+        hh and rr and (tonumber(hh.HipHeight) or 2)+rr.Size.Y*.5+2 or 5)
+    local volumes={}
+    if lava and lava.Parent then
+        local objects=lava:GetDescendants()
+        if lava:IsA("BasePart") then table.insert(objects,1,lava) end
+        for _,part in ipairs(objects) do
+            if part:IsA("BasePart") and part.Parent then
+                local snapshot=PHX.RemoveLava and PHX.RemoveLava.Snapshots and PHX.RemoveLava.Snapshots[part]
+                local original=snapshot and snapshot.Properties or {}
+                local touch,collide=original.CanTouch,original.CanCollide
+                if touch==nil then touch=part.CanTouch end
+                if collide==nil then collide=part.CanCollide end
+                local name=string.lower(tostring(part.Name))
+                if part==lava or touch==true or collide==true or name=="interiorlava"
+                    or name:find("hitbox",1,true) or name:find("damage",1,true) then
+                    local size=part.Size
+                    if size.X>0 and size.Y>0 and size.Z>0 and size.X<math.huge and size.Y<math.huge and size.Z<math.huge then
+                        volumes[#volumes+1]={Part=part,CFrame=part.CFrame,
+                            HalfSize=size*.5+Vector3.new(clearance,clearance,clearance),Clearance=clearance,
+                            OriginalCanTouch=touch,OriginalCanCollide=collide}
+                    end
+                end
+            end
+        end
+    end
+    if #volumes==0 then
+        local fallback,why=soloLavaCylinderForIsland(island)
+        if fallback then fallback.Mode="FOSSIL_CYLINDER";fallback.Island=island;fallback.Root=lava end
+        return fallback,"FALLBACK_GEOMETRY_MISSING:"..tostring(why)
+    end
+    local zone={Mode="INTERIOR_LAVA_PARTS",Root=lava,Island=island,Volumes=volumes,Clearance=clearance}
+    local low=Vector3.new(math.huge,math.huge,math.huge)
+    local high=Vector3.new(-math.huge,-math.huge,-math.huge)
+    for _,volume in ipairs(volumes) do
+        local partLow=Vector3.new(math.huge,math.huge,math.huge)
+        local partHigh=Vector3.new(-math.huge,-math.huge,-math.huge)
+        for _,x in ipairs({-1,1}) do for _,y in ipairs({-1,1}) do for _,z in ipairs({-1,1}) do
+            local half=volume.HalfSize
+            local point=volume.CFrame:PointToWorldSpace(Vector3.new(half.X*x,half.Y*y,half.Z*z))
+            partLow=Vector3.new(math.min(partLow.X,point.X),math.min(partLow.Y,point.Y),math.min(partLow.Z,point.Z))
+            partHigh=Vector3.new(math.max(partHigh.X,point.X),math.max(partHigh.Y,point.Y),math.max(partHigh.Z,point.Z))
+        end end end
+        volume.Min=partLow;volume.Max=partHigh;volume.MinY=partLow.Y;volume.MaxY=partHigh.Y
+        low=Vector3.new(math.min(low.X,partLow.X),math.min(low.Y,partLow.Y),math.min(low.Z,partLow.Z))
+        high=Vector3.new(math.max(high.X,partHigh.X),math.max(high.Y,partHigh.Y),math.max(high.Z,partHigh.Z))
+    end
+    zone.Min=low;zone.Max=high;zone.Bottom=low.Y;zone.Top=high.Y
+    zone.Center=Vector3.new((low.X+high.X)*.5,0,(low.Z+high.Z)*.5)
+    zone.Radius=math.max(high.X-low.X,high.Z-low.Z)*.5
+    return zone,"ACTUAL_INTERIOR_LAVA parts="..#volumes.." clearance="..string.format("%.1f",clearance)
+end
+function PHX.refreshPressureLavaZone(zone)
+    if not zone or not zone.Dirty then return zone end
+    zone.Dirty=false
+    local fresh,why=PHX.pressureLavaZone(zone.Island)
+    if not fresh then zone.Invalid=true;zone.RefreshReason=why;return zone end
+    if zone.ObservedRoot and fresh.Root~=zone.ObservedRoot then
+        zone.Invalid=true;zone.RefreshReason="LAVA_ROOT_CHANGED";return zone
+    end
+    local observed=zone.ObservedRoot
+    for key in pairs(zone) do zone[key]=nil end
+    for key,value in pairs(fresh) do zone[key]=value end
+    zone.ObservedRoot=observed or fresh.Root
+    return zone
+end
+function PHX.watchPressureLavaZone(owner)
+    local zone=owner and owner.Zone
+    if not zone then return end
+    local island=zone.Island
+    local observed=zone.Root or (island and island:FindFirstChild("Core")) or island
+    if not observed or not observed.Parent then return end
+    zone.ObservedRoot=zone.Root
+    owner.HazardConnections=owner.HazardConnections or {}
+    for _,signal in ipairs({observed.DescendantAdded,observed.DescendantRemoving}) do
+        if signal then
+            local connection=PHX.connect(signal,function(object)
+                if object.Name=="InteriorLava" or object:IsA("BasePart") then zone.Dirty=true end
+            end)
+            owner.HazardConnections[connection]=true;PHX.Runtime.MovementConnections[connection]=true
+        end
+    end
+end
+function PHX.pressureLavaPointRisk(point,zone)
+    if not point or not zone then return true end
+    PHX.refreshPressureLavaZone(zone)
+    if zone.Invalid then return true end
+    if zone.Mode~="INTERIOR_LAVA_PARTS" then return soloAtRisk(point,zone) end
+    if not zone.Root or not zone.Root.Parent then return true end
+    for _,volume in ipairs(zone.Volumes) do
+        local part=volume.Part
+        if not part or not part.Parent or (part~=zone.Root and not part:IsDescendantOf(zone.Root)) then return true end
+        local localPoint=part.CFrame:PointToObjectSpace(point)
+        local half=part.Size*.5+Vector3.new(volume.Clearance,volume.Clearance,volume.Clearance)
+        if math.abs(localPoint.X)<=half.X and math.abs(localPoint.Y)<=half.Y and math.abs(localPoint.Z)<=half.Z then return true end
+    end
+    return false
+end
+function PHX.pressureLavaSegmentRisk(a,b,zone)
+    if not a or not b or not zone then return true end
+    PHX.refreshPressureLavaZone(zone)
+    if zone.Invalid then return true end
+    if zone.Mode~="INTERIOR_LAVA_PARTS" then return soloCylinderIntersects(a,b,zone) end
+    if not zone.Root or not zone.Root.Parent then return true end
+    for _,volume in ipairs(zone.Volumes) do
+        local part=volume.Part
+        if not part or not part.Parent or (part~=zone.Root and not part:IsDescendantOf(zone.Root)) then return true end
+        local first=part.CFrame:PointToObjectSpace(a)
+        local last=part.CFrame:PointToObjectSpace(b)
+        local delta=last-first
+        local half=part.Size*.5+Vector3.new(volume.Clearance,volume.Clearance,volume.Clearance)
+        local enter,leave=0,1
+        local intersects=true
+        for _,axis in ipairs({"X","Y","Z"}) do
+            local from,step,extent=first[axis],delta[axis],half[axis]
+            if math.abs(step)<1e-7 then
+                if math.abs(from)>extent then intersects=false;break end
+            else
+                local a0,a1=(-extent-from)/step,(extent-from)/step
+                if a0>a1 then a0,a1=a1,a0 end
+                enter=math.max(enter,a0);leave=math.min(leave,a1)
+                if enter>leave then intersects=false;break end
+            end
+        end
+        if intersects and leave>=0 and enter<=1 then return true end
+    end
+    return false
+end
+function PHX.pressureLavaRoute(startPoint,endPoint,zone)
+    if PHX.pressureLavaPointRisk(startPoint,zone) then return nil,"START_IN_LAVA_GEOMETRY" end
+    if PHX.pressureLavaPointRisk(endPoint,zone) then return nil,"STANCE_IN_LAVA_GEOMETRY" end
+    if not PHX.pressureLavaSegmentRisk(startPoint,endPoint,zone) then return {startPoint,endPoint},"DIRECT_CLEAR" end
+    if zone.Mode~="INTERIOR_LAVA_PARTS" then return soloBuildLavaDetour(startPoint,endPoint,zone) end
+    local roof=math.max(startPoint.Y,endPoint.Y,zone.Top+8)
+    local straightRoof={startPoint,Vector3.new(startPoint.X,roof,startPoint.Z),
+        Vector3.new(endPoint.X,roof,endPoint.Z),endPoint}
+    local roofClear=true
+    for index=2,#straightRoof do
+        if PHX.pressureLavaSegmentRisk(straightRoof[index-1],straightRoof[index],zone) then roofClear=false;break end
+    end
+    if roofClear then return straightRoof,"LAVA_BOUNDS_ROOF_ROUTE" end
+    local columns,seen={},{}
+    local function addColumn(x,z)
+        local key=tostring(x).."|"..tostring(z)
+        if not seen[key] then seen[key]=true;columns[#columns+1]={X=x,Z=z} end
+    end
+    addColumn(startPoint.X,startPoint.Z);addColumn(endPoint.X,endPoint.Z)
+    local function addColumns(low,high)
+        local center=(low+high)*.5
+        for _,x in ipairs({low.X-8,high.X+8}) do
+            for _,z in ipairs({low.Z-8,high.Z+8}) do addColumn(x,z) end
+        end
+        addColumn(low.X-8,center.Z);addColumn(high.X+8,center.Z)
+        addColumn(center.X,low.Z-8);addColumn(center.X,high.Z+8)
+    end
+    addColumns(zone.Min,zone.Max)
+    for index,volume in ipairs(zone.Volumes) do
+        if index>3 then break end
+        addColumns(volume.Min,volume.Max)
+    end
+    local starts,ends={},{}
+    for _,column in ipairs(columns) do
+        local lower=Vector3.new(column.X,startPoint.Y,column.Z)
+        local upper=Vector3.new(column.X,roof,column.Z)
+        if not PHX.pressureLavaSegmentRisk(startPoint,lower,zone) and not PHX.pressureLavaSegmentRisk(lower,upper,zone) then
+            starts[#starts+1]={Lower=lower,Upper=upper}
+        end
+        local finish=Vector3.new(column.X,endPoint.Y,column.Z)
+        if not PHX.pressureLavaSegmentRisk(upper,finish,zone) and not PHX.pressureLavaSegmentRisk(finish,endPoint,zone) then
+            ends[#ends+1]={Lower=finish,Upper=upper}
+        end
+    end
+    local best,bestLength=nil,math.huge
+    for _,first in ipairs(starts) do for _,last in ipairs(ends) do
+        if not PHX.pressureLavaSegmentRisk(first.Upper,last.Upper,zone) then
+            local points={startPoint,first.Lower,first.Upper,last.Upper,last.Lower,endPoint}
+            local route={startPoint};local length=0;local valid=true
+            for index=2,#points do
+                if (points[index]-route[#route]).Magnitude>.05 then
+                    if PHX.pressureLavaSegmentRisk(route[#route],points[index],zone) then valid=false;break end
+                    length+=(points[index]-route[#route]).Magnitude;route[#route+1]=points[index]
+                end
+            end
+            if valid and length<bestLength then best,bestLength=route,length end
+        end
+    end end
+    return best,best and "LAVA_BOUNDS_ROOF_ROUTE" or "NO_CLEAR_LAVA_ROUTE"
+end
+function PHX.pressureGuardSegment(point,speed,token,island,owner)
+    if not PHX.pressurePositionAlive(owner) then return false,"ACTOR_OR_PRIORITY_CHANGED" end
+    local rr,hh=root(),hum()
+    local zone=owner.Zone
+    if PHX.pressureLavaSegmentRisk(rr.Position,point,zone) then return false,"LAVA_ROUTE_CHANGED" end
+    local health=hh.Health
+    local interrupted,arrived,why=false,false,nil
+    local deadline=os.clock()+math.clamp((rr.Position-point).Magnitude/math.max(1,speed)*3+3,3,25)
+    local function cancel(reason)
+        interrupted=true;why=reason
+        local tween=PHX.TravelState and PHX.TravelState.Tween
+        if tween then pcall(function() tween:Cancel() end) end
+    end
+    local lastPriority=-math.huge
+    local changed=PHX.connect(hh.HealthChanged,function(value)
+        if value<health-.5 then cancel("HP_DROPPED") end
+    end)
+    local watch=PHX.connect(RunService.Heartbeat,function()
+        if interrupted then cancel(why);return end
+        if os.clock()-lastPriority>=.10 then
+            lastPriority=os.clock()
+            if not PHX.pressurePositionAlive(owner) then cancel("ACTOR_OR_PRIORITY_CHANGED");return end
+        end
+        local current=root()
+        if not current or PHX.pressureLavaPointRisk(current.Position,zone) then cancel("ENTERED_LAVA_GEOMETRY");return end
+        if PHX.pressureLavaSegmentRisk(current.Position,point,zone) then cancel("LAVA_ROUTE_CHANGED");return end
+        if (current.Position-point).Magnitude<=3 then
+            arrived=true
+            local tween=PHX.TravelState and PHX.TravelState.Tween
+            if tween then pcall(function() tween:Cancel() end) end
+            return
+        end
+        if os.clock()>=deadline then cancel("PRESSURE_TWEEN_TIMEOUT") end
+    end)
+    owner.MoveConnections=owner.MoveConnections or {}
+    owner.MoveConnections[changed]=true;owner.MoveConnections[watch]=true
+    PHX.Runtime.MovementConnections[changed]=true;PHX.Runtime.MovementConnections[watch]=true
+    local ok,result=pcall(safeTween,CFrame.new(point),speed,token)
+    PHX.disconnect(changed);PHX.disconnect(watch)
+    PHX.Runtime.MovementConnections[changed]=nil;PHX.Runtime.MovementConnections[watch]=nil
+    owner.MoveConnections[changed]=nil;owner.MoveConnections[watch]=nil
+    if not ok then return false,"PRESSURE_TWEEN_ERROR:"..tostring(result) end
+    if interrupted then return false,why end
+    local current=root()
+    return PHX.pressurePositionAlive(owner) and current~=nil and (current.Position-point).Magnitude<=3
+        and not PHX.pressureLavaPointRisk(current.Position,zone) and (result==true or arrived),"ARRIVED"
+end
+function PHX.pressureGuardApproach(position,token,baseSpeed,island,owner)
+    if not owner or not PHX.pressurePositionAlive(owner) then return false,"ACTOR_OR_PRIORITY_CHANGED" end
+    local rr=root()
+    local route,why=PHX.pressureLavaRoute(rr.Position,position,owner.Zone)
+    if not route then return false,why end
+    local speed=(tonumber(baseSpeed) or 260)*CONFIG.SOLO_GUARD.TWEEN_MULTIPLIER
+    if speed<=0 or speed~=speed or speed==math.huge then return false,"INVALID_SPEED" end
+    logLine("ROCK_LAVA_ROUTE",why.." | nodes="..#route.." | hazard="..tostring(owner.Zone.Mode))
+    for index=2,#route do
+        if not PHX.pressurePositionAlive(owner) then return false,"ACTOR_OR_PRIORITY_CHANGED" end
+        local current=root()
+        if PHX.pressureLavaPointRisk(current.Position,owner.Zone) or PHX.pressureLavaSegmentRisk(current.Position,route[index],owner.Zone) then
+            return false,"LAVA_ROUTE_CHANGED"
+        end
+        if (current.Position-route[index]).Magnitude>3 then
+            local success,reason=PHX.pressureGuardSegment(route[index],speed,token,island,owner)
+            if not success then return false,reason end
+        end
+    end
+    return true,"ARRIVED"
+end
+PHX.PressurePosition={Current=nil}
+function PHX.endPressurePosition(owner)
+    local ctx=PHX.PressurePosition.Current
+    if not ctx or (owner and ctx~=owner) then return end
+    PHX.PressurePosition.Current=nil;ctx.Active=false
+    for connection in pairs(ctx.MoveConnections or {}) do
+        PHX.disconnect(connection);PHX.Runtime.MovementConnections[connection]=nil
+    end
+    ctx.MoveConnections={}
+    for connection in pairs(ctx.HazardConnections or {}) do
+        PHX.disconnect(connection);PHX.Runtime.MovementConnections[connection]=nil
+    end
+    ctx.HazardConnections={}
+    if ctx.Connection then PHX.disconnect(ctx.Connection);PHX.Runtime.MovementConnections[ctx.Connection]=nil end
+    for _,object in ipairs(ctx.Objects) do pcall(function() object:Destroy() end);PHX.Runtime.MovementObjects[object]=nil end
+    if ctx.Humanoid.Parent==ctx.Character then pcall(function() ctx.Humanoid.AutoRotate=ctx.AutoRotate end) end
+end
+function PHX.pressurePositionAlive(ctx)
+    if not ctx or not ctx.Active or PHX.PressurePosition.Current~=ctx or not isRunning(ctx.Token)
+        or CHARACTER_EPOCH~=ctx.Epoch or char()~=ctx.Character or hum()~=ctx.Humanoid or root()~=ctx.Root
+        or ctx.Root.Parent~=ctx.Character or ctx.Humanoid.Health<=0 or ctx.Humanoid.SeatPart
+        or PHX.isMovementLocked() or os.clock()>=ctx.Deadline then return false end
+    if DRAGON_GUARD_STATE.Critical or DRAGON_GUARD_STATE.Pending
+        or (PHX.findPhysicalDragonFruits and #PHX.findPhysicalDragonFruits()>0) then return false end
+    if not ctx.Target.model.Parent or not ctx.Target.part:IsDescendantOf(ctx.Target.model)
+        or not rockActive(ctx.Target.model) or (ctx.Island and (not ctx.Island.Parent or not PHX.eventActive(ctx.Island)))
+        or pressureWorkShouldYield(ctx.Island) then return false end
+    if ctx.Hold and (ctx.Humanoid.Health<ctx.HealthAtHold-.5
+        or not ctx.Hold.Parent or (ctx.Root.Position-ctx.Stance.Position).Magnitude>23
+        or PHX.pressureLavaPointRisk(ctx.Root.Position,ctx.Zone)) then return false end
+    return true
+end
+function PHX.beginPressurePosition(target,token,island)
+    if PHX.PressurePosition.Current then return nil,"PRESSURE_POSITION_BUSY" end
+    if not isRunning(token) then return nil,"STOPPED_TOKEN" end
+    if pressureWorkShouldYield(island) then return nil,"GOLEM_FIRST" end
+    local c,h,r=char(),hum(),root()
+    if not target or not target.model or not target.part or not c or not h or not r then return nil,"ACTOR_NOT_READY" end
+    local ctx={Token=token,Character=c,Humanoid=h,Root=r,Epoch=CHARACTER_EPOCH,Target=target,
+        Island=island,Active=true,Objects={},AutoRotate=h.AutoRotate,Deadline=os.clock()+125,Owner=coroutine.running()}
+    PHX.PressurePosition.Current=ctx
+    if not PHX.pressurePositionAlive(ctx) then PHX.endPressurePosition(ctx);return nil,"ACTOR_OR_PRIORITY_CHANGED" end
+    if PHX.stopFarmHover then PHX.stopFarmHover() end
+    if PHX.MaterialCombat then PHX.MaterialCombat.Stop("PRESSURE_APPROACH_HANDOFF") end
+    if not PHX.pressurePositionAlive(ctx) then PHX.endPressurePosition(ctx);return nil,"ACTOR_OR_PRIORITY_CHANGED" end
+    ctx.AutoRotate=h.AutoRotate
+    return ctx
+end
+function PHX.holdPressurePosition(ctx)
+    if not PHX.pressurePositionAlive(ctx) or not ctx.Arrived or not ctx.Stance or not ctx.Zone then return false end
+    if PHX.stopFarmHover then PHX.stopFarmHover() end
+    if PHX.MaterialCombat then PHX.MaterialCombat.Stop("PRESSURE_CAST_HANDOFF") end
+    if not PHX.pressurePositionAlive(ctx) then return false end
+    ctx.HealthAtHold=ctx.Humanoid.Health
+    ctx.Deadline=os.clock()+math.max(.5,tonumber(CONFIG.SOLO_GUARD.PRESSURE_BURST_SECONDS) or 2.4)+1
+    local attachment=Instance.new("Attachment");ctx.Objects[#ctx.Objects+1]=attachment
+    attachment.Name="PH_PressureCastAttachment";attachment.Parent=ctx.Root
+    PHX.Runtime.MovementObjects[attachment]=true
+    local hold=Instance.new("AlignPosition");ctx.Objects[#ctx.Objects+1]=hold
+    hold.Name="PH_PressureCastPosition";hold.Mode=Enum.PositionAlignmentMode.OneAttachment
+    hold.Attachment0=attachment;hold.Position=ctx.Root.Position;hold.ApplyAtCenterOfMass=true
+    hold.RigidityEnabled=false;hold.Responsiveness=35;hold.MaxVelocity=60
+    hold.MaxForce=math.clamp((tonumber(ctx.Root.AssemblyMass) or 10)*math.max(1,tonumber(workspace.Gravity) or 196.2)*80,100000,1e9)
+    hold.Parent=ctx.Root;ctx.Hold=hold;PHX.Runtime.MovementObjects[hold]=true
+    ctx.Humanoid.AutoRotate=false
+    ctx.Root.AssemblyLinearVelocity=Vector3.zero;ctx.Root.AssemblyAngularVelocity=Vector3.zero
+    ctx.Connection=PHX.connect(RunService.Stepped,function()
+        if not PHX.pressurePositionAlive(ctx) then PHX.endPressurePosition(ctx) end
+    end)
+    PHX.Runtime.MovementConnections[ctx.Connection]=true
+    return PHX.pressurePositionAlive(ctx)
+end
+function PHX.pressureRockPose(target,island,hoverHeight)
+    local rr=root()
+    local rock=target and target.part
+    if not rr or not rock then return nil,"ACTOR_OR_ROCK_MISSING" end
+    local height=tonumber(hoverHeight) or 45
+    if height~=height or height<=0 or height==math.huge then return nil,"INVALID_HOVER_HEIGHT" end
+    local zone,why=PHX.pressureLavaZone(island)
+    if not zone then return nil,"LAVA_ZONE_MISSING:"..tostring(why) end
+    if PHX.pressureLavaPointRisk(rr.Position,zone) then return nil,"START_IN_LAVA_GEOMETRY",zone end
+    local position=rock.Position
+    local normal=position+Vector3.new(0,height,0)
+    local function valid(point)
+        if (point-position).Magnitude>height+1e-5 or PHX.pressureLavaPointRisk(point,zone) then return nil end
+        local route=PHX.pressureLavaRoute(rr.Position,point,zone)
+        if not route then return nil end
+        local length=0
+        for index=2,#route do length+=(route[index]-route[index-1]).Magnitude end
+        return length
+    end
+    if valid(normal) then return CFrame.new(normal),"DEFAULT_STANCE | "..why,zone end
+    local best,bestScore=nil,math.huge
+    local low=math.min(height,math.max(3,tonumber(CONFIG.PRESSURE.ROCK_HOVER_Y) or 10))
+    local heights={low,math.min(height,18),math.min(height,30),height}
+    local radii={0,8,16,24,32,math.min(40,height-1)}
+    for _,y in ipairs(heights) do for _,radius in ipairs(radii) do
+        if radius>=0 and radius*radius+y*y<=height*height+1e-5 then
+            for direction=0,15 do
+                if radius==0 and direction>0 then break end
+                local angle=direction*math.pi/8
+                local point=position+Vector3.new(math.cos(angle)*radius,y,math.sin(angle)*radius)
+                if not PHX.pressureLavaPointRisk(point,zone) then
+                    local direct=not PHX.pressureLavaSegmentRisk(rr.Position,point,zone)
+                    local score=(point-rr.Position).Magnitude+(point-position).Magnitude*.15
+                    if not direct then score+=1000 end
+                    if score<bestScore then
+                        local length=valid(point)
+                        if length then best,bestScore=point,score end
+                    end
+                end
+            end
+        end
+    end end
+    if not best then return nil,"NO_SAFE_CAST_STANCE_WITHIN_BASE_RANGE",zone end
+    return CFrame.new(best),"SAFE_GEOMETRY_STANCE distance="..string.format("%.1f",(best-position).Magnitude).." | "..why,zone
+end
+function PHX.pressureRockBurstCore(target, token, island, owner)
     if not target or not target.model or not target.part or not target.model.Parent then return false end
     local solo=PHX.isSoloAutomation and PHX.isSoloAutomation()
     local rockModel=target.model
     local rockPart=target.part
     if not isRunning(token) or not rockActive(rockModel) then return false end
-    if pressureWorkShouldYield(island) then return false end
+    if pressureWorkShouldYield(island) then logLine("ROCK_CAST_BLOCKED","phase=PRIORITY | GOLEM_FIRST");return false end
     if island and not PHX.eventActive(island) then return false end
     local approachStarted=os.clock()
     local rockPosition=rockPart.Position
@@ -7416,12 +7997,27 @@ function PHX.pressureRockBurst(target, token, island)
     if not rr then return false end
     local hoverHeight=solo and CONFIG.SOLO_GUARD.ROCK_SAFE_HOVER_Y or CONFIG.PRESSURE.ROCK_HOVER_Y
     local hover=CFrame.new(rockPosition + Vector3.new(0,hoverHeight,0))
+    local zone
     if solo then
-        if not soloGuardApproach(rockPosition,hoverHeight,token,
-            CONFIG.SOLO_PRESSURE_TWEEN_SPEED or 260,"ROCK",island) then
+        local pose,why,selectedZone=PHX.pressureRockPose(target,island,hoverHeight)
+        if not pose then
+            logLine("ROCK_CAST_BLOCKED","phase=STANCE | reason="..tostring(why).." | rock="..tostring(rockModel.Name)
+                .." | player="..tostring(root() and root().Position).." | rockPosition="..tostring(rockPosition)
+                .." | zone="..tostring(selectedZone and selectedZone.Center)
+                .." | radius="..tostring(selectedZone and selectedZone.Radius)
+                .." | top="..tostring(selectedZone and selectedZone.Top).." | bottom="..tostring(selectedZone and selectedZone.Bottom))
+            return false
+        end
+        hover=pose;zone=selectedZone
+        owner.Stance=hover;owner.Zone=zone
+        PHX.watchPressureLavaZone(owner)
+        logLine("ROCK_STANCE",tostring(why).." | cast="..tostring(hover.Position).." | rock="..tostring(rockPosition))
+        local approachOk,approachWhy=PHX.pressureGuardApproach(hover.Position,token,
+            CONFIG.SOLO_PRESSURE_TWEEN_SPEED or 260,island,owner)
+        if not approachOk then
             if pressureWorkShouldYield(island) then return false end
             soloRockUnsafe(target,"Rock approach refused or HP dropped")
-            logLine("ROCK_APPROACH_FAILED","mode=SOLO rock="..tostring(rockModel.Name))
+            logLine("ROCK_APPROACH_FAILED","mode=SOLO rock="..tostring(rockModel.Name).." | reason="..tostring(approachWhy))
             return false
         end
     elseif (rr.Position-hover.Position).Magnitude>14 then
@@ -7445,7 +8041,16 @@ function PHX.pressureRockBurst(target, token, island)
         if solo then soloRockUnsafe(target,"Dead at Pressure Rock") end
         return false
     end
-    if solo then aimAt(rockPosition) end
+    if solo then
+        if PHX.pressureLavaPointRisk(rr.Position,zone) then
+            logLine("ROCK_CAST_BLOCKED","phase=ARRIVAL | reason=PLAYER_IN_FORBIDDEN_VOLUME");return false
+        end
+        owner.Arrived=true
+        if not PHX.holdPressurePosition(owner) then
+            logLine("ROCK_CAST_BLOCKED","phase=HOLD | reason=ACTOR_OR_PRIORITY_CHANGED");return false
+        end
+        aimAt(rockPosition)
+    end
     local burstSeconds=solo and CONFIG.SOLO_GUARD.PRESSURE_BURST_SECONDS or CONFIG.PRESSURE.MAX_BURST_SECONDS
     local burstStarted=os.clock()
     local deadline=burstStarted+math.max(.5,tonumber(burstSeconds) or 2.4)
@@ -7456,6 +8061,7 @@ function PHX.pressureRockBurst(target, token, island)
     local function mayCast()
         return isRunning(token) and rockModel.Parent~=nil and rockActive(rockModel)
             and (not island or PHX.eventActive(island)) and not pressureWorkShouldYield(island)
+            and (not solo or PHX.pressurePositionAlive(owner))
     end
     local order=solo and {"Blox Fruit","Melee"} or {"Melee","Blox Fruit"}
     while mayCast() and os.clock()<deadline do
@@ -7523,6 +8129,34 @@ function PHX.pressureRockBurst(target, token, island)
         return true
     end
     return false
+end
+function PHX.pressureRockBurst(target,token,island)
+    local solo=PHX.isSoloAutomation and PHX.isSoloAutomation()
+    if not solo then return PHX.pressureRockBurstCore(target,token,island,nil) end
+    local began,owner,why=pcall(PHX.beginPressurePosition,target,token,island)
+    if not began then
+        local partial=PHX.PressurePosition.Current
+        if partial and partial.Owner==coroutine.running() then PHX.endPressurePosition(partial) end
+        logLine("ROCK_CAST_ERROR","BEGIN: "..tostring(owner));return false
+    end
+    if not owner then logLine("ROCK_CAST_BLOCKED","phase=OWNER | reason="..tostring(why));return false end
+    local ok,result=pcall(PHX.pressureRockBurstCore,target,token,island,owner)
+    PHX.endPressurePosition(owner)
+    if not ok then logLine("ROCK_CAST_ERROR",tostring(result));return false end
+    return result==true
+end
+do
+    local oldTravel=PHX.restoreTravel
+    PHX.restoreTravel=function(...)
+        local ctx=PHX.PressurePosition.Current
+        if ctx and ctx.Hold then PHX.endPressurePosition(ctx) end
+        return oldTravel(...)
+    end
+    local oldMovement=PHX.restoreMovement
+    PHX.restoreMovement=function(...)
+        PHX.endPressurePosition()
+        return oldMovement(...)
+    end
 end
 function PHX.clusterAnchor(island)
     if PHX.ClusterIsland == island and PHX.ClusterAnchor then return PHX.ClusterAnchor end
@@ -13429,7 +14063,7 @@ function PHX.buildUI()
     }, U.Root))
     make("Frame", {BackgroundColor3 = C.Cyan, BackgroundTransparency = 0.55, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1)}, header)
     U.Brand = text(header, "VOLCANO TEAM", 15, C.Text, UDim2.fromOffset(14, 8), UDim2.fromOffset(163, 22), Enum.Font.GothamBold)
-    U.Version = text(header, "V2.17.36 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
+    U.Version = text(header, "V2.17.39 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
     U.StatePill = text(header, "READY", 10, C.Cyan, UDim2.new(1, -129, 0, 8), UDim2.fromOffset(78, 21), Enum.Font.GothamBold)
     U.StatePill.BackgroundTransparency = 0
     U.StatePill.BackgroundColor3 = C.Raised
@@ -13690,7 +14324,7 @@ function PHX.buildUI()
         "Chỉ Lava Golem trong 48 studs: xóa HP local; KHÔNG xác nhận chết server, Relic vẫn có nguy cơ bị tấn công.",
         function() return CONFIG.GOLEM_LOCAL_KILL.Enabled end,
         function(value) return PHX.setGolemLocalHpEnabled(value) end)
-    toggle(pxModules, 285, "Bring Dragon Hunter Quest", "Hydra/Venom: Bring gốc V2.16.38 + Kill Aura NET.",
+    toggle(pxModules, 285, "Bring Dragon Hunter Quest", "Gom dưới player, chân trên nền; gom lại khi xa >40 theo X/Z.",
         function() return CONFIG.FARM_COMBAT.QuestBringEnabled end,
         function(value) CONFIG.FARM_COMBAT.QuestBringEnabled=value==true end)
     text(pxModules, "Golem HP=0: client only / server kill chưa xác minh. Quái thường giữ NET.", 9, C.Cyan,
@@ -13791,13 +14425,15 @@ function PHX.buildUI()
         end
         performManualGacha(false)
     end)
-    local webhookCard = card(settingsPage, 236, 3, "discord webhook url id ping thông báo dragon kitsune leopard")
-    text(webhookCard, "DISCORD WEBHOOK / ID PING", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
+    local webhookCard = card(settingsPage, 278, 3, "discord webhook url id ping thông báo dragon prehistoric test kawazikuriAPP")
+    text(webhookCard, "KAWAZIKURIAPP · WEBHOOK / ID PING", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
     U.WebhookBox = field(webhookCard, tostring(CONFIG.WEBHOOK_URL or ""), "Discord webhook URL", UDim2.fromOffset(11, 31), UDim2.new(1, -22, 0, 33))
     U.DiscordIdBox = field(webhookCard, tostring(CONFIG.WEBHOOK_USER_ID or ""), "Discord user ID · 15–22 chữ số", UDim2.fromOffset(11, 73), UDim2.new(1, -22, 0, 33))
     U.ApplyWebhook = button(webhookCard, "LƯU WEBHOOK + ID PING", UDim2.fromOffset(11, 115), UDim2.new(1, -22, 0, 33), C.CyanSoft)
-    U.WebhookState = text(webhookCard, "Webhook: OFF", 9, C.Cyan, UDim2.fromOffset(11, 156), UDim2.new(1, -22, 0, 18))
-    text(webhookCard, "Lưu cục bộ. URL trống để tắt. Master báo đảo; Dragon, Kitsune và Leopard gửi ping ID đã lưu.", 10, C.Muted, UDim2.fromOffset(11, 179), UDim2.new(1, -22, 0, 49))
+    U.TestPrehistoricWebhook = button(webhookCard, "TEST PREHISTORIC", UDim2.fromOffset(11, 157), UDim2.new(.5, -17, 0, 33), C.LavenderSoft)
+    U.TestDragonWebhook = button(webhookCard, "TEST NHẶT DRAGON", UDim2.new(.5, 6, 0, 157), UDim2.new(.5, -17, 0, 33), C.CyanSoft)
+    U.WebhookState = text(webhookCard, "Webhook: OFF", 9, C.Cyan, UDim2.fromOffset(11, 198), UDim2.new(1, -22, 0, 18))
+    text(webhookCard, "Master báo đảo thật. Nút TEST gửi thử trên mọi role; test Dragon ping ID đã lưu, không tác động trái trong người.", 10, C.Muted, UDim2.fromOffset(11, 221), UDim2.new(1, -22, 0, 49))
     PHX.connect(U.ApplyWebhook.Activated, function()
         if U.PassThrough then return end
         local ok, message = PHX.setWebhook(U.WebhookBox.Text, U.DiscordIdBox.Text)
@@ -13808,15 +14444,44 @@ function PHX.buildUI()
         U.notice(message, ok)
         U.updateControls()
     end)
-    local performance = card(settingsPage, 136, 4, "hiệu năng performance fps cap cpu map hiển thị")
+    PHX.connect(U.TestPrehistoricWebhook.Activated,function()
+        if U.PassThrough then return end
+        local ok,reason=PHX.testWebhook("PREHISTORIC")
+        U.notice(ok and "Đã xếp hàng TEST Prehistoric; xem trạng thái webhook." or ("TEST không gửi được: "..tostring(reason)),ok)
+        U.updateControls()
+    end)
+    PHX.connect(U.TestDragonWebhook.Activated,function()
+        if U.PassThrough then return end
+        local ok,reason=PHX.testWebhook("DRAGON")
+        U.notice(ok and "Đã xếp hàng TEST Dragon + ping; xem trạng thái webhook." or ("TEST không gửi được: "..tostring(reason)),ok)
+        U.updateControls()
+    end)
+    local performance = card(settingsPage, 192, 4, "hiệu năng performance fps cap cpu map delete map giảm lag")
     text(performance, "HIỆU NĂNG", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
     U.CpuState = text(performance, "", 10, C.Text, UDim2.fromOffset(11, 30), UDim2.new(1, -22, 0, 26))
-    text(performance, "Ẩn/hiện map bằng nút riêng ở góc màn hình.", 9, C.Muted, UDim2.fromOffset(11, 60), UDim2.new(1, -22, 0, 25))
-    text(performance, "FPS CAP", 10, C.Muted, UDim2.fromOffset(11, 93), UDim2.fromOffset(90, 25), Enum.Font.GothamBold)
-    local minus = button(performance, "−", UDim2.new(1, -141, 0, 91), UDim2.fromOffset(30, 30))
-    U.FpsLabel = text(performance, tostring(CONFIG.SAVE_CPU.FPS_CAP), 12, C.Text, UDim2.new(1, -109, 0, 92), UDim2.fromOffset(63, 27), Enum.Font.GothamBold)
+    U.MapBusy = false
+    U.MapToggle = toggle(performance, 60, "DELETE MAP · giảm lag", "Ẩn map nền; giữ địa hình và đảo Prehistoric.",
+        function() return PHX.MapVisualHidden == true end,
+        function(value)
+            if U.MapBusy then return false,"Map đang xử lý." end
+            U.MapBusy = true
+            PHX.MapVisualHidden = value == true
+            PHX.spawn(function()
+                local ok,result = pcall(PHX.setMapVisualHidden,value)
+                if not PHX.generationAlive() or not U.Screen.Parent then return end
+                U.MapBusy = false
+                if not ok or result == false then U.notice("Map visuals chưa áp dụng: "..tostring(result),false) end
+                if ok and result ~= false and PHX.saveUserConfig then PHX.saveUserConfig() end
+                U.updateControls()
+            end)
+            return true
+        end)
+    text(performance, "Giữ collision, raycast, NPC, thuyền và tín hiệu Pressure Rock.", 9, C.Muted, UDim2.fromOffset(11, 114), UDim2.new(1, -22, 0, 25))
+    text(performance, "FPS CAP", 10, C.Muted, UDim2.fromOffset(11, 151), UDim2.fromOffset(90, 25), Enum.Font.GothamBold)
+    local minus = button(performance, "−", UDim2.new(1, -141, 0, 149), UDim2.fromOffset(30, 30))
+    U.FpsLabel = text(performance, tostring(CONFIG.SAVE_CPU.FPS_CAP), 12, C.Text, UDim2.new(1, -109, 0, 150), UDim2.fromOffset(63, 27), Enum.Font.GothamBold)
     U.FpsLabel.TextXAlignment = Enum.TextXAlignment.Center
-    local plus = button(performance, "+", UDim2.new(1, -41, 0, 91), UDim2.fromOffset(30, 30))
+    local plus = button(performance, "+", UDim2.new(1, -41, 0, 149), UDim2.fromOffset(30, 30))
     local function changeFps(amount)
         if U.PassThrough then return end
         if type(setfpscap) ~= "function" then U.notice("Executor chưa hỗ trợ FPS cap.", false); return end
@@ -13908,23 +14573,6 @@ function PHX.buildUI()
     U.Dock = button(U.Screen, "VOLCANO · MỞ UI", UDim2.fromOffset(12, 100), UDim2.fromOffset(136, 32), C.PinkSoft)
     U.Dock.TextSize = 10
     U.Dock.Visible = false
-    U.MapToggle = button(U.Screen, "HIỂN THỊ MAP · BẬT", UDim2.fromOffset(185, 100), UDim2.fromOffset(152, 32), C.LavenderSoft)
-    U.MapToggle.TextSize = 10
-    U.MapBusy = false
-    PHX.connect(U.MapToggle.Activated, function()
-        if U.PassThrough or U.MapBusy then return end
-        U.MapBusy = true
-        U.MapToggle.Text = "MAP · ĐANG XỬ LÝ..."
-        PHX.spawn(function()
-            local ok, err = pcall(PHX.setMapVisualHidden, not PHX.MapVisualHidden)
-            if not PHX.generationAlive() or not U.Screen.Parent then return end
-            U.MapToggle.TextSize = 10
-    U.MapBusy = false
-            if not ok then U.notice("Map visuals: " .. tostring(err), false) end
-            if ok and PHX.saveUserConfig then PHX.saveUserConfig() end
-            U.updateControls()
-        end)
-    end)
     function U.notice(message, success)
         U.Toast.Text = tostring(message)
         U.Toast.TextColor3 = success and C.Cyan or C.Red
@@ -14044,7 +14692,6 @@ function PHX.buildUI()
         U.Position = Vector2.new(math.clamp(point.X, bounds.Left, math.max(bounds.Left, bounds.Right - width)), math.clamp(point.Y, bounds.Top, math.max(bounds.Top, bounds.Bottom - height - 40)))
         U.Root.Position = UDim2.fromOffset(U.Position.X, U.Position.Y)
         U.Dock.Position = UDim2.fromOffset(bounds.Left, math.max(bounds.Top, bounds.Bottom - 32))
-        U.MapToggle.Position = UDim2.fromOffset(math.max(bounds.Left, bounds.Right - 152), math.max(bounds.Top, bounds.Bottom - 32))
         U.Golems.TextSize = narrow and 11 or 13
     end
     local cameraConnection
@@ -14294,9 +14941,11 @@ function PHX.buildUI()
         U.DiscordIdBox.TextEditable = not U.PassThrough
         U.ApplyWebhook.Active = not U.PassThrough
         pcall(function() U.ApplyWebhook.Interactable = not U.PassThrough end)
+        U.TestPrehistoricWebhook.Active = not U.PassThrough
+        U.TestDragonWebhook.Active = not U.PassThrough
+        pcall(function() U.TestPrehistoricWebhook.Interactable = not U.PassThrough; U.TestDragonWebhook.Interactable = not U.PassThrough end)
         U.CpuState.Text = "SaveCPU: " .. (SAVE_CPU_APPLIED and "APPLIED" or (CONFIG.SAVE_CPU.ENABLED and "PENDING" or "DISABLED")) .. " · FPS " .. tostring(CONFIG.SAVE_CPU.FPS_CAP)
         if PHX.userConfigStatus then U.ConfigState.Text = PHX.userConfigStatus() end
-        if not U.MapBusy then U.MapToggle.Text = PHX.MapVisualHidden and "HIỂN THỊ MAP · TẮT" or "HIỂN THỊ MAP · BẬT" end
         if U.ToastUntil and os.clock() >= U.ToastUntil then U.Toast.Visible = false; U.ToastUntil = nil end
     end
     function U.updateCounters()
