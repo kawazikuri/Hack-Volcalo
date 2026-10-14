@@ -3980,7 +3980,7 @@ function PHX.compatDiagnosticText(value)
     return tostring(value==nil and "" or value):gsub("https://discord[%w%.]*/api/webhooks/[%w_%-/]+","<WEBHOOK_REDACTED>"):sub(1,2400)
 end
 function PHX.androidReport()
-    local lines={"PX ANDROID REPORT V2.17.41"}
+    local lines={"PX ANDROID REPORT V2.17.41.1"}
     local function add(key,value) lines[#lines+1]=key.."="..PHX.compatDiagnosticText(value) end
     local identify=type(identifyexecutor)=="function" and identifyexecutor or (ENV and ENV.identifyexecutor)
     if type(identify)=="function" then local ok,name,version=pcall(identify);add("Executor",ok and tostring(name).." / "..tostring(version) or "QUERY_FAILED") end
@@ -3992,6 +3992,15 @@ function PHX.androidReport()
     local bridge=PHX.SkillBridge or {}
     add("Skill.Mode",CONFIG.SKILL_INPUT.Mode);add("Skill.Busy",bridge.Busy)
     add("Skill.PendingRelease",bridge.PendingRelease~=nil);add("Skill.Method",bridge.LastMethod)
+    if bridge.LastUIFailure then add("Skill.UIFailure",bridge.LastUIFailure.Key.." / "..tostring(bridge.LastUIFailure.Reason)) end
+    if bridge.LastAutoFallback then add("Skill.AutoFallback",bridge.LastAutoFallback.Key.." / "..tostring(bridge.LastAutoFallback.Reason)) end
+    local scan=bridge.LastScan
+    if scan then
+        add("Skill.Scan.Tool",scan.Tool);add("Skill.Scan.ToolTip",scan.ToolTip)
+        add("Skill.Scan.Query",scan.Query);add("Skill.Scan.Descendants",scan.Descendants);add("Skill.Scan.Truncated",scan.Truncated)
+        add("Skill.Scan.ActionsQuery",scan.ActionsQuery);add("Skill.Scan.ActionBindings",scan.ActionBindings)
+        for _,row in ipairs(scan.Rows or {}) do add("Skill.Scan."..tostring(row.Key),row.Summary) end
+    end
     if bridge.LastOutcome then for _,key in ipairs({"State","Reason","Mode","Key","Attempted","BeginSucceeded"}) do add("Skill."..key,bridge.LastOutcome[key]) end end
     local material=PHX.MaterialCombat and PHX.MaterialCombat.Current
     if material and material.GetStatus then
@@ -4007,7 +4016,7 @@ function PHX.androidReport()
     add("Boat.LowHP",PHX.LowBoatHP and PHX.LowBoatHP.LastReason)
     local character=LP.Character
     local tool=character and character:FindFirstChildOfClass("Tool")
-    add("Tool.Name",tool and tool.Name);add("Tool.Enabled",tool and tool.Enabled)
+    add("Tool.Name",tool and tool.Name);add("Tool.Enabled",tool and tool.Enabled);add("Tool.ToolTip",tool and tool.ToolTip)
     local pointer=PHX.Runtime.HeldMouse and PHX.Runtime.HeldMouse[0]
     add("Input.HeldMouse0",pointer~=nil)
     local vim=VirtualInputManager
@@ -4471,29 +4480,71 @@ function PHX.skillInput(keyCode,hold,modeOverride)
             if why then PHX.endSkillInput(lease,why) end
         end)
         PHX.Runtime.Connections[lease.Heartbeat]=true
-        if chosen=="KEYBOARD" then
+        local function keyboardRequest(fallbackReason,readyCheck)
             if bridge.Lease~=lease or not lease.Active or PHX.skillLeaseRetireReason(lease) then
                 error("SKILL_INPUT_CANCELLED")
             end
+            if fallbackReason then
+                local focusedOk,focused=pcall(function() return game:GetService("UserInputService"):GetFocusedTextBox() end)
+                if not focusedOk then error("TEXTBOX_FOCUS_UNAVAILABLE") end
+                if focused then error("TEXTBOX_FOCUSED") end
+                local available,send=pcall(function() return VirtualInputManager.SendKeyEvent end)
+                if not available or type(send)~="function" then error("KEYBOARD_API_UNAVAILABLE") end
+                if lease.Attempted or lease.BeginSucceeded or bridge.PendingRelease then error("AUTO_FALLBACK_INPUT_ALREADY_ATTEMPTED") end
+                if readyCheck and not readyCheck() then error("SKILL_ACTOR_OR_TOOL_CHANGED") end
+                chosen="KEYBOARD";lease.Mode="KEYBOARD";lease.AutoFallback=fallbackReason
+                bridge.LastAutoFallback={Key=keyCode.Name,Reason=fallbackReason,Tool=bridge.ButtonTool and bridge.ButtonTool.Name,At=os.clock()}
+                PHX.skillLog("SKILL_AUTO_KEYBOARD",keyCode.Name,fallbackReason.." | effect unverified")
+            end
+            if bridge.Lease~=lease or not lease.Active or PHX.skillLeaseRetireReason(lease) then error("SKILL_INPUT_CANCELLED") end
             lease.Attempted=true;lease.KeyDownAttempted=true
             PHX.keyEvent(true,keyCode,false,game)
             lease.BeginSucceeded=true
-            bridge.LastMethod="KEYBOARD"
+            bridge.LastMethod=fallbackReason and ("KEYBOARD_AUTO_NO_UI:"..fallbackReason) or "KEYBOARD"
             task.wait(hold or .10)
-            if bridge.Lease~=lease or not lease.Active or PHX.skillLeaseRetireReason(lease) then
-                error("SKILL_INPUT_CANCELLED")
-            end
-            return "KEYBOARD_REQUESTED"
+            if bridge.Lease~=lease or not lease.Active or PHX.skillLeaseRetireReason(lease) then error("SKILL_INPUT_CANCELLED") end
+            return fallbackReason and ("KEYBOARD_AUTO_REQUESTED:"..fallbackReason) or "KEYBOARD_REQUESTED"
         end
+        if chosen=="KEYBOARD" then return keyboardRequest() end
         local character=char()
         local equipped=character and character:FindFirstChildOfClass("Tool")
         if bridge.ButtonTool~=equipped then bridge.ButtonCache={};bridge.ButtonTool=equipped end
         local button,source=PHX.findMobileSkillButton(keyCode)
+        local point=button and PHX.mobileCandidatePosition(button)
+        local function actorReady()
+            return bridge.Lease==lease and lease.Active and not PHX.skillLeaseRetireReason(lease)
+                and equipped and equipped.Parent==character and character==char()
+                and character:FindFirstChildOfClass("Tool")==equipped and hum()==lease.Humanoid and lease.Humanoid.Health>0
+        end
+        local autoFallback=configured=="AUTO" and mobile and modeOverride==nil
+        if autoFallback and (not button or not point) then
+            for attempt=1,4 do
+                if not actorReady() then error("SKILL_ACTOR_OR_TOOL_CHANGED") end
+                task.wait(.06)
+                if not actorReady() then error("SKILL_ACTOR_OR_TOOL_CHANGED") end
+                bridge.ButtonCache[keyCode.Name]=nil
+                button,source=PHX.findMobileSkillButton(keyCode)
+                point=button and PHX.mobileCandidatePosition(button)
+                if button and point then break end
+            end
+            if not actorReady() then error("SKILL_ACTOR_OR_TOOL_CHANGED") end
+            if not button or not point then
+                local reason=button and "BUTTON_NOT_VISIBLE" or source
+                bridge.LastUIFailure={Key=keyCode.Name,Reason=reason,Tool=equipped.Name}
+                local allowedKey=false
+                for _,name in ipairs({"Z","X","C","V","F"}) do if keyCode==Enum.KeyCode[name] then allowedKey=true;break end end
+                local validTool=equipped:IsA("Tool") and (equipped.ToolTip=="Melee" or equipped.ToolTip=="Blox Fruit")
+                    and not (PHX.isPhysicalFruitTool and PHX.isPhysicalFruitTool(equipped))
+                if allowedKey and validTool and (reason=="SKILL_UI_NOT_FOUND" or reason=="AMBIGUOUS_SKILL_UI" or reason=="BUTTON_NOT_VISIBLE") then
+                    return keyboardRequest(reason,actorReady)
+                end
+                error(reason or "SKILL_UI_NOT_FOUND")
+            end
+        end
         if not button then
             PHX.skillLog("SKILL_TOUCH_NOT_FOUND",keyCode.Name,source)
             error(source)
         end
-        local point=PHX.mobileCandidatePosition(button)
         if not point then error("BUTTON_NOT_VISIBLE") end
         PHX.skillInputPassThrough(lease)
         if bridge.Lease~=lease or not lease.Active or PHX.skillLeaseRetireReason(lease) then
@@ -4577,10 +4628,85 @@ do
     end)
 end
 function PHX.skillTouchDiagnostic()
-    for _,key in ipairs({Enum.KeyCode.Z,Enum.KeyCode.X,Enum.KeyCode.C,Enum.KeyCode.V,Enum.KeyCode.F}) do
-        local button,source=PHX.findMobileSkillButton(key)
-        logLine("SKILL_TOUCH_SCAN",key.Name.." | "..tostring(source).." | "..tostring(button and button:GetFullName() or "NONE"))
+    local function safe(value,limit)
+        return PHX.compatDiagnosticText(value):gsub("[%c]"," "):sub(1,limit or 180)
     end
+    local bridge=PHX.SkillBridge
+    local scan={Rows={},Descendants=0,Truncated=false,Tool="NONE",ToolTip=""}
+    local toolOk,tool=pcall(function()
+        return LP.Character and LP.Character:FindFirstChildOfClass("Tool")
+    end)
+    if toolOk and tool then
+        pcall(function() scan.Tool=safe(tool.Name,80);scan.ToolTip=safe(tool.ToolTip,40) end)
+    end
+    local queried,descendants=pcall(function() return PG:GetDescendants() end)
+    if not queried or type(descendants)~="table" then descendants={};scan.Query="PG_QUERY_FAILED"
+    else scan.Query="OK" end
+    local actionOk,actions=pcall(function() return ContextActionService:GetAllBoundActionInfo() end)
+    scan.ActionsQuery=actionOk and type(actions)=="table" and "OK" or "CAS_QUERY_FAILED"
+    local bindings={}
+    if scan.ActionsQuery=="OK" then
+        for _,info in pairs(actions) do
+            if #bindings>=256 then break end
+            if type(info)=="table" and type(info.inputTypes)=="table" then bindings[#bindings+1]=info.inputTypes end
+        end
+    end
+    scan.ActionBindings=#bindings
+    local limit=4096
+    scan.Descendants=#descendants;scan.Truncated=#descendants>limit
+    for _,key in ipairs({Enum.KeyCode.Z,Enum.KeyCode.X,Enum.KeyCode.C,Enum.KeyCode.V,Enum.KeyCode.F}) do
+        local row={Key=key.Name,Reason="",Path="NONE",Matches=0,VisibleLabels=0,Buttons=0,Eligible=0,Errors=0,Candidates={}}
+        row.CASMatches=0
+        for _,inputTypes in ipairs(bindings) do
+            for _,mapped in pairs(inputTypes) do if mapped==key then row.CASMatches+=1;break end end
+        end
+        local found,button,source=pcall(PHX.findMobileSkillButton,key)
+        row.Reason=found and safe(source or "UNKNOWN",120) or "FINDER_QUERY_FAILED"
+        if found and button then pcall(function() row.Path=safe(button:GetFullName()) end) end
+        for index=1,math.min(#descendants,limit) do
+            local obj=descendants[index]
+            local checked=pcall(function()
+                if not (obj:IsA("TextLabel") or obj:IsA("TextButton"))
+                    or (PHX.isOwnGui and PHX.isOwnGui(obj))
+                    or not PHX.mobileSkillText(obj.Text,key.Name) then return end
+                row.Matches+=1
+                local visible=PHX.mobileVisible(obj,2)
+                if visible then row.VisibleLabels+=1 end
+                local ancestor,depth=obj,0
+                local skillButton
+                for level=0,3 do
+                    if not ancestor or ancestor==PG then break end
+                    if ancestor:IsA("GuiButton") then skillButton=ancestor;depth=level;break end
+                    ancestor=ancestor.Parent
+                end
+                local at,screen
+                if skillButton then
+                    row.Buttons+=1
+                    at,screen=PHX.mobileCandidatePosition(skillButton)
+                end
+                local right=at and screen and at.X>screen.X*.43 or false
+                if visible and right then row.Eligible+=1 end
+                if #row.Candidates<3 then
+                    local description="key="..key.Name.." class="..safe(obj.ClassName,32).." name="..safe(obj.Name,48)
+                        .." size="..math.floor(obj.AbsoluteSize.X).."x"..math.floor(obj.AbsoluteSize.Y)
+                        .." visible="..tostring(visible).." button="..(skillButton and safe(skillButton.ClassName,32) or "NONE")
+                        .." depth="..(skillButton and tostring(depth) or "NONE").." onScreen="..tostring(at~=nil)
+                        .." right="..tostring(right).." path="..safe(obj:GetFullName(),140)
+                    if skillButton then
+                        description..=" buttonSize="..math.floor(skillButton.AbsoluteSize.X).."x"..math.floor(skillButton.AbsoluteSize.Y)
+                    end
+                    row.Candidates[#row.Candidates+1]=description
+                end
+            end)
+            if not checked then row.Errors+=1 end
+        end
+        row.Summary=row.Reason.." | CASmatches="..row.CASMatches.." | selected="..row.Path.." | labels="..row.Matches.." visible="..row.VisibleLabels
+            .." buttons="..row.Buttons.." eligible="..row.Eligible.." errors="..row.Errors
+        for _,candidate in ipairs(row.Candidates) do row.Summary..=" | "..candidate end
+        scan.Rows[#scan.Rows+1]=row
+        logLine("SKILL_TOUCH_SCAN",row.Key.." | "..row.Summary)
+    end
+    bridge.LastScan=scan
     return true
 end
 local function pressKey(keyCode,hold)
@@ -15048,7 +15174,7 @@ function PHX.buildUI()
     }, U.Root))
     make("Frame", {BackgroundColor3 = C.Cyan, BackgroundTransparency = 0.55, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1)}, header)
     U.Brand = text(header, "VOLCANO TEAM", 15, C.Text, UDim2.fromOffset(14, 8), UDim2.fromOffset(163, 22), Enum.Font.GothamBold)
-    U.Version = text(header, "V2.17.41 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
+    U.Version = text(header, "V2.17.41.1 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
     U.StatePill = text(header, "READY", 10, C.Cyan, UDim2.new(1, -129, 0, 8), UDim2.fromOffset(78, 21), Enum.Font.GothamBold)
     U.StatePill.BackgroundTransparency = 0
     U.StatePill.BackgroundColor3 = C.Raised
@@ -15339,7 +15465,7 @@ function PHX.buildUI()
         function(value) CONFIG.BOAT_FAST_BUY.Enabled=value==true; return true end)
     local skillCard = card(settingsPage, 159, 1.85, "skill pressure rock quest tree delta android touch PC keyboard")
     text(skillCard, "SKILL INPUT · ANDROID / PC", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
-    text(skillCard, "AUTO Android: giữ click nút Skill thật. Có TOUCH/KEYBOARD để thử. PC dùng phím.",
+    text(skillCard, "AUTO Android: giữ click nút skill; thiếu nút thì thử phím. Có MOUSE/TOUCH/KEYBOARD.",
         10, C.Muted, UDim2.fromOffset(11, 29), UDim2.new(1, -22, 0, 39))
     local skillModeButton = button(skillCard, "SKILL MODE · "..CONFIG.SKILL_INPUT.Mode,
         UDim2.fromOffset(11, 71), UDim2.new(1, -22, 0, 32), C.CyanSoft)
