@@ -413,6 +413,7 @@ local CONFIG = {
         DOUBLE_EMERGENCY = 88,
     },
     ANTI_AFK = {ENABLED=true,RETRY_GAP=3,MIN_INTERVAL=55,HOLD_SECONDS=.05},
+    LAG_PRESET = {ENABLED=true},
     ANDROID_COMPAT = {M1_MODE="AUTO"},
     BOAT_LOW_HP = {ENABLED=true,THRESHOLD=500},
     SKILL_INPUT = {
@@ -618,12 +619,12 @@ function PHX.sanitizeUserConfig(settings)
     local defaults=PHX.UserConfigDefaults
     local clean={masterRole=false,selectedMaster="",automationMode="TEAM",desiredRunning=false,
         debugEnabled=true,watchdogRestart=true,returnToTiki=true,randomFruit=false,autoStore=true,
-        antiAfk=true,pressureRecovery=true,
+        antiAfk=true,pressureRecovery=true,lagPreset=true,
         defaultsRevision=defaults.Revision,mapHidden=defaults.MapHidden,fpsCap=30,
         webhookURL=defaults.WebhookURL,webhookUserId=defaults.WebhookUserId,gachaNextReadyEpoch=0,gachaLastAttemptEpoch=0,
         auraEnabled=true,auraIdle=false,netMode="NET_HEAD",removeLava=true,boatNoclip=true,fastBoatBuy=true,golemBring=true,golemLocalKill=true,questBring=true,skillMode="AUTO",mobileM1Mode="AUTO"}
     if type(settings)~="table" then return clean end
-    for _,key in ipairs({"masterRole","desiredRunning","debugEnabled","watchdogRestart","returnToTiki","randomFruit","autoStore","antiAfk","pressureRecovery","mapHidden","auraEnabled","auraIdle","removeLava","boatNoclip","fastBoatBuy","golemBring","golemLocalKill","questBring"}) do
+    for _,key in ipairs({"masterRole","desiredRunning","debugEnabled","watchdogRestart","returnToTiki","randomFruit","autoStore","antiAfk","pressureRecovery","lagPreset","mapHidden","auraEnabled","auraIdle","removeLava","boatNoclip","fastBoatBuy","golemBring","golemLocalKill","questBring"}) do
         if type(settings[key])=="boolean" then clean[key]=settings[key] end
     end
     if settings.automationMode=="TEAM" or settings.automationMode=="SOLO" then clean.automationMode=settings.automationMode end
@@ -670,7 +671,7 @@ function PHX.userConfigSnapshot()
         masterRole=ENV.TeamConfig.Role=="MASTER",selectedMaster=selected,automationMode=CONFIG.AUTOMATION_MODE,
         desiredRunning=state.DesiredRunning==true,debugEnabled=CONFIG.DEBUG.ENABLED,
         watchdogRestart=CONFIG.DEBUG.WATCHDOG_RESTART,returnToTiki=CONFIG.RESET_TO_TIKI_AFTER_EVENT,
-        antiAfk=CONFIG.ANTI_AFK.ENABLED,pressureRecovery=CONFIG.PRESSURE.RECOVERY_ENABLED,
+        antiAfk=CONFIG.ANTI_AFK.ENABLED,pressureRecovery=CONFIG.PRESSURE.RECOVERY_ENABLED,lagPreset=CONFIG.LAG_PRESET.ENABLED,
         randomFruit=CONFIG.FRUIT_AUTO.Enabled,autoStore=CONFIG.FRUIT_AUTO.AutoStore,mapHidden=PHX.MapVisualHidden,
         fpsCap=CONFIG.SAVE_CPU.FPS_CAP,webhookURL=CONFIG.WEBHOOK_URL,webhookUserId=CONFIG.WEBHOOK_USER_ID,
         gachaNextReadyEpoch=tonumber(ENV.__PH_DIRECT_GACHA_NEXT_READY) or 0,
@@ -694,6 +695,7 @@ function PHX.applyUserConfig(settings)
     CONFIG.FRUIT_AUTO.AutoStore=clean.autoStore
     CONFIG.ANTI_AFK.ENABLED=clean.antiAfk
     CONFIG.PRESSURE.RECOVERY_ENABLED=clean.pressureRecovery
+    CONFIG.LAG_PRESET.ENABLED=clean.lagPreset
     CONFIG.KILL_AURA.Enabled=clean.auraEnabled
     CONFIG.KILL_AURA.IdleEnabled=clean.auraIdle
     CONFIG.KILL_AURA.NetMode=clean.netMode
@@ -1048,6 +1050,46 @@ function PHX.crewNames()
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return {LP.Name} end
     return CONFIG.TEAM
 end
+PHX.BoatSeatCache=setmetatable({}, {__mode="k"})
+function PHX.retireBoatSeatCache(boat)
+    local state=PHX.BoatSeatCache[boat]
+    if not state then return end
+    PHX.BoatSeatCache[boat]=nil
+    for _,connection in ipairs(state.Connections) do PHX.disconnect(connection) end
+    state.Connections={}
+end
+function PHX.boatSeats(boat)
+    if not boat or not boat.Parent then if boat then PHX.retireBoatSeatCache(boat) end;return {} end
+    local state=PHX.BoatSeatCache[boat]
+    if not state then
+        state={Seats={},Dirty=true,Connections={}};PHX.BoatSeatCache[boat]=state
+        local function mark(object)
+            if not object or object:IsA("Seat") or object:IsA("VehicleSeat") then state.Dirty=true end
+        end
+        for _,name in ipairs({"DescendantAdded","DescendantRemoving"}) do
+            local ok,connection=pcall(function() return PHX.connect(boat[name],mark) end)
+            if ok and connection then state.Connections[#state.Connections+1]=connection end
+        end
+        local ok,connection=pcall(function() return PHX.connect(boat.AncestryChanged,function()
+            if not boat.Parent then PHX.retireBoatSeatCache(boat) end
+        end) end)
+        if ok and connection then state.Connections[#state.Connections+1]=connection end
+    end
+    if state.Dirty then
+        local ok,objects=pcall(function() return boat:GetDescendants() end)
+        if not ok then return {} end
+        state.Seats={}
+        for _,object in ipairs(objects) do
+            if object:IsA("Seat") or object:IsA("VehicleSeat") then state.Seats[#state.Seats+1]=object end
+        end
+        state.Dirty=false
+    end
+    local live={}
+    for _,seat in ipairs(state.Seats) do
+        if seat.Parent and seat:IsDescendantOf(boat) then live[#live+1]=seat else state.Dirty=true end
+    end
+    return live
+end
 function PHX.refreshCrew(boat)
     if PHX.isSoloAutomation and PHX.isSoloAutomation() then return {LP.Name} end
     local masterName=ENV.TeamConfig.MasterName
@@ -1058,7 +1100,7 @@ function PHX.refreshCrew(boat)
     end
     PHX.BoardedCrew=PHX.BoardedCrew or {}
     if boat and boat.Parent then
-        for _,seat in ipairs(boat:GetDescendants()) do
+        for _,seat in ipairs((PHX.boatSeats and PHX.boatSeats(boat) or boat:GetDescendants())) do
             if seat:IsA("Seat") and not seat:IsA("VehicleSeat") then
                 local occupant=seat.Occupant
                 local player=occupant and occupant.Parent and Players:GetPlayerFromCharacter(occupant.Parent)
@@ -1317,6 +1359,10 @@ function PHX.boatForSeat(seat)
     end
 end
 function PHX.findDriverSeat(boat)
+    if PHX.boatSeats then
+        for _,seat in ipairs(PHX.boatSeats(boat)) do if seat:IsA("VehicleSeat") then return seat end end
+        return nil
+    end
     if not boat then return nil end
     local named = boat:FindFirstChild("VehicleSeat", true)
     if named and named:IsA("VehicleSeat") then return named end
@@ -3723,30 +3769,247 @@ do
         return previousDestroy(...)
     end
 end
+CONFIG.LAG_PRESET=CONFIG.LAG_PRESET or {ENABLED=true}
+if CONFIG.LAG_PRESET.ENABLED==nil then CONFIG.LAG_PRESET.ENABLED=true end
+PHX.LagPreset={Enabled=false,Retired=false,Generation=0,Status="OFF",
+    Backup=setmetatable({}, {__mode="k"}),AppliedProperties=0,AppliedObjects=0,
+    UnverifiedProperties=0,ReadFailures=0,WriteFailures=0,RestoreFailures=0,ScanOwner=nil}
+function PHX.mapVisualCandidate(obj)
+    if not obj or not obj.Parent or not obj:IsA("BasePart") or obj.Anchored~=true
+        or PHX.isProtectedVisualObject(obj) then return false end
+    local map=workspace:FindFirstChild("Map")
+    if not map or not obj:IsDescendantOf(map) then return false end
+    local current=obj
+    while current and current~=workspace do
+        local name=string.lower(tostring(current.Name))
+        if name=="enemies" or name=="boats" or name=="npcs" then return false end
+        for _,hazard in ipairs({"lava","pressure","volcano","danger","hazard","trap","attack","skill"}) do
+            if name:find(hazard,1,true) then return false end
+        end
+        current=current.Parent
+    end
+    return true
+end
+function PHX.lagPresetAlive(generation)
+    local state=PHX.LagPreset
+    return state and not state.Retired and state.Enabled and state.Generation==generation
+        and not PHX.VisualOptimization.Retired and PHX.generationAlive()
+end
+function PHX.lagPresetRecountObject(properties)
+    for _,entry in pairs(properties) do
+        if entry.Verified and not entry.External then return true end
+    end
+    return false
+end
+function PHX.setLagPresetProperty(obj,key,value,generation)
+    local state=PHX.LagPreset
+    if not PHX.lagPresetAlive(generation) then return false end
+    local read,old=pcall(function() return obj[key] end)
+    if not read then state.ReadFailures+=1;return false end
+    local properties=state.Backup[obj]
+    local entry=properties and properties[key]
+    if entry then
+        if entry.External then return false end
+        if old~=entry.Applied then
+            local counted=PHX.lagPresetRecountObject(properties)
+            entry.External=true
+            if entry.Verified then state.AppliedProperties-=1 else state.UnverifiedProperties-=1 end
+            if counted and not PHX.lagPresetRecountObject(properties) then state.AppliedObjects-=1 end
+            return false
+        end
+        return entry.Verified==true
+    end
+    if old==value then return true end
+    if not PHX.lagPresetAlive(generation) then return false end
+    local written=pcall(function() obj[key]=value end)
+    if not written then state.WriteFailures+=1;return false end
+    local checked,applied=pcall(function() return obj[key] end)
+    if checked and applied~=value then state.WriteFailures+=1;return false end
+    properties=properties or {}
+    local counted=PHX.lagPresetRecountObject(properties)
+    entry={Previous=old,Applied=value,Verified=checked==true,External=false}
+    properties[key]=entry
+    state.Backup[obj]=properties
+    if checked then
+        state.AppliedProperties+=1
+        if not counted then state.AppliedObjects+=1 end
+    else
+        state.ReadFailures+=1;state.UnverifiedProperties+=1
+    end
+    return checked==true
+end
+function PHX.applyLagPresetObject(obj,generation)
+    local state=PHX.LagPreset
+    generation=generation or state.Generation
+    if not PHX.lagPresetAlive(generation) then return end
+    local safe,part=pcall(function()
+        if not obj or not obj.Parent then return nil end
+        if obj:IsA("BasePart") then return PHX.mapVisualCandidate(obj) and obj or nil end
+        if obj:IsA("SpecialMesh") and not PHX.isProtectedVisualObject(obj)
+            and PHX.mapVisualCandidate(obj.Parent) then return obj.Parent end
+        return nil
+    end)
+    if not safe then state.ReadFailures+=1;return end
+    if not part or not PHX.lagPresetAlive(generation) then return end
+    if part==obj then
+        PHX.setLagPresetProperty(obj,"Material",Enum.Material.SmoothPlastic,generation)
+        if not SAVE_CPU_APPLIED and not CONFIG.SAVE_CPU.ENABLED then
+            PHX.setLagPresetProperty(obj,"Reflectance",0,generation)
+        end
+        if obj:IsA("MeshPart") then PHX.setLagPresetProperty(obj,"TextureID","",generation) end
+    else
+        PHX.setLagPresetProperty(obj,"TextureId","",generation)
+    end
+end
+function PHX.refreshLagPresetStatus()
+    local state=PHX.LagPreset
+    if state.Retired then
+        state.Status=next(state.Backup) and "RETIRED_RESTORE_PENDING" or "RETIRED"
+    elseif not state.Enabled then
+        state.Status=next(state.Backup) and "OFF_RESTORE_PENDING" or "OFF"
+    elseif state.ScanOwner then
+        state.Status="SCANNING"
+    elseif state.ReadFailures+state.WriteFailures>0 or state.UnverifiedProperties>0 then
+        state.Status="DEGRADED"
+    elseif not workspace:FindFirstChild("Map") then
+        state.Status="WAITING_MAP"
+    else
+        state.Status=state.AppliedProperties>0 and "APPLIED" or "NO_CHANGES"
+    end
+    return state.Status
+end
+function PHX.restoreLagPresetProperties()
+    local state=PHX.LagPreset
+    for obj,properties in pairs(state.Backup) do
+        for key,entry in pairs(properties) do
+            local done=entry.External==true
+            if not done then
+                local read,current=pcall(function() return obj[key] end)
+                if not read then
+                    state.RestoreFailures+=1
+                elseif current~=entry.Applied then
+                    done=true
+                else
+                    local restored=pcall(function() obj[key]=entry.Previous end)
+                    local checked,actual=pcall(function() return obj[key] end)
+                    done=restored and checked and actual==entry.Previous
+                    if not done then state.RestoreFailures+=1 end
+                end
+            end
+            if done then
+                if not entry.External then
+                    if entry.Verified then state.AppliedProperties-=1 else state.UnverifiedProperties-=1 end
+                end
+                properties[key]=nil
+            end
+        end
+        if next(properties)==nil then state.Backup[obj]=nil end
+    end
+    state.AppliedObjects=0
+    for _,properties in pairs(state.Backup) do
+        if PHX.lagPresetRecountObject(properties) then state.AppliedObjects+=1 end
+    end
+    PHX.refreshLagPresetStatus()
+end
+function PHX.setLagPreset(enabled)
+    local state=PHX.LagPreset
+    enabled=enabled==true
+    if state.Retired or not PHX.generationAlive() or PHX.VisualOptimization.Retired then return false,"RETIRED" end
+    CONFIG.LAG_PRESET.ENABLED=enabled
+    if not enabled then
+        state.Enabled=false;state.Generation+=1;state.ScanOwner=nil
+        PHX.restoreLagPresetProperties()
+        return true,state.Status
+    end
+    if state.Enabled then return true,PHX.refreshLagPresetStatus() end
+    state.Enabled=true;state.Generation+=1
+    state.ReadFailures=0;state.WriteFailures=0;state.RestoreFailures=0
+    local generation=state.Generation
+    local owner={Generation=generation}
+    state.ScanOwner=owner;state.Status="SCANNING"
+    PHX.spawn(function()
+        if not PHX.lagPresetAlive(generation) or state.ScanOwner~=owner then return end
+        local map=workspace:FindFirstChild("Map")
+        local read,objects=true,{}
+        if map then read,objects=pcall(function() return map:GetDescendants() end) end
+        if not read then state.ReadFailures+=1;objects={} end
+        for index,obj in ipairs(objects) do
+            if not PHX.lagPresetAlive(generation) or state.ScanOwner~=owner then return end
+            PHX.applyLagPresetObject(obj,generation)
+            if index%200==0 then task.wait() end
+        end
+        if PHX.lagPresetAlive(generation) and state.ScanOwner==owner then
+            state.ScanOwner=nil;PHX.refreshLagPresetStatus()
+        end
+    end)
+    return true,state.Status
+end
+function PHX.lagPresetStatusText()
+    local state=PHX.LagPreset
+    PHX.refreshLagPresetStatus()
+    return "Local graphics "..(state.Enabled and "ON" or "OFF").." ("..state.Status..")"
+        .." | "..tostring(state.AppliedProperties).." properties / "..tostring(state.AppliedObjects).." objects"
+        .." | errors "..tostring(state.ReadFailures+state.WriteFailures+state.RestoreFailures)
+end
+function PHX.stopLagPreset()
+    local state=PHX.LagPreset
+    state.Enabled=false;state.Retired=true;state.Generation+=1;state.ScanOwner=nil
+    PHX.restoreLagPresetProperties()
+end
+do
+    local previousOptimize=PHX.optimizeVisualObject
+    function PHX.optimizeVisualObject(obj)
+        previousOptimize(obj)
+        PHX.applyLagPresetObject(obj)
+    end
+    local previousDestroy=PHX.destroy
+    function PHX.destroy(...)
+        PHX.stopLagPreset()
+        return previousDestroy(...)
+    end
+end
+PHX.setLagPreset(CONFIG.LAG_PRESET.ENABLED)
 PHX.AntiAfk={Alive=true,Pending=false,CurrentLease=nil,LastAttemptAt=nil,
-    NextAttemptAt=0,SentAttempts=0,Failures=0,ReleaseFailures=0,
-    Status="ARMED",LastErrorLogAt=-math.huge,Connection=nil,Worker=nil,
-    UserService=nil,InputService=nil}
+    NextAttemptAt=0,NextPulseAt=nil,SentAttempts=0,Failures=0,ReleaseFailures=0,
+    IdledEvents=0,LastIdledAt=nil,LastPulseAt=nil,LastPulseReason=nil,PendingReason=nil,
+    Status="ARMED",LastTickReason="STARTING",LastErrorLogAt=-math.huge,
+    ApiMode="UNKNOWN",ApiReason="NOT_PROBED",NativeGuard="UNKNOWN",
+    WorkerRunning=false,WorkerErrors=0,WorkerError=nil,Connection=nil,Worker=nil,
+    UserService=nil,InputService=nil,IdledConnected=false}
 function PHX.antiAfkSettings()
-    return CONFIG.ANTI_AFK or {ENABLED=true,RETRY_GAP=3,MIN_INTERVAL=55,HOLD_SECONDS=.05}
+    return CONFIG.ANTI_AFK or {ENABLED=true,RETRY_GAP=3,MIN_INTERVAL=55,HOLD_SECONDS=.05,PERIODIC_INTERVAL=60}
 end
 function PHX.antiAfkEnabled()
     return PHX.antiAfkSettings().ENABLED~=false
+end
+function PHX.antiAfkNumber(value,fallback,minimum,maximum)
+    local number=tonumber(value)
+    if not number or number~=number or number==math.huge or number==-math.huge then number=fallback end
+    return math.clamp(number,minimum,maximum)
+end
+function PHX.antiAfkPeriodicInterval()
+    local settings=PHX.antiAfkSettings()
+    return math.max(PHX.antiAfkNumber(settings.PERIODIC_INTERVAL,60,30,600),
+        PHX.antiAfkNumber(settings.MIN_INTERVAL,55,10,600))
 end
 function PHX.antiAfkStatus(status)
     local state=PHX.AntiAfk
     if not state then return end
     state.Status=tostring(status)
-    if (status=="API_UNAVAILABLE" or status=="INPUT_ERROR" or status=="INPUT_RELEASE_ERROR")
+    if (status=="API_UNAVAILABLE" or status=="INPUT_ERROR" or status=="INPUT_RELEASE_ERROR" or status=="WORKER_ERROR")
         and os.clock()-(state.LastErrorLogAt or -math.huge)>=60 then
         state.LastErrorLogAt=os.clock()
         logLine("ANTI_AFK",state.Status.." | requests do not confirm server idle state")
     end
 end
+function PHX.antiAfkResult(ok,reason)
+    if PHX.AntiAfk then PHX.AntiAfk.LastTickReason=tostring(reason) end
+    return ok,reason
+end
 function PHX.antiAfkBusyReason()
     local runtime=PHX.Runtime
     if PHX.PressurePosition and PHX.PressurePosition.Current then return "PRESSURE_POSITION" end
-    if PHX.SkillBridge and (PHX.SkillBridge.Busy or PHX.SkillBridge.Touch) then return "SKILL_INPUT" end
+    if PHX.SkillBridge and (PHX.SkillBridge.Busy or PHX.SkillBridge.Touch or PHX.SkillBridge.Lease or PHX.SkillBridge.PendingRelease) then return "SKILL_INPUT" end
     if PHX.PortalTravel then return "PORTAL_TRAVEL" end
     if runtime and (runtime.StartBusy or runtime.MovementLockLease) then return "START_OR_BOAT_PURCHASE" end
     if runtime and (runtime.FruitGuiBusy or runtime.InteractionHold or runtime.InputPassthroughRestore) then return "GAME_UI_INPUT" end
@@ -3754,43 +4017,59 @@ function PHX.antiAfkBusyReason()
     if PHX.StashSyncBusy or PHX.CraftUiBusy or (PHX.StashScanQueue and PHX.StashScanQueue.Busy) then return "STASH_OR_CRAFT" end
     if PHX.UI and (PHX.UI.PassThrough or PHX.UI.SyncBusy or PHX.UI.GachaManualBusy) then return "MAIN_UI_INPUT" end
     if runtime and (next(runtime.HeldKeys or {}) or next(runtime.HeldMouse or {}) or next(runtime.HeldPointers or {})) then return "HELD_SCRIPT_INPUT" end
-    local input=PHX.AntiAfk.InputService
-    if input then
-        local focused=false
-        pcall(function() focused=input:GetFocusedTextBox()~=nil end)
-        if focused then return "FOCUSED_TEXTBOX" end
-        for _,method in ipairs({"GetKeysPressed","GetMouseButtonsPressed","GetTouches"}) do
-            local held=false
-            pcall(function() held=#input[method](input)>0 end)
-            if held then return "HELD_NATIVE_INPUT" end
-        end
+    local state=PHX.AntiAfk
+    local input=state and state.InputService
+    if not input then
+        if state then state.NativeGuard="UNAVAILABLE" end
+        return "NATIVE_INPUT_UNAVAILABLE"
     end
+    local ok,focused=pcall(function() return input:GetFocusedTextBox() end)
+    if not ok then state.NativeGuard="FOCUS_QUERY_UNAVAILABLE";return "NATIVE_INPUT_UNAVAILABLE" end
+    if focused~=nil then state.NativeGuard="FOCUSED_TEXTBOX";return "FOCUSED_TEXTBOX" end
+    for _,method in ipairs({"GetKeysPressed","GetMouseButtonsPressed","GetTouches"}) do
+        local queried,held=pcall(function() return input[method](input) end)
+        if not queried or type(held)~="table" then
+            state.NativeGuard=method.."_UNAVAILABLE";return "NATIVE_INPUT_UNAVAILABLE"
+        end
+        if #held>0 then state.NativeGuard="HELD_NATIVE_INPUT";return "HELD_NATIVE_INPUT" end
+    end
+    state.NativeGuard="READY"
     return nil
 end
-function PHX.antiAfkQueue()
+function PHX.antiAfkQueue(reason)
     local state=PHX.AntiAfk
     if not state or not state.Alive or not PHX.generationAlive() or not PHX.antiAfkEnabled() then return false end
-    if not state.Pending then state.PendingSince=os.clock() end
+    reason=reason=="PERIODIC" and "PERIODIC" or reason=="IDLED" and "IDLED" or "QUEUED"
+    if not state.Pending then state.PendingSince=os.clock();state.PendingReason=reason
+    elseif reason=="IDLED" then state.PendingReason=reason end
     state.Pending=true
     PHX.antiAfkStatus("PENDING")
     return true
+end
+function PHX.antiAfkOnIdled()
+    local state=PHX.AntiAfk
+    if not state or not state.Alive or not PHX.generationAlive() then return false end
+    state.IdledEvents+=1;state.LastIdledAt=os.clock()
+    return PHX.antiAfkQueue("IDLED")
 end
 function PHX.antiAfkRelease(lease)
     local state=PHX.AntiAfk
     lease=lease or (state and state.CurrentLease)
     if not state or not lease or lease.State~=state then return false end
+    if lease.InputInFlight then return false end
+    if lease.Releasing then return false end
     if ENV.__PHX_ANTI_AFK_RIGHT_OWNER~=lease then
         if state.CurrentLease==lease then state.CurrentLease=nil end
         return false
     end
-    lease.ReleaseAttempts=(lease.ReleaseAttempts or 0)+1
-    local ok=pcall(function() lease.Service:Button2Up(lease.Point,lease.Camera) end)
-    lease.ReleaseRequested=true;lease.Released=ok
+    lease.Releasing=true;lease.ReleaseAttempts=(lease.ReleaseAttempts or 0)+1
+    local ok,err=pcall(function() lease.Service:Button2Up(lease.Point,lease.Camera) end)
+    lease.Releasing=false;lease.ReleaseRequested=true;lease.Released=ok
     if ok then
         if ENV.__PHX_ANTI_AFK_RIGHT_OWNER==lease then ENV.__PHX_ANTI_AFK_RIGHT_OWNER=nil end
         if state.CurrentLease==lease then state.CurrentLease=nil end
     else
-        state.ReleaseFailures+=1
+        state.ReleaseFailures+=1;state.ReleaseError=tostring(err):sub(1,240)
         PHX.antiAfkStatus("INPUT_RELEASE_ERROR")
     end
     return ok
@@ -3810,19 +4089,22 @@ function PHX.antiAfkReleaseForActivity()
         end
         return false
     end
-    if state.Alive and PHX.generationAlive() and PHX.antiAfkEnabled() then state.Pending=true end
+    if PHX.antiAfkEnabled() then state.Pending=true end
     local released=PHX.antiAfkRelease(state.CurrentLease)
     if released then PHX.antiAfkStatus("DEFERRED_ACTIVITY") end
     return released
 end
 function PHX.setAntiAfk(enabled)
-    CONFIG.ANTI_AFK=CONFIG.ANTI_AFK or {RETRY_GAP=3,MIN_INTERVAL=55,HOLD_SECONDS=.05}
+    CONFIG.ANTI_AFK=CONFIG.ANTI_AFK or {RETRY_GAP=3,MIN_INTERVAL=55,HOLD_SECONDS=.05,PERIODIC_INTERVAL=60}
     CONFIG.ANTI_AFK.ENABLED=enabled==true
     local state=PHX.AntiAfk
-    if state and not enabled then
-        state.Pending=false
-        if state.CurrentLease then PHX.antiAfkRelease(state.CurrentLease)
-        elseif PHX.antiAfkReleaseForActivity then PHX.antiAfkReleaseForActivity() end
+    if state then
+        state.NextPulseAt=enabled and os.clock()+PHX.antiAfkPeriodicInterval() or nil
+        if not enabled then
+            state.Pending=false;state.PendingReason=nil
+            if state.CurrentLease then PHX.antiAfkRelease(state.CurrentLease)
+            elseif PHX.antiAfkReleaseForActivity then PHX.antiAfkReleaseForActivity() end
+        end
     end
     if not state or not state.CurrentLease then
         local pending=PHX.antiAfkInputPending and PHX.antiAfkInputPending()
@@ -3830,101 +4112,159 @@ function PHX.setAntiAfk(enabled)
     end
     return CONFIG.ANTI_AFK.ENABLED
 end
+function PHX.antiAfkProbeApi()
+    local state=PHX.AntiAfk
+    if not state.UserService then pcall(function() state.UserService=game:GetService("VirtualUser") end) end
+    local ok,capture,down,up=pcall(function()
+        local api=state.UserService
+        return type(api.CaptureController)=="function",type(api.Button2Down)=="function",
+            type(api.Button2Up)=="function"
+    end)
+    state.ApiMode="UNAVAILABLE"
+    if ok and capture and down and up then
+        state.ApiMode="BUTTON2_HOLD";state.ApiReason="EXPLICIT_DOWN_UP_PAIR";return true
+    end
+    local click=false
+    pcall(function() click=type(state.UserService.ClickButton2)=="function" end)
+    state.ApiReason=not ok and "VIRTUALUSER_UNAVAILABLE" or not capture and "CAPTURE_UNAVAILABLE"
+        or click and "BUTTON2_PAIR_UNAVAILABLE_CLICK_UNVERIFIED" or "BUTTON2_PAIR_UNAVAILABLE"
+    return false
+end
 function PHX.antiAfkTick()
     local state=PHX.AntiAfk
-    if not state or not state.Alive or not PHX.generationAlive() then return false,"RUNTIME_RETIRED" end
+    if not state or not state.Alive or not PHX.generationAlive() then return PHX.antiAfkResult(false,"RUNTIME_RETIRED") end
     local settings=PHX.antiAfkSettings()
     local now=os.clock()
     if state.CurrentLease then
-        if PHX.antiAfkRelease(state.CurrentLease) then
-            if not PHX.antiAfkEnabled() then PHX.antiAfkStatus("OFF") end
-        end
-        return false,"RELEASE_RECOVERY"
+        if PHX.antiAfkRelease(state.CurrentLease) and not PHX.antiAfkEnabled() then PHX.antiAfkStatus("OFF") end
+        return PHX.antiAfkResult(false,"RELEASE_RECOVERY")
     end
     if not PHX.antiAfkEnabled() then
-        state.Pending=false
+        state.Pending=false;state.PendingReason=nil;state.NextPulseAt=nil
         if PHX.antiAfkInputPending() then
             PHX.antiAfkReleaseForActivity()
             PHX.antiAfkStatus(PHX.antiAfkInputPending() and "INPUT_RELEASE_PENDING" or "OFF")
-            return false,"RELEASE_RECOVERY"
+            return PHX.antiAfkResult(false,"RELEASE_RECOVERY")
         end
-        PHX.antiAfkStatus("OFF");return false,"OFF"
+        PHX.antiAfkStatus("OFF");return PHX.antiAfkResult(false,"OFF")
     end
-    if not state.Pending then return false,"NO_IDLE_EVENT" end
-    if now<(state.NextAttemptAt or 0) then return false,"RETRY_GAP" end
-    local retryGap=math.max(1,tonumber(settings.RETRY_GAP) or 3)
-    local minInterval=math.max(10,tonumber(settings.MIN_INTERVAL) or 55)
+    state.NextPulseAt=state.NextPulseAt or now+PHX.antiAfkPeriodicInterval()
+    if not state.Pending and now>=state.NextPulseAt then PHX.antiAfkQueue("PERIODIC") end
+    if not state.Pending then return PHX.antiAfkResult(false,"WAIT_PERIODIC") end
+    if now<(state.NextAttemptAt or 0) then return PHX.antiAfkResult(false,"RETRY_GAP") end
+    local retryGap=PHX.antiAfkNumber(settings.RETRY_GAP,3,1,30)
+    local minInterval=PHX.antiAfkNumber(settings.MIN_INTERVAL,55,10,600)
     if state.LastAttemptAt and now-state.LastAttemptAt<minInterval then
         state.NextAttemptAt=state.LastAttemptAt+minInterval
-        PHX.antiAfkStatus("RATE_LIMITED")
-        return false,"RATE_LIMITED"
+        PHX.antiAfkStatus("RATE_LIMITED");return PHX.antiAfkResult(false,"RATE_LIMITED")
     end
     local blocked=PHX.antiAfkBusyReason()
     if blocked then
-        state.NextAttemptAt=now+retryGap
-        PHX.antiAfkStatus("DEFERRED_"..blocked)
-        return false,blocked
+        state.NextAttemptAt=now+retryGap;PHX.antiAfkStatus("DEFERRED_"..blocked)
+        return PHX.antiAfkResult(false,blocked)
     end
     local camera=workspace.CurrentCamera
     local cameraFrame=nil
     if camera then pcall(function() cameraFrame=camera.CFrame end) end
-    if not cameraFrame then state.NextAttemptAt=now+retryGap;PHX.antiAfkStatus("WAIT_CAMERA");return false,"WAIT_CAMERA" end
-    if not state.UserService then pcall(function() state.UserService=game:GetService("VirtualUser") end) end
-    local apiReady=false
-    pcall(function()
-        apiReady=type(state.UserService.CaptureController)=="function"
-            and type(state.UserService.Button2Down)=="function" and type(state.UserService.Button2Up)=="function"
-    end)
-    if not apiReady then
-        state.NextAttemptAt=now+60;PHX.antiAfkStatus("API_UNAVAILABLE");return false,"API_UNAVAILABLE"
+    if not cameraFrame then
+        state.NextAttemptAt=now+retryGap;PHX.antiAfkStatus("WAIT_CAMERA");return PHX.antiAfkResult(false,"WAIT_CAMERA")
+    end
+    if not PHX.antiAfkProbeApi() then
+        state.NextAttemptAt=now+60;PHX.antiAfkStatus("API_UNAVAILABLE");return PHX.antiAfkResult(false,"API_UNAVAILABLE")
     end
     local previous=ENV.__PHX_ANTI_AFK_RIGHT_OWNER
     if previous then
         if type(previous)=="table" and type(previous.Generation)=="number" and previous.Generation>=1 and previous.Generation<SCRIPT_GENERATION
             and type(previous.Release)=="function" then pcall(previous.Release) end
         if ENV.__PHX_ANTI_AFK_RIGHT_OWNER then
-            state.NextAttemptAt=now+retryGap;PHX.antiAfkStatus("WAIT_INPUT_OWNER");return false,"WAIT_INPUT_OWNER"
+            state.NextAttemptAt=now+retryGap;PHX.antiAfkStatus("WAIT_INPUT_OWNER");return PHX.antiAfkResult(false,"WAIT_INPUT_OWNER")
         end
     end
     local previousAttemptAt=state.LastAttemptAt
-    state.LastAttemptAt=now;state.NextAttemptAt=now+retryGap
-    state.Pending=false
+    local pulseReason=state.PendingReason or "QUEUED"
+    state.LastAttemptAt=now;state.NextAttemptAt=now+retryGap;state.Pending=false
     local lease={State=state,Generation=SCRIPT_GENERATION,Service=state.UserService,
         Camera=cameraFrame,Point=Vector2.new(0,0),Released=false}
     lease.Release=function() return PHX.antiAfkRelease(lease) end
     local activityChanged=false
-    local ok=pcall(function()
+    local changedReason="ACTIVITY_CHANGED_BEFORE_INPUT"
+    local ok,err=pcall(function()
         lease.Service:CaptureController()
         if not PHX.generationAlive() or not state.Alive or not PHX.antiAfkEnabled() or PHX.antiAfkBusyReason() then
-            activityChanged=true
-            return
+            activityChanged=true;return
+        end
+        if ENV.__PHX_ANTI_AFK_RIGHT_OWNER~=nil then
+            activityChanged=true;changedReason="OWNER_CHANGED_BEFORE_INPUT";return
         end
         state.CurrentLease=lease;ENV.__PHX_ANTI_AFK_RIGHT_OWNER=lease
-        state.SentAttempts+=1
+        state.SentAttempts+=1;lease.Attempted=true
+        lease.InputInFlight=true
         lease.Service:Button2Down(lease.Point,lease.Camera)
-        PHX.antiAfkStatus("REQUESTED_UNVERIFIED")
-        task.wait(math.clamp(tonumber(settings.HOLD_SECONDS) or .05,.01,.2))
+        lease.InputInFlight=false
+        state.LastPulseAt=os.clock();state.LastPulseReason=pulseReason
+        state.NextPulseAt=state.LastPulseAt+PHX.antiAfkPeriodicInterval()
+        if state.CurrentLease==lease and ENV.__PHX_ANTI_AFK_RIGHT_OWNER==lease
+            and state.Alive and PHX.generationAlive() and PHX.antiAfkEnabled() then
+            PHX.antiAfkStatus("REQUESTED_UNVERIFIED")
+            task.wait(PHX.antiAfkNumber(settings.HOLD_SECONDS,.05,.01,.2))
+        end
     end)
+    lease.InputInFlight=false
     if state.CurrentLease==lease then PHX.antiAfkRelease(lease) end
     if activityChanged then
         state.LastAttemptAt=previousAttemptAt
         if state.Alive and PHX.generationAlive() and PHX.antiAfkEnabled() then
             state.Pending=true;PHX.antiAfkStatus("DEFERRED_ACTIVITY")
         end
-        return false,"ACTIVITY_CHANGED_BEFORE_INPUT"
+        return PHX.antiAfkResult(false,changedReason)
     end
     if not ok then
-        state.Failures+=1
+        state.Failures+=1;state.InputError=tostring(err):sub(1,240)
         if state.Alive and PHX.generationAlive() and PHX.antiAfkEnabled() then state.Pending=true end
         if not state.CurrentLease then PHX.antiAfkStatus("INPUT_ERROR") end
-        return false,"INPUT_ERROR"
+        return PHX.antiAfkResult(false,"INPUT_ERROR")
     end
-    return true,"REQUESTED_UNVERIFIED"
+    return PHX.antiAfkResult(true,"REQUESTED_UNVERIFIED")
+end
+function PHX.antiAfkWorkerError(err)
+    local state=PHX.AntiAfk
+    state.WorkerErrors+=1;state.WorkerError=tostring(err):sub(1,240)
+    state.NextAttemptAt=os.clock()+PHX.antiAfkNumber(PHX.antiAfkSettings().RETRY_GAP,3,1,30)
+    if state.CurrentLease then pcall(PHX.antiAfkRelease,state.CurrentLease) end
+    PHX.antiAfkStatus(state.CurrentLease and "INPUT_RELEASE_ERROR" or "WORKER_ERROR")
+end
+function PHX.antiAfkWorkerStep()
+    local ok,result,reason=pcall(PHX.antiAfkTick)
+    if not ok then PHX.antiAfkWorkerError(result);return false,"WORKER_ERROR" end
+    return result,reason
+end
+function PHX.antiAfkDiagnosticLines(add)
+    local state=PHX.AntiAfk
+    if not state then return end
+    local function age(at) return at and string.format("%.1fs ago",math.max(0,os.clock()-at)) or "NONE" end
+    add("AntiAFKRequests",state.SentAttempts);add("AntiAFKIdledEvents",state.IdledEvents)
+    add("AntiAFKIdledConnected",state.IdledConnected);add("AntiAFKIdledConnectError",state.IdledError or "NONE")
+    add("AntiAFKLastIdled",age(state.LastIdledAt));add("AntiAFKLastPulse",age(state.LastPulseAt))
+    add("AntiAFKPulseReason",state.LastPulseReason or "NONE");add("AntiAFKPendingReason",state.Pending and state.PendingReason or "NONE")
+    add("AntiAFKPending",state.Pending);add("AntiAFKReleasePending",PHX.antiAfkInputPending())
+    add("AntiAFKReason",state.LastTickReason);add("AntiAFKApi",state.ApiMode);add("AntiAFKApiReason",state.ApiReason)
+    add("AntiAFKNativeGuard",state.NativeGuard);add("AntiAFKWorkerRunning",state.WorkerRunning)
+    add("AntiAFKWorkerErrors",state.WorkerErrors);add("AntiAFKWorkerError",state.WorkerError or "NONE")
+    add("AntiAFKInputError",state.InputError or "NONE");add("AntiAFKReleaseError",state.ReleaseError or "NONE")
+    add("AntiAFKVerification","REQUESTS_ONLY; SERVER_IDLE_TIMER_UNVERIFIED")
+end
+function PHX.antiAfkSessionSummary()
+    local state=PHX.AntiAfk
+    if not state then return "Anti AFK: PENDING" end
+    local age=state.LastPulseAt and tostring(math.floor(math.max(0,os.clock()-state.LastPulseAt))).."s" or "NONE"
+    return "Anti AFK: "..state.Status.." · req "..state.SentAttempts.." · Idled "..state.IdledEvents..
+        "\nLast request: "..age.." · "..tostring(state.LastPulseReason or "NONE")..
+        " · worker errors "..state.WorkerErrors
 end
 function PHX.antiAfkStop()
     local state=PHX.AntiAfk
     if not state then return end
-    state.Alive=false;state.Pending=false
+    state.Alive=false;state.Pending=false;state.WorkerRunning=false
     PHX.antiAfkRelease(state.CurrentLease)
     if state.Connection then PHX.disconnect(state.Connection);state.Connection=nil end
     if not state.CurrentLease then PHX.antiAfkStatus("RETIRED") end
@@ -3932,15 +4272,22 @@ end
 do
     local state=PHX.AntiAfk
     pcall(function() state.InputService=game:GetService("UserInputService") end)
-    local connected,connection=pcall(function() return PHX.connect(LP.Idled,PHX.antiAfkQueue) end)
-    if connected then state.Connection=connection end
-    PHX.antiAfkStatus(not PHX.antiAfkEnabled() and "OFF" or (connected and "ARMED" or "API_UNAVAILABLE"))
+    local connected,connection=pcall(function() return PHX.connect(LP.Idled,PHX.antiAfkOnIdled) end)
+    state.IdledConnected=connected and connection~=nil
+    if state.IdledConnected then state.Connection=connection else state.IdledError=tostring(connection):sub(1,240) end
+    state.NextPulseAt=PHX.antiAfkEnabled() and os.clock()+PHX.antiAfkPeriodicInterval() or nil
+    PHX.antiAfkStatus(not PHX.antiAfkEnabled() and "OFF" or "ARMED")
     state.Worker=PHX.spawn(function()
-        while state.Alive and PHX.generationAlive() do
-            PHX.antiAfkTick()
-            task.wait(math.max(1,tonumber(PHX.antiAfkSettings().RETRY_GAP) or 3))
-        end
-        PHX.antiAfkStop()
+        state.WorkerRunning=true
+        local ok,err=pcall(function()
+            while state.Alive and PHX.generationAlive() do
+                PHX.antiAfkWorkerStep()
+                task.wait(PHX.antiAfkNumber(PHX.antiAfkSettings().RETRY_GAP,3,1,30))
+            end
+        end)
+        state.WorkerRunning=false
+        if not ok then PHX.antiAfkWorkerError(err)
+        else PHX.antiAfkStop() end
     end)
 end
 do
@@ -3954,20 +4301,34 @@ do
     local previousMouse=PHX.mouseEvent
     PHX.mouseEvent=function(x,y,button,down,target,layer)
         if down and not PHX.generationAlive() then return false end
-        if down and PHX.generationAlive() and PHX.antiAfkReleaseForActivity then
+        if down and PHX.antiAfkReleaseForActivity then
             PHX.antiAfkReleaseForActivity()
-            if (PHX.antiAfkInputPending and PHX.antiAfkInputPending())
-                or (PHX.AntiAfk and PHX.AntiAfk.CurrentLease) then error("ANTI_AFK_INPUT_RELEASE_PENDING") end
+            if (PHX.antiAfkInputPending and PHX.antiAfkInputPending()) or (PHX.AntiAfk and PHX.AntiAfk.CurrentLease) then error("ANTI_AFK_INPUT_RELEASE_PENDING") end
         end
         return previousMouse(x,y,button,down,target,layer)
+    end
+    local previousKey=PHX.keyEvent
+    PHX.keyEvent=function(down,key,repeated,target)
+        if down and not PHX.generationAlive() then return false end
+        if down and PHX.antiAfkReleaseForActivity then
+            PHX.antiAfkReleaseForActivity()
+            if (PHX.antiAfkInputPending and PHX.antiAfkInputPending()) or (PHX.AntiAfk and PHX.AntiAfk.CurrentLease) then error("ANTI_AFK_INPUT_RELEASE_PENDING") end
+        end
+        return previousKey(down,key,repeated,target)
+    end
+    local previousInteraction=PHX.holdInteraction
+    PHX.holdInteraction=function(...)
+        if not PHX.generationAlive() then return false,"INTERACTION_CANCELLED" end
+        PHX.antiAfkReleaseForActivity()
+        if (PHX.antiAfkInputPending and PHX.antiAfkInputPending()) or (PHX.AntiAfk and PHX.AntiAfk.CurrentLease) then return false,"ANTI_AFK_INPUT_RELEASE_PENDING" end
+        return previousInteraction(...)
     end
     local previousAcquire=PHX.acquireLock
     PHX.acquireLock=function(container,key,name)
         if not PHX.generationAlive() then return nil end
         if not container[key] and (name=="FruitGuiBusy" or name=="FruitAutoBusy") and PHX.antiAfkReleaseForActivity then
             PHX.antiAfkReleaseForActivity()
-            if (PHX.antiAfkInputPending and PHX.antiAfkInputPending())
-                or (PHX.AntiAfk and PHX.AntiAfk.CurrentLease) then return nil end
+            if (PHX.antiAfkInputPending and PHX.antiAfkInputPending()) or (PHX.AntiAfk and PHX.AntiAfk.CurrentLease) then return nil end
         end
         return previousAcquire(container,key,name)
     end
@@ -3980,7 +4341,7 @@ function PHX.compatDiagnosticText(value)
     return tostring(value==nil and "" or value):gsub("https://discord[%w%.]*/api/webhooks/[%w_%-/]+","<WEBHOOK_REDACTED>"):sub(1,2400)
 end
 function PHX.androidReport()
-    local lines={"PX ANDROID REPORT V2.17.41.1"}
+    local lines={"PX ANDROID REPORT V2.17.42"}
     local function add(key,value) lines[#lines+1]=key.."="..PHX.compatDiagnosticText(value) end
     local identify=type(identifyexecutor)=="function" and identifyexecutor or (ENV and ENV.identifyexecutor)
     if type(identify)=="function" then local ok,name,version=pcall(identify);add("Executor",ok and tostring(name).." / "..tostring(version) or "QUERY_FAILED") end
@@ -4005,7 +4366,7 @@ function PHX.androidReport()
     local material=PHX.MaterialCombat and PHX.MaterialCombat.Current
     if material and material.GetStatus then
         local ok,status=pcall(material.GetStatus)
-        if ok then for _,key in ipairs({"Alive","Phase","Message","NearCount","TargetCount","SoftBusy","LastSoftPauseReason","LastEquipReason","LastNetReason","NetRequests","AttackRequests","ObservedDamage","LastGroundReason","OwnershipUnknown","OwnedTrue","OwnedFalse"}) do add("M1."..key,status[key]) end end
+        if ok then for _,key in ipairs({"Alive","Phase","Message","NearCount","TargetCount","SoftBusy","LastSoftPauseReason","LastEquipReason","LastNetReason","NetRequests","AttackRequests","ObservedDamage","LastGroundReason","OwnershipUnknown","OwnedTrue","OwnedFalse","OwnershipSkips","LostOwnershipRestores","LastBringOwnership","NaturalApproaches","LastNaturalReason"}) do add("M1."..key,status[key]) end end
         add("M1.NativeRequests",material.AndroidNativeRequests);add("M1.NativeReason",material.AndroidNativeReason)
     else add("M1.MaterialWave","NOT_ACTIVE") end
     add("M1.Mode",CONFIG.ANDROID_COMPAT and CONFIG.ANDROID_COMPAT.M1_MODE)
@@ -4013,6 +4374,11 @@ function PHX.androidReport()
     add("Fruit.Busy",PHX.FruitAutoState and PHX.FruitAutoState.Busy);add("FruitGUI.Busy",PHX.Runtime.FruitGuiBusy)
     add("Inventory.Busy",PHX.InventoryBusy);add("Pressure",PHX.PressureRetry and PHX.PressureRetry.LastReason)
     add("AntiAFK",PHX.AntiAfk and PHX.AntiAfk.Status)
+    if PHX.antiAfkDiagnosticLines then PHX.antiAfkDiagnosticLines(add) end
+    if PHX.LagPreset then add("LagPreset",PHX.LagPreset.Status);add("LagPreset.Properties",PHX.LagPreset.AppliedProperties) end
+    add("Session.JobId",game.JobId);add("Session.RuntimeAge",math.floor(math.max(0,os.clock()-(PHX.Runtime.ExecutedAt or os.clock()))))
+    add("Session.LastScriptResetAt",PHX.LastScriptResetAt)
+    if PHX.TeamRuntime then add("Team.State",PHX.TeamRuntime.State);add("Team.Reason",PHX.TeamRuntime.LastReason);add("Loop.LastTick",PHX.TeamRuntime.LastLoopAt) end
     add("Boat.LowHP",PHX.LowBoatHP and PHX.LowBoatHP.LastReason)
     local character=LP.Character
     local tool=character and character:FindFirstChildOfClass("Tool")
@@ -5722,19 +6088,29 @@ function K.RestoreBucket(bucket)
     end
     table.clear(bucket)
 end
-function K.RestoreNpcOwner(owner)
+function K.RestoreNpcOwner(owner,exact)
     for object,record in pairs(State.NpcBackup) do
         if record.Owner==owner then
             pcall(function()
                 if object.Parent and (object.Parent==owner or object:IsDescendantOf(owner)) then
                     for property,value in pairs(record.Values) do pcall(function()
-                        if property=="AssemblyLinearVelocity" then
+                        if property=="AssemblyLinearVelocity" and not exact then
                             object[property]=Vector3.new(value.X,object[property].Y,value.Z)
                         else object[property]=value end
                     end) end
                 end
             end)
             State.NpcBackup[object]=nil
+        end
+    end
+    if exact then
+        local tracked=State.BringTracked[owner]
+        for object,record in pairs(tracked and tracked.OwnershipFrames or {}) do
+            pcall(function()
+                if object.Parent and object:IsDescendantOf(owner) and object.CFrame==record.Applied then
+                    object.CFrame=record.Original
+                end
+            end)
         end
     end
     State.BringTracked[owner]=nil
@@ -5744,7 +6120,11 @@ function K.PruneNpcBackups()
     local retired={}
     for model,record in pairs(State.BringTracked) do
         if not folder or model.Parent~=folder or record.Humanoid.Parent~=model or record.Part.Parent~=model
-            or record.Humanoid.Health<=0 then retired[#retired+1]=model end
+            or record.Humanoid.Health<=0 then retired[#retired+1]=model
+        else
+            local owned=K.NetworkOwnership({Part=record.Part})
+            if owned~=true then K.ReleaseBringOwnership({Model=model,Part=record.Part},owned) end
+        end
     end
     for _,model in ipairs(retired) do K.RestoreNpcOwner(model) end
 end
@@ -5931,6 +6311,71 @@ function K.GroundBelow(context)
         or K.HorizontalDistance(context.Root.Position,position)>.1 then return nil,"PLAYER_MOVED_DURING_GROUND_SCAN" end
     return hit,"GROUND_FOUND"
 end
+function K.NetworkOwnership(npc)
+    if type(isnetworkowner)~="function" then return nil end
+    local ok,value=pcall(isnetworkowner,npc.Part)
+    if ok and type(value)=="boolean" then return value end
+    return nil
+end
+function K.ReleaseBringOwnership(npc,owned)
+    local tracked=State.BringTracked[npc.Model]
+    if tracked then State.LostOwnershipRestores=(State.LostOwnershipRestores or 0)+1 end
+    K.RestoreNpcOwner(npc.Model,true)
+    State.OwnershipSkips=(State.OwnershipSkips or 0)+1
+    State.LastBringOwnership=owned==false and "NETWORK_OWNER_FALSE" or "NETWORK_OWNER_UNKNOWN"
+end
+function K.RequireBringOwnership(npc,context)
+    local owned=K.NetworkOwnership(npc)
+    if owned~=true then
+        K.ReleaseBringOwnership(npc,owned)
+        return false
+    end
+    if context and (not K.ContextValid(context) or not K.BringAllowed()) then return false end
+    if not K.BringIdentityValid(npc) then K.RestoreNpcOwner(npc.Model);return false end
+    return true
+end
+function K.RecordOwnedFrames(npc,tracked,shift)
+    tracked.OwnershipFrames=tracked.OwnershipFrames or {}
+    for _,part in ipairs(npc.Model:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local record=tracked.OwnershipFrames[part]
+            if not record then record={Original=part.CFrame};tracked.OwnershipFrames[part]=record end
+            record.Applied=part.CFrame+shift
+        end
+    end
+end
+function K.ApproachNatural(context,targets)
+    if not K.ContextValid(context) then return false,nil,"CONTEXT_CHANGED" end
+    local closest,distance=nil,math.huge
+    for _,target in ipairs(targets) do
+        local npc=K.Npc(target.Model,context,Config.ScanRadius,State.Camp.Position)
+        local tracked=npc and State.BringTracked[npc.Model]
+        if npc and (not tracked or not tracked.InitialAttempted) then
+            local currentDistance=(npc.Part.Position-context.Root.Position).Magnitude
+            if currentDistance<distance then closest=npc;distance=currentDistance end
+        end
+    end
+    if not closest then return true,nil,"NO_NATURAL_TARGET" end
+    local current=K.Npc(closest.Model,context,Config.ScanRadius,State.Camp.Position)
+    if not current or current.Humanoid~=closest.Humanoid or current.Part~=closest.Part
+        or not K.ContextValid(context) then return false,nil,"NATURAL_TARGET_CHANGED" end
+    local goal=CFrame.new(current.Part.Position+Vector3.new(0,Config.HoverGap,0))
+    if (goal.Position-context.Root.Position).Magnitude>Config.TargetEps then
+        State.Message="TWEEN_NATURAL_TARGET"
+        local moved,why=K.Tween(context,goal,Config.HoverSpeed)
+        if not moved then return false,nil,why end
+        State.NaturalApproaches=(State.NaturalApproaches or 0)+1
+    end
+    if not K.ContextValid(context) then return false,nil,"CONTEXT_CHANGED" end
+    current=K.Npc(closest.Model,context,Config.ScanRadius,State.Camp.Position)
+    if not current or current.Humanoid~=closest.Humanoid or current.Part~=closest.Part then
+        return false,nil,"NATURAL_TARGET_CHANGED"
+    end
+    goal=CFrame.new(current.Part.Position+Vector3.new(0,Config.HoverGap,0))
+    if not K.Hold(context,goal) then return false,nil,"CONTEXT_CHANGED" end
+    State.LastNaturalReason="NATURAL_POSITION_REQUEST_EFFECT_UNVERIFIED"
+    return true,goal,State.LastNaturalReason
+end
 function K.Bring(context,targets,anchor)
     if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
     if not K.BringAllowed() then return K.SkipBring() end
@@ -5944,13 +6389,17 @@ function K.Bring(context,targets,anchor)
         if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
         local npc=K.Npc(target.Model,context,Config.ScanRadius,State.Camp.Position)
         if npc then
-            local owned
-            if type(isnetworkowner)=="function" then local ok,value=pcall(isnetworkowner,npc.Part);if ok and type(value)=="boolean" then owned=value end end
+            local owned=K.NetworkOwnership(npc)
+            if not K.ContextValid(context) then
+                if owned~=true then K.ReleaseBringOwnership(npc,owned) end
+                return false,"CONTEXT_CHANGED"
+            end
             if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
             if not K.BringAllowed() then return K.SkipBring() end
             local fresh=K.Npc(target.Model,context,Config.ScanRadius,State.Camp.Position)
             if not fresh or fresh.Humanoid~=npc.Humanoid or fresh.Part~=npc.Part then continue end
             if owned==true then State.OwnedTrue+=1 elseif owned==false then State.OwnedFalse+=1 else State.OwnershipUnknown+=1 end
+            if owned~=true then K.ReleaseBringOwnership(npc,owned);continue end
             local tracked=State.BringTracked[npc.Model]
             if tracked and (tracked.Humanoid~=npc.Humanoid or tracked.Part~=npc.Part) then
                 K.RestoreNpcOwner(npc.Model);tracked=nil
@@ -5985,6 +6434,7 @@ function K.Bring(context,targets,anchor)
                 end
             end
             local ok,err=pcall(function()
+                if not K.RequireBringOwnership(npc,context) then return end
                 local pivot,shift
                 if moveReason then
                     local original=npc.Part.CFrame
@@ -6005,7 +6455,9 @@ function K.Bring(context,targets,anchor)
                         or goal.Y>=context.Root.Position.Y-1 or (goal-context.Root.Position).Magnitude>Config.Radius then
                         State.GroundSkips+=1;State.LastGroundReason="GROUND_OR_PLAYER_CHANGED_BEFORE_MOVE";return
                     end
+                    if not K.RequireBringOwnership(npc,context) then return end
                     shift=goal-original.Position
+                    K.RecordOwnedFrames(npc,tracked,shift)
                     for _,part in ipairs(npc.Model:GetDescendants()) do
                         if part:IsA("BasePart") then K.Backup(State.NpcBackup,npc.Model,part,{"AssemblyLinearVelocity","AssemblyAngularVelocity"}) end
                     end
@@ -6022,7 +6474,9 @@ function K.Bring(context,targets,anchor)
                 if moveReason then
                     tracked.InitialAttempted=true
                     if not K.BringAllowed() then K.SkipBring();return end
+                    if not K.RequireBringOwnership(npc,context) then return end
                     npc.Model:PivotTo(pivot+shift)
+                    if not K.RequireBringOwnership(npc,context) then return end
                     if not K.ContextValid(context) then return end
                     if not K.BringAllowed() then K.SkipBring();return end
                     current=K.Npc(npc.Model,context,Config.ScanRadius,State.Camp.Position)
@@ -6042,6 +6496,11 @@ function K.Bring(context,targets,anchor)
                 end
             end)
             if not ok then State.BringErrors+=1;State.LastError=tostring(err) end
+            if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+            local stillOwned=K.RequireBringOwnership(npc,context)
+            if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
+            if not K.BringAllowed() then return K.SkipBring() end
+            if not stillOwned then continue end
             if not K.ContextValid(context) then return false,"CONTEXT_CHANGED" end
             if not K.BringAllowed() then return K.SkipBring() end
             if moved then
@@ -6161,6 +6620,9 @@ function K.GetStatus()
         Interval=Config.Interval,Hitbox=Config.Hitbox,HoverMode="ALIGN_POSITION",HoverActive=State.Hover~=nil,KeepHover=State.KeepHover,
         TargetCount=State.TargetCount,NearCount=State.NearCount,LocalStacked=State.LocalStacked,
         OwnedTrue=State.OwnedTrue,OwnedFalse=State.OwnedFalse,OwnershipUnknown=State.OwnershipUnknown,
+        OwnershipSkips=State.OwnershipSkips or 0,LostOwnershipRestores=State.LostOwnershipRestores or 0,
+        LastBringOwnership=State.LastBringOwnership,NaturalApproaches=State.NaturalApproaches or 0,
+        LastNaturalReason=State.LastNaturalReason,
         NetRequests=State.NetRequests,AttackRequests=State.AttackRequests,ObservedDamage=State.ObservedDamage,
         SoftPauseCount=State.SoftPauseCount,SoftBusy=State.SoftBusy,
         LastSoftPauseReason=State.LastSoftPauseReason,LastNetReason=State.LastNetReason,
@@ -6262,6 +6724,11 @@ function K.Run(completed)
             if not brought then State.Message=bringWhy;return false end
             if not K.Hold(context,hover) then return false end
             local nearby=K.Gather(context)
+            if #nearby==0 then
+                local approached,nextHover,approachWhy=K.ApproachNatural(context,targets)
+                if not approached then State.Message=approachWhy;return false end
+                if nextHover then hover=nextHover;nearby=K.Gather(context) end
+            end
             State.NearCount=#nearby
             local tool,equipWhy=K.Equip(context)
             if not tool then
@@ -7263,7 +7730,7 @@ local function countTeamAboard(boat)
     if not boat or not boat.Parent then return 0 end
     PHX.refreshCrew(boat)
     local aboard={}
-    for _,seat in ipairs(boat:GetDescendants()) do
+    for _,seat in ipairs((PHX.boatSeats and PHX.boatSeats(boat) or boat:GetDescendants())) do
         if seat:IsA("Seat") or seat:IsA("VehicleSeat") then
             local occupant=seat.Occupant
             local player=occupant and occupant.Parent and Players:GetPlayerFromCharacter(occupant.Parent)
@@ -7293,7 +7760,7 @@ function PHX.crewReady(boat)
         end
     end
     local passengers={}
-    for _,seat in ipairs(boat:GetDescendants()) do
+    for _,seat in ipairs((PHX.boatSeats and PHX.boatSeats(boat) or boat:GetDescendants())) do
         if seat:IsA("Seat") and not seat:IsA("VehicleSeat") then
             local occupant=seat.Occupant
             local player=occupant and occupant.Parent and Players:GetPlayerFromCharacter(occupant.Parent)
@@ -8201,6 +8668,9 @@ end
 function PHX.teamPressureAssignment(island, snapshot, golems)
     golems=golems or PHX.liveGolems()
     if #golems==0 then PHX.TeamPressureDutyLevel=0; return true,"NO_GOLEMS" end
+    if PHX.teamCoreUnavailable and PHX.teamCoreUnavailable(island) then
+        PHX.TeamPressureDutyLevel=0;return false,"GOLEM_CORE_UNAVAILABLE"
+    end
     local idx=teamIndex(LP.Name)
     if idx~=3 and idx~=4 then PHX.TeamPressureDutyLevel=0;return false,"GOLEM_CORE" end
     if PHX.TeamPressureDutyIsland~=island then
@@ -10283,27 +10753,26 @@ function PHX.collectDragonEggRemote()
 end
 PHX.EggRosters = setmetatable({}, {__mode="k"})
 function PHX.captureEggRoster(state)
-    local core = state.Island:FindFirstChild("Core")
-    local folder = core and core:FindFirstChild("SpawnedDragonEggs")
+    if not state.Island or not state.Island.Parent then return end
+    local core=state.Island:FindFirstChild("Core")
+    local folder=core and core:FindFirstChild("SpawnedDragonEggs")
     if not folder then return end
-    if state.Folder and state.Folder ~= folder and next(state.Entries) ~= nil then
-        state.Ambiguous = "Reward folder changed after eggs were observed"
-        return
+    if state.Folder and state.Folder~=folder and next(state.Entries)~=nil then
+        state.Ambiguous="Reward folder changed after eggs were observed";return
     end
-    state.Folder = folder
+    local now=os.clock()
+    if state.Folder==folder and not state.Dirty and (state.Unresolved or 0)==0 and now<(state.NextCaptureAt or 0) then return end
+    if state.Folder==folder and state.Frozen and not state.Dirty then return end
+    state.Folder=folder;state.Dirty=false;state.NextCaptureAt=now+.25
+    state.Unresolved=0;state.CaptureReads=(state.CaptureReads or 0)+1
     for _,egg in ipairs(folder:GetChildren()) do
-        local entry = state.Entries[egg]
+        local entry=state.Entries[egg]
         if not entry then
-            if state.Frozen then
-                state.Ambiguous = "More eggs appeared after the assignment snapshot"
-                return
-            end
-            state.LastAddedAt = os.clock()
-            entry = {Egg=egg}
-            state.Entries[egg] = entry
+            if state.Frozen then state.Ambiguous="More eggs appeared after the assignment snapshot";return end
+            state.LastAddedAt=now;entry={Egg=egg};state.Entries[egg]=entry
         end
-        local position = eggPosition(egg)
-        if position then entry.Position = position end
+        local position=eggPosition(egg)
+        if position then entry.Position=position else state.Unresolved+=1 end
     end
 end
 function PHX.watchEggRoster(island)
@@ -10322,6 +10791,7 @@ function PHX.watchEggRoster(island)
     rosters[island] = state
     state.Connections[#state.Connections+1] = PHX.connect(island.DescendantAdded, function(obj)
         if obj.Name ~= "SpawnedDragonEggs" and not (state.Folder and obj:IsDescendantOf(state.Folder)) then return end
+        state.Dirty=true
         if state.RefreshScheduled then return end
         state.RefreshScheduled = true
         PHX.defer(function()
@@ -10554,7 +11024,7 @@ local function collectAssignedEgg(island, token)
             PHX.pauseEvent("EGG_ROSTER_AMBIGUOUS", "Egg slots ambiguous: "..rosterError.." -> paused")
             return false
         end
-        if #eggs == 0 then task.wait(.1) continue end
+        if #eggs == 0 then task.wait(.2) continue end
         local folder = roster.Folder
         local rotate = math.abs(math.floor(island:GetPivot().Position.X)) % crewSize
         local rank = ((ti+rotate-1)%crewSize)+1
@@ -13024,6 +13494,89 @@ do
         return previousRestore(...)
     end
 end
+CONFIG.TEAM_RUNTIME=CONFIG.TEAM_RUNTIME or {DEATH_GRACE=8,WAIT_SECONDS=.5}
+PHX.TeamRuntime={State="READY",StateAt=os.clock(),LastReason="READY",ActorEpoch=CHARACTER_EPOCH,
+    MasterName=ENV.TeamConfig.MasterName,Transitions=0,StageErrors={},LastLoopAt=os.clock()}
+function PHX.expectedTeamWait(reason,seconds,token)
+    PHX.Runtime.ExpectedWait={Reason=reason,Until=os.clock()+math.max(1,seconds or 3),Token=token,Generation=SCRIPT_GENERATION}
+end
+function PHX.expectedTeamWaitAlive()
+    local wait=PHX.Runtime.ExpectedWait
+    return wait and wait.Generation==SCRIPT_GENERATION and wait.Token==RUN_TOKEN and os.clock()<wait.Until
+end
+function PHX.teamState(state,reason,token)
+    local current=PHX.TeamRuntime
+    if current.MasterName~=ENV.TeamConfig.MasterName or current.ActorEpoch~=CHARACTER_EPOCH then
+        current.MasterName=ENV.TeamConfig.MasterName;current.ActorEpoch=CHARACTER_EPOCH;current.State="READY";current.StateAt=os.clock()
+    end
+    if current.State~=state then
+        current.State=state;current.StateAt=os.clock();current.Transitions+=1
+        noteProgress("TEAM_STATE:"..state)
+    end
+    current.LastReason=reason or state
+    PHX.expectedTeamWait(reason or state,3,token)
+    return os.clock()-current.StateAt
+end
+function PHX.teamCoreUnavailable(island)
+    if PHX.isSoloAutomation() then return false end
+    local names=PHX.EventCrews and PHX.EventCrews[island] or CONFIG.TEAM
+    if type(names)~="table" or #names<2 then return false end
+    local target=PHX.capturedFossilTarget and PHX.capturedFossilTarget(island)
+    for index=1,2 do
+        local player=PHX.playerByName(names[index])
+        local character=player and player.Character
+        local h=character and character:FindFirstChildOfClass("Humanoid")
+        if not h or h.Health<=0 then return true end
+        if target then
+            local rr=character:FindFirstChild("HumanoidRootPart")
+            if not rr or (rr.Position-target.Position).Magnitude>600 then return true end
+        end
+    end
+    return false
+end
+function PHX.stageBackoff(stage,ok,err,token)
+    local errors=PHX.TeamRuntime.StageErrors
+    if ok then errors[stage]=nil;return end
+    local count=(errors[stage] or 0)+1;errors[stage]=count
+    PHX.Runtime.LastError=PHX.compatDiagnosticText(err)
+    local delay=math.min(8,.5*2^math.min(count-1,4))
+    PHX.expectedTeamWait("STAGE_ERROR:"..stage,delay+2,token)
+    local untilTime=os.clock()+delay
+    while isRunning(token) and os.clock()<untilTime do task.wait(math.min(.25,untilTime-os.clock())) end
+end
+function PHX.teamRendezvous(token,reason)
+    if not isRunning(token) or findPrehistoric() then return false end
+    PHX.teamState("RENDEZVOUS",reason,token)
+    if getRegion()=="TIKI" then return true end
+    if hum() and hum().SeatPart and not stopSit(token) then return false end
+    if findPrehistoric() or not isRunning(token) then return false end
+    return PHX.returnToTikiForBoat(token,reason)
+end
+function PHX.masterTravelSnapshot(boat)
+    local player=PHX.playerByName(ENV.TeamConfig.MasterName)
+    local c=player and player.Character
+    local h=c and c:FindFirstChildOfClass("Humanoid")
+    local rr=c and c:FindFirstChild("HumanoidRootPart")
+    if not player then return "MASTER_OFFLINE" end
+    if not h or h.Health<=0 or not rr then return "MASTER_RESPAWNING" end
+    local driver=h.SeatPart
+    local masterBoat=driver and driver:IsA("VehicleSeat") and PHX.boatForSeat(driver)
+    if masterBoat and PHX.boatAlive(masterBoat) and masterBoat.Name==CONFIG.BOAT_NAME then
+        return "MASTER_DRIVING",masterBoat
+    end
+    if (rr.Position-CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude>5200 then return "MASTER_AWAY_WORKING",boat end
+    return "MASTER_AT_TIKI",boat
+end
+do
+    local previous=getMasterBoat
+    getMasterBoat=function()
+        if not PHX.isSoloAutomation() then
+            local status,boat=PHX.masterTravelSnapshot()
+            if status=="MASTER_DRIVING" and not PHX.RejectedBoats[boat] then return boat end
+        end
+        return previous()
+    end
+end
 local function masterCycle(token)
     if PHX.BoatPurchasePending then
         local pendingIsland=findPrehistoric()
@@ -13109,87 +13662,72 @@ local function slaveCycle(token)
     if pre.Interrupted then return end
     local h=hum()
     if PHX.SlaveMagnetVoyage and pre.Region=="TIKI" and not (h and h.SeatPart)
-        and not PHX.ActiveEventCrewIsland and not PHX.PendingDepartureIsland then
-        PHX.SlaveMagnetVoyage=nil
-        logLine("TEAM_SLAVE_MAGNET_GATE","TIKI_FOOT: cleared previous trip proof")
-    end
+        and not PHX.ActiveEventCrewIsland and not PHX.PendingDepartureIsland then PHX.SlaveMagnetVoyage=nil end
     if not PHX.requireMagnet(pre,token) then return end
-    if pre.Island then runPrehistoricEvent(pre.Island,token); return end
-    if not pre.MasterOnline then
-        PHX.TeamPhase="WAIT_MASTER"
-        if not waitForMasterOnline(token) then return end
-    end
+    if pre.Island then runPrehistoricEvent(pre.Island,token);return end
     local boat=getMasterBoat()
-    while PHX.travelAlive(token) and not boat do
-        PHX.TeamPhase="WAIT_MASTER"; PHX.BoatState="WAIT_MASTER_BOAT"
-        local island=findPrehistoric()
-        if island then runPrehistoricEvent(island,token); return end
-        if getRegion()~="TIKI" and not PHX.returnToDealer(token) then task.wait(1); return end
-        setStatus("SLAVE: waiting MASTER Grand Brigade at Tiki")
-        task.wait(.5)
-        boat=getMasterBoat()
+    local masterState,drivenBoat=PHX.masterTravelSnapshot(boat)
+    if masterState=="MASTER_DRIVING" then boat=drivenBoat end
+    if masterState=="MASTER_OFFLINE" or masterState=="MASTER_RESPAWNING" then
+        local age=PHX.teamState(masterState,masterState,token)
+        setStatus("SLAVE: "..masterState.." · chờ Master, giữ role")
+        if age>=(CONFIG.TEAM_RUNTIME.DEATH_GRACE or 8) and pre.Region~="TIKI" then PHX.teamRendezvous(token,masterState) end
+        task.wait(CONFIG.TEAM_RUNTIME.WAIT_SECONDS or .5);return
     end
-    if not PHX.travelAlive(token) or not PHX.boatAlive(boat) then return end
-    local r=root()
-    local master=PHX.playerByName(ENV.TeamConfig.MasterName)
-    local masterRoot=master and master.Character and master.Character:FindFirstChild("HumanoidRootPart")
-    if masterRoot and (masterRoot.Position-boat:GetPivot().Position).Magnitude>8000 and
-        (boat:GetPivot().Position-CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude>5200 then
-        PHX.TeamPhase="WAIT_MASTER"; PHX.BoatState="MASTER_REBUYING"
-        setStatus("MASTER respawned away from old boat -> waiting new Tiki rendezvous")
-        task.wait(1)
-        return
+    if masterState=="MASTER_AWAY_WORKING" then
+        PHX.teamState(masterState,"Master rời ghế/đang làm việc; rendezvous Tiki",token)
+        if pre.Region~="TIKI" then PHX.teamRendezvous(token,masterState) end
+        setStatus("SLAVE: Master đang ngoài thuyền · chờ tại Tiki")
+        task.wait(.5);return
     end
-    if r and (r.Position-boat:GetPivot().Position).Magnitude>8000 then
-        if (boat:GetPivot().Position-CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude<=5200 then
-            if not PHX.returnToDealer(token) then return end
-        else
-            PHX.TeamPhase="RECOVERY"; PHX.BoatState="WAIT_TIKI_RENDEZVOUS"
-            setStatus("SLAVE far from offshore boat -> waiting MASTER rebuy/reboard at Tiki")
-            task.wait(1)
-            return
-        end
+    if not boat or not PHX.boatAlive(boat) then
+        PHX.teamState("WAIT_NEW_BOAT","Master mua/thay thuyền",token)
+        if pre.Region~="TIKI" then PHX.teamRendezvous(token,"WAIT_NEW_BOAT") end
+        setStatus("SLAVE: chờ Grand Brigade mới của Master")
+        task.wait(.5);return
     end
-    if not PHX.slaveMagnetVoyageValid(nil) then
-        local ready=hasVolcanicMagnet()
-        if ready~=true then
-            PHX.TeamPhase=ready==false and "MAGNET_FARM" or "MAGNET_UNKNOWN"
-            logLine("TEAM_SLAVE_MAGNET_GATE","BOARD_BLOCKED magnet="..tostring(ready).."; must verify Magnet before seat")
-            if ready==false then recoverMagnet(token) else setStatus("SLAVE: Magnet unknown; wait before boarding") end
-            return
-        end
+    if masterState=="MASTER_AT_TIKI" and (boat:GetPivot().Position-CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude>5200 then
+        PHX.RejectedBoats[boat]=true
+        PHX.teamRendezvous(token,"MASTER_BACK_AT_TIKI_OLD_BOAT_OFFSHORE")
+        task.wait(.5);return
     end
-    if not boardBoat(boat,token) then
-        PHX.TeamPhase="RECOVERY"; PHX.BoatState="PASSENGER_SEAT_FAILED"
-        setStatus("SLAVE passenger seat retry; keep Magnet cache")
-        task.wait(.5); return
-    end
-    PHX.SlaveMagnetVoyage={Verified=true,Boat=boat,MasterName=ENV.TeamConfig.MasterName,BoardedAt=os.clock()}
-    logLine("TEAM_SLAVE_MAGNET_GATE","BOARD_VERIFIED magnet_checked=true role=SLAVE boat="..boat.Name)
-    PHX.TeamPhase="SAILING"; PHX.BoatState="PASSENGER_SEATED"
-    while PHX.travelAlive(token) and PHX.boatAlive(boat) do
-        if PHX.handleLowBoatHP(token,boat) then return  end
+    if PHX.handleLowBoatHP(token,boat) then return end
+    h=hum()
+    local seated=h and h.SeatPart
+    local seatedBoat=seated and PHX.boatForSeat(seated)
+    if seatedBoat==boat and not seated:IsA("VehicleSeat") then
         PHX.refreshCrew(boat)
-        local island=findPrehistoric()
-        if island then runPrehistoricEvent(island,token); return end
-        local h=hum()
-        if not h or h.Health<=0 then PHX.TeamPhase="RECOVERY"; return end
-        local masterPlayer=PHX.playerByName(ENV.TeamConfig.MasterName)
-        local rr=masterPlayer and masterPlayer.Character and masterPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if rr and (rr.Position-boat:GetPivot().Position).Magnitude>8000 then
-            PHX.TeamPhase="RECOVERY"
-            if stopSit(token) then PHX.returnToDealer(token) end
-            return
-        end
-        local seat=h.SeatPart
-        if not seat or seat:IsA("VehicleSeat") or PHX.boatForSeat(seat)~=boat then
-            PHX.TeamPhase="RECOVERY"
-            setStatus("SLAVE lost passenger seat -> reboard")
-            return
-        end
-        task.wait(.3)
+        PHX.teamState("PASSENGER_SEATED","Follow bằng ghế, không tween theo Master",token)
+        PHX.TeamPhase="SAILING";PHX.BoatState="PASSENGER_SEATED"
+        task.wait(.3);return
     end
-    PHX.TeamPhase="RECOVERY"; PHX.BoatState="BOAT_LOST"
+    if seated and seatedBoat~=boat then
+        if not stopSit(token) then return end
+    end
+    local r=root()
+    if not r then return end
+    local boatPosition=boat:GetPivot().Position
+    local localDistance=(r.Position-boatPosition).Magnitude
+    if localDistance>8000 and (boatPosition-CONFIG.BOAT_DEALER_CFRAME.Position).Magnitude>5200 then
+        PHX.teamState("WAIT_TIKI_RENDEZVOUS","Không đuổi thuyền xa ngoài biển",token)
+        if pre.Region~="TIKI" then PHX.teamRendezvous(token,"OFFSHORE_BOAT_TOO_FAR") end
+        task.wait(.5);return
+    end
+    local ready=PHX.crewReady(boat)
+    if ready and seatedBoat~=boat then
+        PHX.teamState("RESERVE_READY","Đã đủ 3 Slave; client này dự phòng",token)
+        if pre.Region~="TIKI" then PHX.teamRendezvous(token,"RESERVE_RETURN_TIKI") end
+        setStatus("SLAVE dự phòng: thuyền đủ 3 Slave · giữ Magnet cho chuyến sau")
+        task.wait(.5);return
+    end
+    if not PHX.slaveMagnetVoyageValid(nil) and hasVolcanicMagnet()~=true then
+        PHX.teamState("MAGNET_REQUIRED","Chưa có Magnet xác nhận",token);return
+    end
+    PHX.teamState("REBOARD","Đi ghế hành khách của thuyền hiện tại",token)
+    if not boardBoat(boat,token) then task.wait(.5);return end
+    PHX.SlaveMagnetVoyage={Verified=true,Boat=boat,MasterName=ENV.TeamConfig.MasterName,BoardedAt=os.clock()}
+    PHX.refreshCrew(boat)
+    PHX.TeamPhase="SAILING";PHX.BoatState="PASSENGER_SEATED"
 end
 local function mainLoop(token)
     if PHX.localRole()=="NONE" and not PHX.isSoloAutomation() then
@@ -13200,6 +13738,7 @@ local function mainLoop(token)
     end
     ensureMarines()
     while isRunning(token) do
+        PHX.TeamRuntime.LastLoopAt=os.clock()
         if PHX.handleLowBoatHP(token) then task.wait(.2);continue end
         local ready,waiting=true,nil
         if PHX.automationReadyGuard then ready,waiting=PHX.automationReadyGuard(token) end
@@ -13227,13 +13766,16 @@ local function mainLoop(token)
         local island = PHX.PendingDepartureIsland or findPrehistoric()
         if island then
             local ok,err = pcall(runPrehistoricEvent, island, token)
+                PHX.stageBackoff("EVENT",ok,err,token)
             if not ok then setStatus("EVENT ERROR: "..tostring(err)) task.wait(1) end
         else
             if isMaster() then
                 local ok,err = pcall(masterCycle, token)
+                PHX.stageBackoff("MASTER",ok,err,token)
                 if not ok then setStatus("MASTER ERROR: "..tostring(err)) task.wait(1) end
             else
                 local ok,err = pcall(slaveCycle, token)
+                PHX.stageBackoff("SLAVE",ok,err,token)
                 if not ok then setStatus("SLAVE ERROR: "..tostring(err)) task.wait(1) end
             end
         end
@@ -13416,6 +13958,12 @@ function PHX.stopAutomation(reason)
     return true
 end
 function PHX.launchRunner(token)
+    local previous=PHX.Runtime.Runner
+    if previous and coroutine.status(previous)~="dead" then
+        return false,"RUNNER_ALREADY_ACTIVE"
+    end
+    PHX.Runtime.RunnerToken=token
+    PHX.Runtime.ExpectedWait=nil
     PHX.Runtime.Runner = PHX.spawn(function()
         while isRunning(token) do
             local ok,err = pcall(mainLoop, token)
@@ -13425,7 +13973,7 @@ function PHX.launchRunner(token)
                 disableLavaProtection()
                 setForestMagnet(false)
                 stopStableHover()
-                task.wait(.35)
+                PHX.stageBackoff("RUNNER",false,err,token)
             elseif isRunning(token) then
                 logLine("RUN_RESTART", "State machine returned while armed; retrying")
                 task.wait(.30)
@@ -15004,7 +15552,10 @@ PHX.spawn(function()
                         {name="Region", value=tostring(getRegion()), inline=true},
                     })
                 end
-                if PHX.Runtime.AutomationBlockedReason then
+                if PHX.expectedTeamWaitAlive and PHX.expectedTeamWaitAlive() then
+                    NIGHT.LastProgressAt=os.clock()
+                    logLine("WATCHDOG", "Expected TEAM wait; keep current runner")
+                elseif PHX.Runtime.AutomationBlockedReason then
                     NIGHT.LastProgressAt = os.clock()
                     logLine("WATCHDOG", "Waiting prerequisite "..tostring(PHX.Runtime.AutomationBlockedReason).." -> keep current runner")
                 elseif eventActive then
@@ -15174,7 +15725,7 @@ function PHX.buildUI()
     }, U.Root))
     make("Frame", {BackgroundColor3 = C.Cyan, BackgroundTransparency = 0.55, BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, -1), Size = UDim2.new(1, 0, 0, 1)}, header)
     U.Brand = text(header, "VOLCANO TEAM", 15, C.Text, UDim2.fromOffset(14, 8), UDim2.fromOffset(163, 22), Enum.Font.GothamBold)
-    U.Version = text(header, "V2.17.41.1 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
+    U.Version = text(header, "V2.17.42 / MATERIAL FARM", 9, C.Muted, UDim2.fromOffset(14, 30), UDim2.fromOffset(170, 14))
     U.StatePill = text(header, "READY", 10, C.Cyan, UDim2.new(1, -129, 0, 8), UDim2.fromOffset(78, 21), Enum.Font.GothamBold)
     U.StatePill.BackgroundTransparency = 0
     U.StatePill.BackgroundColor3 = C.Raised
@@ -15386,6 +15937,20 @@ function PHX.buildUI()
     end, true)
     U.PlayerMenu = button(masterCard, "CHỌN MASTER TỪ PLAYER ONLINE  ▾", UDim2.fromOffset(11, 162), UDim2.new(1, -22, 0, 34), C.LavenderSoft)
     U.PlayerMenu.TextSize = 10
+    U.PlayerMenu.Size=UDim2.new(1,-118,0,34)
+    U.RefreshPlayers=button(masterCard,"REFRESH",UDim2.new(1,-98,0,162),UDim2.fromOffset(87,34),C.CyanSoft)
+    U.RefreshPlayers.TextSize=10
+    PHX.connect(U.RefreshPlayers.Activated,function()
+        if U.PassThrough or U.PlayerRefreshPending then return end
+        U.PlayerRefreshPending=true
+        PHX.defer(function()
+            U.PlayerRefreshPending=false
+            if not PHX.generationAlive() or not U.Screen.Parent or U.PassThrough then U.PlayersDirty=true;return end
+            U.PlayerExiting={};U.PlayersDirty=true
+            U.refreshPlayers();U.updateControls()
+            U.notice("Đã refresh "..tostring(U.OtherPlayerCount or 0).." player online; giữ Master đang chọn.",true)
+        end)
+    end)
     U.PlayerList = inputNode(make("ScrollingFrame", {
         Name = "OnlineMasterMenu", BackgroundColor3 = C.Background, BorderSizePixel = 0,
         Position = UDim2.fromOffset(11, 205), Size = UDim2.new(1, -22, 0, 142), Visible = false,
@@ -15488,9 +16053,9 @@ function PHX.buildUI()
         if U.DiagnosticBox then U.DiagnosticBox.Text=PHX.androidReport();U.DiagnosticPanel.Visible=true end
         if U.notice then U.notice("Đã quét nút skill; copy báo cáo trong UI.",true) end
     end)
-    local sessionCard = card(settingsPage, 194, 1.9, "anti afk treo liên tục cùng server pressure rock phục hồi skill retry")
+    local sessionCard = card(settingsPage, 207, 1.9, "anti afk treo liên tục cùng server pressure rock phục hồi skill retry")
     text(sessionCard, "TREO CÙNG SERVER / PHỤC HỒI SKILL", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
-    U.AntiAfkToggle = toggle(sessionCard, 31, "Anti AFK", "Xử lý Idled; hoãn khi đang giữ skill hoặc thao tác UI.",
+    U.AntiAfkToggle = toggle(sessionCard, 31, "Anti AFK", "Định kỳ 60s + Idled; hoãn input/skill/UI. Xem trạng thái API bên dưới.",
         function() return CONFIG.ANTI_AFK.ENABLED == true end,
         function(value)
             PHX.setAntiAfk(value)
@@ -15502,7 +16067,7 @@ function PHX.buildUI()
             CONFIG.PRESSURE.RECOVERY_ENABLED=value==true
             return true
         end)
-    U.SessionStatus = text(sessionCard, "", 9, C.Cyan, UDim2.fromOffset(11, 139), UDim2.new(1, -22, 0, 47))
+    U.SessionStatus = text(sessionCard, "", 9, C.Cyan, UDim2.fromOffset(11, 139), UDim2.new(1, -22, 0, 60))
     local androidCard=card(settingsPage,184,1.95,"android arceus delta PE M1 native console F9 chẩn đoán config")
     text(androidCard,"ANDROID / ARCEUS · CHẨN ĐOÁN",10,C.Lavender,UDim2.fromOffset(11,7),UDim2.new(1,-22,0,18),Enum.Font.GothamBold)
     U.MobileM1Mode=button(androidCard,"M1 MODE · "..CONFIG.ANDROID_COMPAT.M1_MODE,UDim2.fromOffset(11,31),UDim2.new(1,-22,0,32),C.CyanSoft)
@@ -15662,6 +16227,13 @@ function PHX.buildUI()
     end
     PHX.connect(minus.Activated, function() changeFps(-5) end)
     PHX.connect(plus.Activated, function() changeFps(5) end)
+    local lagCard=card(settingsPage,171,4.2,"giảm lag graphics texture material bloxstrap fastflag PE android")
+    text(lagCard,"GIẢM LAG · LOW GRAPHICS",10,C.Lavender,UDim2.fromOffset(11,7),UDim2.new(1,-22,0,18),Enum.Font.GothamBold)
+    U.LagToggle=toggle(lagCard,31,"Giảm lag nền", "Giảm vật liệu/texture map nền; giữ player, quái và tín hiệu chiến đấu.",
+        function() return CONFIG.LAG_PRESET.ENABLED==true end,
+        function(value) return PHX.setLagPreset(value) end)
+    U.LagStatus=text(lagCard,"",9,C.Cyan,UDim2.fromOffset(11,88),UDim2.new(1,-22,0,35))
+    text(lagCard,"Bloxstrap chạy trên Windows. Trên PE, nút này giảm đồ họa cục bộ và lưu lựa chọn.",9,C.Muted,UDim2.fromOffset(11,128),UDim2.new(1,-22,0,35))
     local controls = card(settingsPage, 113, 5, "cửa sổ phiên chạy window thu gọn unload dừng gỡ ui")
     text(controls, "CỬA SỔ / PHIÊN CHẠY", 10, C.Lavender, UDim2.fromOffset(11, 7), UDim2.new(1, -22, 0, 18), Enum.Font.GothamBold)
     text(controls, "Kéo thanh tiêu đề bằng chuột hoặc cảm ứng. Thu gọn bằng nút −; UI luôn giữ nguyên khi tương tác game.", 10, C.Muted, UDim2.fromOffset(11, 29), UDim2.new(1, -22, 0, 41))
@@ -16112,10 +16684,9 @@ function PHX.buildUI()
         U.TestDragonWebhook.Active = not U.PassThrough
         pcall(function() U.TestPrehistoricWebhook.Interactable = not U.PassThrough; U.TestDragonWebhook.Interactable = not U.PassThrough end)
         if U.SessionStatus then
-            U.SessionStatus.Text="Anti AFK: "..tostring(PHX.AntiAfk and PHX.AntiAfk.Status or "PENDING")..
-                " · requests "..tostring(PHX.AntiAfk and PHX.AntiAfk.SentAttempts or 0)..
-                "\nPressure: "..tostring(PHX.PressureRetry and PHX.PressureRetry.LastReason or "READY")
+            U.SessionStatus.Text=PHX.antiAfkSessionSummary().."\nPressure: "..tostring(PHX.PressureRetry and PHX.PressureRetry.LastReason or "READY")
         end
+        if U.LagStatus then U.LagStatus.Text=PHX.lagPresetStatusText().." · properties "..tostring(PHX.LagPreset.AppliedProperties).."\nFastFlags Bloxstrap: Windows; preset PE dùng visual cục bộ." end
         U.CpuState.Text = "SaveCPU: " .. (SAVE_CPU_APPLIED and "APPLIED" or (CONFIG.SAVE_CPU.ENABLED and "PENDING" or "DISABLED")) .. " · FPS " .. tostring(CONFIG.SAVE_CPU.FPS_CAP)
         if PHX.userConfigStatus then U.ConfigState.Text = PHX.userConfigStatus() end
         if U.ToastUntil and os.clock() >= U.ToastUntil then U.Toast.Visible = false; U.ToastUntil = nil end
